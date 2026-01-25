@@ -21,6 +21,11 @@ def get_config_path() -> Path:
     cfg_dir.mkdir(parents=True, exist_ok=True)
     return cfg_dir / "config.yaml"
 
+# Public function to get config.yaml path as string
+def locate_config() -> str:
+    """Return the config.yaml path as a string (ensuring parent exists)."""
+    return str(get_config_path())
+
 # Internal function to load config from config.yaml
 def load_config():
     """Load configuration from config.yaml if it exists; return dict or None."""
@@ -70,31 +75,6 @@ def get_or_create_config():
         return cfg
     return create_config_file()
 
-# Update API key in config.yaml - functional tool for user 
-def update_api_key(new_api_key: str):
-    """
-    Update the API key in config.yaml.
-
-    Args:
-        new_api_key: New API key to set.
-
-    Returns:
-        dict: Updated config.
-    """
-    if yaml is None:
-        raise ImportError("PyYAML is required. Install with: pip install pyyaml")
-
-    cfg = load_config()
-    if cfg is None:
-        cfg = {}
-
-    cfg["api_key"] = new_api_key
-    cfg["modified"] = pd.Timestamp.now().isoformat()
-
-    cfg_file = get_config_path()
-    with open(cfg_file, "w") as f:
-        yaml.safe_dump(cfg, f, sort_keys=False)
-    return cfg
 
 # Update dev flag in config.yaml - functional tool for user
 def update_dev_mode(dev: bool):
@@ -114,6 +94,32 @@ def update_dev_mode(dev: bool):
     if cfg is None:
         cfg = {}
     cfg["dev"] = dev
+    cfg["modified"] = pd.Timestamp.now().isoformat()
+
+    cfg_file = get_config_path()
+    with open(cfg_file, "w") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
+    return cfg
+
+# Update dev host in config.yaml - functional tool for user
+def update_dev_host_port(dev_host_port: str):
+    """
+    Update the dev host in config.yaml.
+
+    Args:
+        dev_host_port: Hostname or base URL for dev API.
+
+    Returns:
+        dict: Updated config.
+    """
+    if yaml is None:
+        raise ImportError("PyYAML is required. Install with: pip install pyyaml")
+
+    cfg = load_config()
+    if cfg is None:
+        cfg = {}
+
+    cfg["dev_host_port"] = dev_host_port
     cfg["modified"] = pd.Timestamp.now().isoformat()
 
     cfg_file = get_config_path()
