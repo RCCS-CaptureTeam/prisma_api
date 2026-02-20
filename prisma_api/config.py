@@ -127,3 +127,56 @@ def update_dev_host_port(dev_host_port: str):
         yaml.safe_dump(cfg, f, sort_keys=False)
     return cfg
 
+# Update API key in config.yaml - functional tool for user
+def update_api_key(api_key: str):
+    """
+    Update the API key in config.yaml.
+
+    Args:
+        api_key: New PrISMa API key.
+
+    Returns:
+        dict: Updated config.
+    """
+    if yaml is None:
+        raise ImportError("PyYAML is required. Install with: pip install pyyaml")
+
+    cfg = load_config()
+    if cfg is None:
+        cfg = {}
+
+    cfg["api_key"] = api_key
+    cfg["modified"] = pd.Timestamp.now().isoformat()
+
+    cfg_file = get_config_path()
+    with open(cfg_file, "w") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
+    return cfg
+
+
+# Update API key in config.yaml - functional tool for user
+def update_dev_api_key(dev_api_key: str):
+    """
+    Update the API key in config.yaml.
+
+    Args:
+        dev_api_key: New PrISMa API key.
+
+    Returns:
+        dict: Updated config.
+    """
+    if yaml is None:
+        raise ImportError("PyYAML is required. Install with: pip install pyyaml")
+
+    cfg = load_config()
+    if cfg is None:
+        cfg = {}
+
+    cfg["dev_api_key"] = dev_api_key
+    cfg["modified"] = pd.Timestamp.now().isoformat()
+
+    cfg_file = get_config_path()
+    with open(cfg_file, "w") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
+    return cfg
+
