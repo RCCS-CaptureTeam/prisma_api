@@ -2,6 +2,21 @@ from .config import get_or_create_config, update_dev_mode as _update_dev_mode
 from pathlib import Path
 import pandas as pd
 import requests
+
+import numpy as np
+import json
+import math
+
+def _safe_nan_check(x):
+    if x is None:
+        return None
+    try:
+        if isinstance(x, (int, float)) and math.isnan(x):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return x
+
   
 
 # prisma_api main class
@@ -37,7 +52,7 @@ class prisma_api():
         if self.dev:
             url = f"http://localhost:{self.dev_host_port}/api/get_mofs/"
         else:
-            url = "https://www.dun-eideann-labs.co.uk/prisma_db/api/get_mofs/"
+            url = "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/get_mofs/"
 
         headers = {
             "X-API-Key": api.key,
@@ -59,7 +74,7 @@ class prisma_api():
         if self.dev:
             url = f"http://localhost:{self.dev_host_port}/api/get_carbon_isotherms/"
         else:
-            url = "https://www.dun-eideann-labs.co.uk/prisma_db/api/get_carbon_isotherms/"
+            url = "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/get_carbon_isotherms/"
 
         headers = {
             "X-API-Key": api.key,
@@ -89,3 +104,52 @@ class prisma_api():
         except Exception as e:
             print("Error retrieving carbon isotherms: check that the query parameter names are correct.")
             return pd.DataFrame()
+        
+    #### --------------------------  AutoPrism  -------------------------- ####
+
+    def update_adsorption_singlepoint(self, df):
+        """
+        Update adsorption singlepoint data via PUT request.
+        
+        Args:
+            df: DataFrame containing the adsorption singlepoint data to update
+            
+        Returns:
+            pd.DataFrame: Response data from the API
+        """
+        api = self
+
+        if self.dev:
+            url = f"http://localhost:{self.dev_host_port}/api/update_adsorption_singlepoint/"
+        else:
+            url = "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/update_adsorption_singlepoint/"
+
+        headers = {
+            "X-API-Key": api.key,
+            "Content-Type": "application/json"
+        }
+
+        # Convert dataframe to JSON payload, handling NaN and infinite values
+        if not df.empty:
+            
+            # Replace all problematic values with None
+            df_clean = df.copy()
+            
+            # Handle numeric columns
+            for col in df_clean.select_dtypes(include=[np.number]).columns:
+                df_clean[col] = df_clean[col].replace([np.inf, -np.inf], None)
+                df_clean[col] = df_clean[col].where(df_clean[col].notna(), None)
+                # Also check for any remaining NaN-like values
+                df_clean[col] = df_clean[col].apply(_safe_nan_check)
+            
+            # Fill any remaining NaN values
+            df_clean = df_clean.fillna(None)
+            
+            payload = df_clean.to_dict('records')
+            json_data = json.dumps(payload, allow_nan=False)
+        else:
+            json_data = "[]"
+
+        response = requests.put(url, data=json_data, headers=headers, timeout=300) # 300sec (5 minutes)
+        
+        return response.json()
