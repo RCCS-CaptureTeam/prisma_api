@@ -130,26 +130,125 @@ class prisma_api():
         }
 
         # Convert dataframe to JSON payload, handling NaN and infinite values
-        if not df.empty:
-            
-            # Replace all problematic values with None
-            df_clean = df.copy()
-            
-            # Handle numeric columns
-            for col in df_clean.select_dtypes(include=[np.number]).columns:
-                df_clean[col] = df_clean[col].replace([np.inf, -np.inf], None)
-                df_clean[col] = df_clean[col].where(df_clean[col].notna(), None)
-                # Also check for any remaining NaN-like values
-                df_clean[col] = df_clean[col].apply(_safe_nan_check)
-            
-            # Fill any remaining NaN values
-            df_clean = df_clean.fillna(None)
-            
-            payload = df_clean.to_dict('records')
-            json_data = json.dumps(payload, allow_nan=False)
-        else:
-            json_data = "[]"
+        json_data = self._clean_dataframe_for_json(df)
 
         response = requests.put(url, data=json_data, headers=headers, timeout=300) # 300sec (5 minutes)
+        
+        return response.json()
+
+    def _clean_dataframe_for_json(self, df):
+        """Helper method to clean DataFrame for JSON serialization."""
+        if df.empty:
+            return "[]"
+        
+        import numpy as np
+        import json
+        
+        # Use pandas to_json which handles NaN properly, then parse back
+        df_clean = df.copy()
+        df_clean = df_clean.replace([np.nan, np.inf, -np.inf], None)
+        
+        # Convert using pandas to_json (which handles NaN correctly) then back to dict
+        json_str = df_clean.to_json(orient='records', force_ascii=False)
+        
+        return json_str
+
+    def update_heat_capacity_all_tidy(self, df):
+        """
+        Update heat capacity all tidy data via PUT request.
+        
+        Args:
+            df: DataFrame containing the heat capacity data to update
+            
+        Returns:
+            dict: Response data from the API
+        """
+        if self.dev:
+            url = f"http://localhost:{self.dev_host_port}/api/update_heat_capacity_all_tidy/"
+        else:
+            url = "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/update_heat_capacity_all_tidy/"
+
+        headers = {
+            "X-API-Key": self.key,
+            "Content-Type": "application/json"
+        }
+
+        json_data = self._clean_dataframe_for_json(df)
+        response = requests.put(url, data=json_data, headers=headers, timeout=300)
+        
+        return response.json()
+
+    def update_isotherm_h2(self, df):
+        """
+        Update H2 isotherm data via PUT request.
+        
+        Args:
+            df: DataFrame containing the H2 isotherm data to update
+            
+        Returns:
+            dict: Response data from the API
+        """
+        if self.dev:
+            url = f"http://localhost:{self.dev_host_port}/api/update_isotherm_h2/"
+        else:
+            url = "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/update_isotherm_h2/"
+
+        headers = {
+            "X-API-Key": self.key,
+            "Content-Type": "application/json"
+        }
+
+        json_data = self._clean_dataframe_for_json(df)
+        response = requests.put(url, data=json_data, headers=headers, timeout=300)
+        
+        return response.json()
+
+    def update_mofchecker(self, df):
+        """
+        Update MOF checker data via PUT request.
+        
+        Args:
+            df: DataFrame containing the MOF checker data to update
+            
+        Returns:
+            dict: Response data from the API
+        """
+        if self.dev:
+            url = f"http://localhost:{self.dev_host_port}/api/update_mofchecker/"
+        else:
+            url = "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/update_mofchecker/"
+
+        headers = {
+            "X-API-Key": self.key,
+            "Content-Type": "application/json"
+        }
+
+        json_data = self._clean_dataframe_for_json(df)
+        response = requests.put(url, data=json_data, headers=headers, timeout=300)
+        
+        return response.json()
+
+    def update_zeopp_metrics(self, df):
+        """
+        Update Zeo++ metrics data via PUT request.
+        
+        Args:
+            df: DataFrame containing the Zeo++ metrics data to update
+            
+        Returns:
+            dict: Response data from the API
+        """
+        if self.dev:
+            url = f"http://localhost:{self.dev_host_port}/api/update_zeopp_metrics/"
+        else:
+            url = "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/update_zeopp_metrics/"
+
+        headers = {
+            "X-API-Key": self.key,
+            "Content-Type": "application/json"
+        }
+
+        json_data = self._clean_dataframe_for_json(df)
+        response = requests.put(url, data=json_data, headers=headers, timeout=300)
         
         return response.json()
