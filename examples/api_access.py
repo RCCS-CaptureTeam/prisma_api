@@ -12,9 +12,9 @@ import prisma_api
 
 # %%
 api = prisma_api.init()
-from prisma_api.config import update_dev_mode
-update_dev_mode(False)
-api = prisma_api.init()
+# from prisma_api.config import update_dev_mode
+# update_dev_mode(False)
+# api = prisma_api.init()
 
 # %% [markdown]
 # ### Gather MOF data from API
