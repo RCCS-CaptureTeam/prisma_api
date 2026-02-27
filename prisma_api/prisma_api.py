@@ -59,7 +59,7 @@ class prisma_api():
             "Content-Type": "application/json"
         }
 
-        response = requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, json=payload, headers=headers, timeout=60)
         data = response.json()['data']
 
         data = pd.DataFrame.from_dict(data)
@@ -82,7 +82,7 @@ class prisma_api():
         }
 
         try:
-            response = requests.post(url, json=payload, headers=headers)
+            response = requests.post(url, json=payload, headers=headers, timeout=60)
             data = response.json()['data']
 
             data = pd.DataFrame.from_dict(data)
@@ -103,6 +103,38 @@ class prisma_api():
         
         except Exception as e:
             print("Error retrieving carbon isotherms: check that the query parameter names are correct.")
+            return pd.DataFrame()
+    
+    def get_carbon_data_nested(self, payload={}):
+        """
+        Get carbon data with nested structure preserved.
+        
+        Args:
+            payload: Dictionary containing query parameters for filtering
+            
+        Returns:
+            pd.DataFrame: Carbon data with nested fields preserved
+        """
+        api = self
+
+        if self.dev:
+            url = f"http://localhost:{self.dev_host_port}/api/get_carbon_data_nested/"
+        else:
+            url = "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/get_carbon_data_nested/"
+
+        headers = {
+            "X-API-Key": api.key,
+            "Content-Type": "application/json"
+        }
+
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=60)
+            data = response.json()
+
+            return data
+        
+        except Exception as e:
+            print("Error retrieving carbon data nested: check that the query parameter names are correct.")
             return pd.DataFrame()
         
     #### --------------------------  AutoPrism  -------------------------- ####
