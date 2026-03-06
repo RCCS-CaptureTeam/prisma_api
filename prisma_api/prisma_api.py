@@ -105,15 +105,21 @@ class prisma_api():
             print("Error retrieving carbon isotherms: check that the query parameter names are correct.")
             return pd.DataFrame()
     
-    def get_carbon_data_nested(self, payload={}):
+    def get_carbon_data_nested(self, payload={}, safe_names=False):
         """
-        Get carbon data with nested structure preserved.
-        
+        Get carbon data with nested structure, returned as separate DataFrames.
+
         Args:
-            payload: Dictionary containing query parameters for filtering
-            
+            payload:    Dictionary containing query parameters for filtering
+            safe_names: If True (default), keep API-safe column names (e.g. 'Pressure_bar').
+                        If False, rename columns to original names (e.g. 'Pressure [bar]').
+
         Returns:
-            pd.DataFrame: Carbon data with nested fields preserved
+            dict: {
+                'Simulated':    {'isotherm': pd.DataFrame, 'geometry': pd.DataFrame},
+                'Experimental': {'isotherm': pd.DataFrame, 'geometry': pd.DataFrame},
+                'meta':         dict
+            }
         """
         api = self
 
@@ -131,11 +137,35 @@ class prisma_api():
             response = requests.post(url, json=payload, headers=headers, timeout=60)
             data = response.json()
 
-            return data
-        
+            col_names = data.get('meta', {}).get('original_column_names', {})
+
+            # col_names maps: api_field_name -> original_column_name
+            # Use directly as a rename map for each DataFrame
+            sim_iso   = pd.DataFrame(data.get('Simulated',    {}).get('isotherm',  []))
+            sim_geo   = pd.DataFrame(data.get('Simulated',    {}).get('geometry',  []))
+            exp_iso   = pd.DataFrame(data.get('Experimental', {}).get('isotherm',  []))
+            exp_geo   = pd.DataFrame(data.get('Experimental', {}).get('geometry',  []))
+
+            if not safe_names:
+                if col_names.get('isotherm'):
+                    sim_iso = sim_iso.rename(columns=col_names['isotherm'])
+                    exp_iso = exp_iso.rename(columns=col_names['isotherm'])
+
+                if col_names.get('simulated_geometry'):
+                    sim_geo = sim_geo.rename(columns=col_names['simulated_geometry'])
+
+                if col_names.get('experimental_geometry'):
+                    exp_geo = exp_geo.rename(columns=col_names['experimental_geometry'])
+
+            return {
+                'Simulated': {'isotherm':    sim_iso, 'geometry': sim_geo},
+                'Experimental': {'isotherm': exp_iso, 'geometry': exp_geo},
+                'meta':                  data.get('meta', {}),
+            }
+
         except Exception as e:
-            print("Error retrieving carbon data nested: check that the query parameter names are correct.")
-            return pd.DataFrame()
+            print(f"Error retrieving carbon data nested: {e}")
+            return {}
         
     #### --------------------------  AutoPrism  -------------------------- ####
 
