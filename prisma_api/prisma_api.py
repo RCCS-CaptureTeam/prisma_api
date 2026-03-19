@@ -137,7 +137,8 @@ class prisma_api():
             response = requests.post(url, json=payload, headers=headers, timeout=60)
             data = response.json()
 
-            col_names = data.get('meta', {}).get('original_column_names', {})
+            col_names_carbon = data.get('meta', {}).get('original_column_names', {})
+            col_names_water = data.get('meta', {}).get('Water', {}).get('original_column_names', {})
 
             # col_names maps: api_field_name -> original_column_name
             # Use directly as a rename map for each DataFrame
@@ -146,21 +147,45 @@ class prisma_api():
             exp_iso   = pd.DataFrame(data.get('Experimental', {}).get('isotherm',  []))
             exp_geo   = pd.DataFrame(data.get('Experimental', {}).get('geometry',  []))
 
+            sim_water_dac = pd.DataFrame(data.get('Water', {}).get('Simulated',    {}).get('DAC',  []))
+            sim_water_cement = pd.DataFrame(data.get('Water', {}).get('Simulated',    {}).get('cement',  []))
+            sim_water_coal = pd.DataFrame(data.get('Water', {}).get('Simulated',    {}).get('coal',  []))
+            sim_water_ngcc = pd.DataFrame(data.get('Water', {}).get('Simulated',    {}).get('NGCC-onshore',  []))
+            exp_water_dac = pd.DataFrame(data.get('Water', {}).get('Experimental', {}).get('DAC',  []))
+            exp_water_cement = pd.DataFrame(data.get('Water', {}).get('Experimental', {}).get('cement',  []))
+            exp_water_coal = pd.DataFrame(data.get('Water', {}).get('Experimental', {}).get('coal',  []))
+            exp_water_ngcc = pd.DataFrame(data.get('Water', {}).get('Experimental', {}).get('NGCC-onshore',  []))
+
             if not safe_names:
-                if col_names.get('isotherm'):
-                    sim_iso = sim_iso.rename(columns=col_names['isotherm'])
-                    exp_iso = exp_iso.rename(columns=col_names['isotherm'])
+                if col_names_carbon.get('isotherm'):
+                    sim_iso = sim_iso.rename(columns=col_names_carbon['isotherm'])
+                    exp_iso = exp_iso.rename(columns=col_names_carbon['isotherm'])
 
-                if col_names.get('simulated_geometry'):
-                    sim_geo = sim_geo.rename(columns=col_names['simulated_geometry'])
+                if col_names_carbon.get('simulated_geometry'):
+                    sim_geo = sim_geo.rename(columns=col_names_carbon['simulated_geometry'])
 
-                if col_names.get('experimental_geometry'):
-                    exp_geo = exp_geo.rename(columns=col_names['experimental_geometry'])
+                if col_names_carbon.get('experimental_geometry'):
+                    exp_geo = exp_geo.rename(columns=col_names_carbon['experimental_geometry'])
+
+                if col_names_water:
+                    sim_water_dac = sim_water_dac.rename(columns=col_names_water)
+                    exp_water_dac = exp_water_dac.rename(columns=col_names_water)
+                    sim_water_cement = sim_water_cement.rename(columns=col_names_water)
+                    exp_water_cement = exp_water_cement.rename(columns=col_names_water)
+                    sim_water_coal = sim_water_coal.rename(columns=col_names_water)
+                    exp_water_coal = exp_water_coal.rename(columns=col_names_water)
+                    sim_water_ngcc = sim_water_ngcc.rename(columns=col_names_water)
+                    exp_water_ngcc = exp_water_ngcc.rename(columns=col_names_water)
 
             return {
                 'Simulated': {'isotherm':    sim_iso, 'geometry': sim_geo},
                 'Experimental': {'isotherm': exp_iso, 'geometry': exp_geo},
                 'meta':                  data.get('meta', {}),
+                'Water': {
+                    'Simulated': {'DAC':    sim_water_dac, 'cement': sim_water_cement, 'coal': sim_water_coal, 'NGCC-onshore': sim_water_ngcc},
+                    'Experimental': {'DAC': exp_water_dac, 'cement': exp_water_cement, 'coal': exp_water_coal, 'NGCC-onshore': exp_water_ngcc},
+                    'meta':                  data.get('meta', {}).get('water', {}),
+                }
             }
 
         except Exception as e:

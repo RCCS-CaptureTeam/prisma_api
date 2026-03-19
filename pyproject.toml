@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prisma_api"
-version = "0.2.4"
+version = "0.2.6"
 description = "A package for interacting with PrISMa Platform APIs. PrISMa is a holistic system for numerical synthesis and assessment of Metal-Organic Frameworks and their applications, for Direct Air Capture of CO2. For more information, see: https://prisma.hw.ac.uk."
 authors = [
     {name = "Peter McCallum", email = "peter.mccallum@dun-eideann-labs.co.uk"}

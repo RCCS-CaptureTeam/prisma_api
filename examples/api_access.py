@@ -12,9 +12,23 @@ import prisma_api
 
 # %%
 api = prisma_api.init()
-# from prisma_api.config import update_dev_mode
-# update_dev_mode(False)
-# api = prisma_api.init()
+
+# %%
+from prisma_api.config import update_dev_mode
+update_dev_mode(False)
+api = prisma_api.init()
+
+# %%
+vars(api)
+
+# %% [markdown]
+# 
+
+# %%
+data = api.get_carbon_data_nested(safe_names=True)
+
+# %%
+data['Simulated']['isotherm']
 
 # %% [markdown]
 # ### Gather MOF data from API
@@ -44,6 +58,9 @@ api.update_adsorption_singlepoint(df)
 
 # %%
 df = pd.read_csv('../../AutoPrism/results/heat_capacity_all_tidy.csv')
+df
+
+# %%
 api.update_heat_capacity_all_tidy(df)
 
 # %%

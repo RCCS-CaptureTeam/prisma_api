@@ -185,3 +185,4 @@ cython_debug/
 # CUSTOM
 .vscode*
 .DS_Store*
+*.ipynb
