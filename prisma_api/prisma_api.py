@@ -191,7 +191,38 @@ class prisma_api():
         except Exception as e:
             print(f"Error retrieving carbon data nested: {e}")
             return {}
-        
+    
+    def get_materials_data(self, payload={}):
+        """
+        """
+        api = self
+
+        if self.dev:
+            url = f"http://localhost:{self.dev_host_port}/api/get_materials_data/"
+        else:
+            url = "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/get_materials_data/"
+
+        headers = {
+            "X-API-Key": api.key,
+            "Content-Type": "application/json"
+        }
+
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=60)
+            data_raw = response.json()
+            
+            df = pd.DataFrame(data_raw.get('data', []))
+            data = {
+                'simulated': df,
+                'experimental': df,
+            }
+            
+            return data
+
+        except Exception as e:
+            print(f"Error retrieving materials data: {e}")
+            return {}
+    
     #### --------------------------  AutoPrism  -------------------------- ####
 
     def update_adsorption_singlepoint(self, df):

@@ -1,55 +1,56 @@
-# %% [markdown]
+# %%
 # # PrISMa_API
 
-# %% [markdown]
 # ### Load Library
 
-# %%
 import prisma_api
 
-# %% [markdown]
+# %%
 # ### Initialise API class
 
-# %%
 api = prisma_api.init()
 
 # %%
 from prisma_api.config import update_dev_mode
-update_dev_mode(False)
+update_dev_mode(True)
 api = prisma_api.init()
 
 # %%
-vars(api)
-
-# %% [markdown]
-# 
+# vars(api)
 
 # %%
+
+data = api.get_materials_data()
+
+import pandas as pd
+
+df = pd.DataFrame(data['simulated']['data'])
+
+
+# %%
+
 data = api.get_carbon_data_nested(safe_names=True)
 
-# %%
 data['Simulated']['isotherm']
 
-# %% [markdown]
+
+# %%
 # ### Gather MOF data from API
 
-# %%
 api.get_mofs()
 
-# %% [markdown]
+# %%
 # ### Gather Carbon Isotherm data from API (using dynamic filtering)
 
-# %%
 api.get_carbon_isotherms({'molecule': 'CO2', 'good_structure': False})
 
-# %% [markdown]
+# %%
 # # TESTS
 # 
 # ### adsorption_singlepoint
 # 
 # Load sample data for upload
 
-# %%
 import pandas as pd
 
 # %%
