@@ -192,10 +192,19 @@ class prisma_api():
             print(f"Error retrieving carbon data nested: {e}")
             return {}
     
-    def get_materials_data(self, payload={}, unpack_nested=True):
+    def get_materials_data(self, payload={}, separate_experimental=True):
         """
+        Args:
+            payload:                 Dictionary containing query parameters for filtering.
+            separate_experimental:   If True, split the result into separate 'simulated' and
+                                     'experimental' DataFrames based on the sim_or_exp flag,
+                                     before unpacking. Requires unpack=True.
         """
         api = self
+
+        # Deprecated argument, forced by-pass as unpack=False format not likely needed. 
+        # Can be removed after Apr-2026.
+        unpack=True
 
         if self.dev:
             url = f"http://localhost:{self.dev_host_port}/api/get_materials_data/"
@@ -213,7 +222,7 @@ class prisma_api():
             
             df = pd.DataFrame(data_raw.get('data', []))
 
-            if unpack_nested and not df.empty:
+            if unpack and not df.empty:
                 # Unpack carbon_isotherm independently (keep prefixed columns)
                 if 'carbon_isotherm' in df.columns:
                     unpacked = pd.json_normalize(
@@ -274,12 +283,16 @@ class prisma_api():
                 # Insert sim_or_exp as the first column after unpacking
                 df.insert(0, 'sim_or_exp', sim_or_exp)
 
-            data = {
-                'simulated': df,
-                'experimental': df,
-            }
-            
-            return data
+            if separate_experimental and unpack and not df.empty and 'sim_or_exp' in df.columns:
+                df_sim = df[df['sim_or_exp'] == 'sim'].reset_index(drop=True)
+                df_exp = df[df['sim_or_exp'] == 'exp'].reset_index(drop=True)
+
+                return {
+                    'simulated':    df_sim,
+                    'experimental': df_exp,
+                }
+            else:
+                return df
 
         except Exception as e:
             print(f"Error retrieving materials data: {e}")
