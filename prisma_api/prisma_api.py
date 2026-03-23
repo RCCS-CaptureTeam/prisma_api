@@ -192,7 +192,7 @@ class prisma_api():
             print(f"Error retrieving carbon data nested: {e}")
             return {}
     
-    def get_materials_data(self, payload={}):
+    def get_materials_data(self, payload={}, unpack_nested=True):
         """
         """
         api = self
@@ -212,6 +212,68 @@ class prisma_api():
             data_raw = response.json()
             
             df = pd.DataFrame(data_raw.get('data', []))
+
+            if unpack_nested and not df.empty:
+                # Unpack carbon_isotherm independently (keep prefixed columns)
+                if 'carbon_isotherm' in df.columns:
+                    unpacked = pd.json_normalize(
+                        df['carbon_isotherm'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else (x if isinstance(x, dict) else {}))
+                    )
+                    unpacked.columns = [f"carbon_isotherm__{c}" for c in unpacked.columns]
+                    df = df.drop(columns=['carbon_isotherm']).join(unpacked)
+
+                # Unpack carbon_zeopp and carbon_zeopp_experimental, then combine shared fields
+                zeopp_cols = [c for c in ['carbon_zeopp', 'carbon_zeopp_experimental'] if c in df.columns]
+                if zeopp_cols:
+                    unpacked_frames = {}
+                    for col in zeopp_cols:
+                        unpacked = pd.json_normalize(
+                            df[col].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else (x if isinstance(x, dict) else {}))
+                        )
+                        unpacked_frames[col] = unpacked
+                        df = df.drop(columns=[col])
+
+                    # Derive sim_or_exp flag: 'exp' if carbon_zeopp_experimental has data, else 'sim'
+                    if 'carbon_zeopp_experimental' in unpacked_frames:
+                        exp_has_data = unpacked_frames['carbon_zeopp_experimental'].notna().any(axis=1)
+                    else:
+                        exp_has_data = pd.Series(False, index=df.index)
+
+                    zeopp_sim_or_exp = exp_has_data.map({True: 'exp', False: 'sim'})
+
+                    # Collect all field names across both unpacked frames
+                    all_fields = set()
+                    for unpacked in unpacked_frames.values():
+                        all_fields.update(unpacked.columns)
+                    all_fields.discard('sim_or_exp')
+
+                    # Coalesce: for shared fields prefer carbon_zeopp, fall back to carbon_zeopp_experimental
+                    combined = pd.DataFrame(index=df.index)
+                    for field in sorted(all_fields):
+                        series_list = [unpacked_frames[col][field] for col in zeopp_cols if field in unpacked_frames[col].columns]
+                        if len(series_list) == 1:
+                            combined[f"carbon_zeopp__{field}"] = series_list[0].values
+                        else:
+                            coalesced = series_list[0].copy()
+                            for fallback in series_list[1:]:
+                                coalesced = coalesced.combine_first(fallback.rename(coalesced.name))
+                            combined[f"carbon_zeopp__{field}"] = coalesced.values
+
+                    df = df.join(combined)
+
+                # Build a single top-level sim_or_exp column, coalescing sources in priority order
+                sim_or_exp = pd.Series(index=df.index, dtype=object)
+                for source_col in ['carbon_isotherm__sim_or_exp', 'carbon_zeopp__sim_or_exp']:
+                    if source_col in df.columns:
+                        sim_or_exp = sim_or_exp.combine_first(df[source_col])
+                        df = df.drop(columns=[source_col])
+                # Fall back to the zeopp-derived flag if still null
+                if 'zeopp_sim_or_exp' in locals():
+                    sim_or_exp = sim_or_exp.combine_first(zeopp_sim_or_exp)
+
+                # Insert sim_or_exp as the first column after unpacking
+                df.insert(0, 'sim_or_exp', sim_or_exp)
+
             data = {
                 'simulated': df,
                 'experimental': df,
