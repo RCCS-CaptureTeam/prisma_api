@@ -1,3 +1,4 @@
+import os
 from .config import get_or_create_config, update_dev_mode as _update_dev_mode
 from pathlib import Path
 import pandas as pd
@@ -22,17 +23,21 @@ def _safe_nan_check(x):
 # prisma_api main class
 class prisma_api():
 
-    def __init__(self):
+    def __init__(self, use_config_file=True):
         
         # Initialise `prisma_api` object with api_key location
         self.verbose = False
         # Initialise `prisma_api` object with api_key location
-        cfg = get_or_create_config()
-        self.key = cfg['api_key']
-        self.dev = cfg.get('dev', False)
-        if self.dev:
-            self.dev_host_port = cfg['dev_host_port']
-            self.key = cfg['dev_api_key']
+        if use_config_file:
+            cfg = get_or_create_config()
+            self.key = cfg['api_key']
+            self.dev = cfg.get('dev', False)
+            if self.dev:
+                self.dev_host_port = cfg['dev_host_port']
+                self.key = cfg['dev_api_key']
+        else:
+            self.key = os.getenv('PRISMA_API_KEY', '')
+            self.dev = False
     
     def update_dev_mode(self, dev: bool):
         """Update the dev flag in config.yaml.
