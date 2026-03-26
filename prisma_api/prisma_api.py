@@ -207,9 +207,16 @@ class prisma_api():
         unpack=True
 
         if self.dev:
-            url = f"http://localhost:{self.dev_host_port}/api/get_materials_data/"
+            urls = {
+                'localhost': f"http://localhost:{self.dev_host_port}/api/get_materials_data/"
+            }
+
+        
         else:
-            url = "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/get_materials_data/"
+            urls = {
+                'prisma-platform.org': "https://prisma-platform.org/api/get_materials_data/",
+                'dun-eideann-labs.co.uk': "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/get_materials_data/"
+            }
 
         headers = {
             "X-API-Key": api.key,
@@ -217,9 +224,21 @@ class prisma_api():
         }
 
         try:
-            response = requests.post(url, json=payload, headers=headers, timeout=60)
-            data_raw = response.json()
+            data_raw = None
+            source_key = None
+            for name, endpoint in urls.items():
+                try:
+                    response = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+                    data_raw = response.json()
+                    if data_raw.get('data'):
+                        source_key = name
+                        break
+                except Exception:
+                    continue
             
+            if data_raw is None:
+                raise RuntimeError("All endpoints failed to return data.")
+
             df = pd.DataFrame(data_raw.get('data', []))
 
             if unpack and not df.empty:
@@ -290,9 +309,13 @@ class prisma_api():
                 return {
                     'simulated':    df_sim,
                     'experimental': df_exp,
+                    'meta': {'source': source_key},
                 }
             else:
-                return df
+                return {
+                    'data': df,
+                    'meta': {'source': source_key},
+                }
 
         except Exception as e:
             print(f"Error retrieving materials data: {e}")
