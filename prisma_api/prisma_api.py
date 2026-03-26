@@ -218,12 +218,17 @@ class prisma_api():
             urls = {
                 'localhost': f"http://localhost:{self.dev_host_port}/api/get_materials_data/"
             }
-
-        
+            base_urls = {
+                'localhost': f"http://localhost:{self.dev_host_port}"
+            }
         else:
             urls = {
                 'prisma-platform.org': "https://prisma-platform.org/api/get_materials_data/",
                 'dun-eideann-labs.co.uk': "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/get_materials_data/"
+            }
+            base_urls = {
+                'prisma-platform.org': "https://prisma-platform.org",
+                'dun-eideann-labs.co.uk': "https://www.dun-eideann-labs.co.uk"
             }
 
         headers = {
@@ -248,6 +253,13 @@ class prisma_api():
                 raise RuntimeError("All endpoints failed to return data.")
 
             df = pd.DataFrame(data_raw.get('data', []))
+
+            # Prepend source base URL to cif_file column
+            if source_key and 'cif_file' in df.columns:
+                base = base_urls.get(source_key, '')
+                df['cif_file'] = df['cif_file'].apply(
+                    lambda v: f"{base}{v}" if isinstance(v, str) and v else v
+                )
 
             if unpack and not df.empty:
                 # Unpack carbon_isotherm independently (keep prefixed columns)
