@@ -37,7 +37,10 @@ class prisma_api():
                 self.key = cfg['dev_api_key']
         else:
             self.key = os.getenv('PRISMA_API_KEY', '')
-            self.dev = False
+            self.dev = os.getenv('PRISMA_API_DEV', 'False').lower() in ('true', '1', 't')
+            if self.dev:
+                self.dev_host_port = os.getenv('PRISMA_API_DEV_HOST_PORT', '')
+
     
     def update_dev_mode(self, dev: bool):
         """Update the dev flag in config.yaml.
