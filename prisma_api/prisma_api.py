@@ -321,6 +321,36 @@ class prisma_api():
 
                 # Insert sim_or_exp as the first column after unpacking
                 df.insert(0, 'sim_or_exp', sim_or_exp)
+            
+            # Drop internal ID columns not needed in output
+            df = df.drop(columns=[c for c in ['carbon_isotherm__id'] if c in df.columns])
+            df = df.drop(columns=[c for c in ['carbon_zeopp__id'] if c in df.columns])
+            df = df.drop(columns=[c for c in ['carbon_zeopp__good_structure'] if c in df.columns])
+            df = df.drop(columns=[c for c in ['id'] if c in df.columns])
+
+            # Rename unpacked columns to friendlier names
+            rename_map = {
+                'carbon_isotherm__Molecule': 'Molecule',
+                'carbon_isotherm__good_structure': 'Good Structure',
+                'carbon_isotherm__Henry_mol_per_kg_Pa': 'CO2 Henry (mol/kg/Pa)',
+                'carbon_isotherm__Pressure_bar': 'CO2 Pressure (bar)',
+                'carbon_isotherm__Uptake_mol_per_kg': 'CO2 Uptake (mol/kg)',
+                'carbon_isotherm__Heat_kJ_per_mol': 'CO2 Heat (kJ/mol)',
+                'carbon_isotherm__T_ref_K': 'CO2 T_ref (K)',
+                'carbon_zeopp__Binder': 'Zeo++ Binder',
+                'carbon_zeopp__Cp_J_per_gK': 'Zeo++ Cp_J_per_gK',
+                'carbon_zeopp__DOI': 'Zeo++ DOI',
+                'carbon_zeopp__Density_g_per_cm3': 'Zeo++ Density_g_per_cm3',
+                'carbon_zeopp__Formula': 'Zeo++ Formula',
+                'carbon_zeopp__Macroporosity': 'Zeo++ Macroporosity',
+                'carbon_zeopp__Molecule': 'Zeo++ Molecule',
+                'carbon_zeopp__POAVF': 'Zeo++ POAVF',
+                'carbon_zeopp__Pellet_Density_g_per_cm3': 'Zeo++ Pellet_Density_g_per_cm3',
+                'carbon_zeopp__Round': 'Zeo++ Round',
+            }
+            rename_map_ = {k: v for k, v in rename_map.items() if k in df.columns}
+            if rename_map_:
+                df = df.rename(columns=rename_map_)
 
             if separate_experimental and unpack and not df.empty and 'sim_or_exp' in df.columns:
                 df_sim = df[df['sim_or_exp'] == 'sim'].reset_index(drop=True)
