@@ -82,7 +82,7 @@ class prisma_api():
         if self.dev:
             url = f"http://localhost:{self.dev_host_port}/api/get_carbon_isotherms/"
         else:
-            url = "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/get_carbon_isotherms/"
+            url = "https://www.prisma-platform.org/api/get_carbon_isotherms/"
 
         headers = {
             "X-API-Key": api.key,
@@ -325,6 +325,7 @@ class prisma_api():
             # Drop internal ID columns not needed in output
             df = df.drop(columns=[c for c in ['carbon_isotherm__id'] if c in df.columns])
             df = df.drop(columns=[c for c in ['carbon_zeopp__id'] if c in df.columns])
+            df = df.drop(columns=[c for c in ['carbon_zeopp__Molecule'] if c in df.columns])
             df = df.drop(columns=[c for c in ['carbon_zeopp__good_structure'] if c in df.columns])
             df = df.drop(columns=[c for c in ['id'] if c in df.columns])
 
