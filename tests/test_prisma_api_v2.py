@@ -91,25 +91,10 @@ def test_health_ok(api):
 
 
 @resp_lib.activate
-def test_health_fallback_to_legacy(api):
-    """First URL fails; client should fall back to the legacy URL."""
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/health/",
-                 body=Exception("connection refused"))
-    resp_lib.add(resp_lib.GET,
-                 "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/v2/health/",
-                 json={"status": "ok", "version": "2.0.0"}, status=200)
-    result = api.health()
-    assert result["status"] == "ok"
-
-
-@resp_lib.activate
-def test_health_all_endpoints_fail_raises(api):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/health/",
-                 body=Exception("timeout"))
-    resp_lib.add(resp_lib.GET,
-                 "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/v2/health/",
-                 body=Exception("timeout"))
-    with pytest.raises(RuntimeError, match="All v2 endpoints failed"):
+def test_health_http_error_raises(api):
+    """Non-2xx response should propagate as an exception."""
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/health/", status=503)
+    with pytest.raises(Exception):
         api.health()
 
 
@@ -163,6 +148,80 @@ def test_get_material_detail(api):
 def test_get_materials_empty(api):
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/", json=_envelope([]), status=200)
     df = api.get_materials()
+    assert df.empty
+
+
+# ── Materials PSDI ────────────────────────────────────────────────────────────
+
+_PSDI_RECORD = {
+    "id": 1, "name": "ABEXEM",
+    "cif_url": "https://prisma-platform.org/media/structures/ABEXEM.cif",
+    "cif_filename": "ABEXEM.cif",
+    "formula_descriptive": "C12H8N2O4Zn",
+    "formula_hill": "C12H8N2O4Zn",
+    "formula_reduced": "C12H8N2O4Zn",
+    "formula_anonymous": "A12B8C2D4E",
+    "formula": "C12H8N2O4Zn",
+    "formula_calculated": "C12H8N2O4Zn",
+    "chemical_name": "Zinc 1,4-benzenedicarboxylate",
+    "periodic_dimensions": 3,
+    "smiles": "[Zn]",
+    "spacegroup_hm": "P 21/c",
+    "spacegroup_hall": "-P 2ybc",
+    "spacegroup_number": 14,
+    "cell_volume": 1024.5,
+    "cell_lengths": [10.2, 10.2, 10.2],
+    "cell_angles": [90.0, 90.0, 90.0],
+    "cell_ratios": [1.0, 1.0, 1.0],
+    "unit_cell": None,
+}
+
+
+@resp_lib.activate
+def test_get_materials_psdi_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials-psdi/",
+                 json=_envelope([_PSDI_RECORD]), status=200)
+    df = api.get_materials_psdi()
+    assert len(df) == 1
+    for col in ("name", "cif_url", "formula_hill", "smiles", "spacegroup_hm",
+                "cell_volume", "spacegroup_number"):
+        assert col in df.columns, f"Expected column '{col}'"
+
+
+@resp_lib.activate
+def test_get_materials_psdi_name_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials-psdi/",
+                 match=[matchers.query_param_matcher({"name": "ABEX", "limit": "500", "offset": "0"})],
+                 json=_envelope([_PSDI_RECORD]), status=200)
+    df = api.get_materials_psdi(name="ABEX")
+    assert df.iloc[0]["name"] == "ABEXEM"
+
+
+@resp_lib.activate
+def test_get_material_psdi_detail(api):
+    detail = {**_PSDI_RECORD,
+              "smiles_linker": "c1ccc(cc1)C(=O)O",
+              "formula_linker": "C8H6O4",
+              "smiles_linker_PubChem": "c1ccc(cc1)C(=O)O",
+              "formula_linker_PubChem": "C8H6O4",
+              "count_dict_PubChem": {"C8H6O4": 2},
+              "smiles_node": "[Zn]",
+              "formula_node": "Zn",
+              "elements": [{"symbol": "C", "mass_fraction": 0.45},
+                           {"symbol": "Zn", "mass_fraction": 0.20}]}
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials-psdi/1/",
+                 json=detail, status=200)
+    result = api.get_material_psdi(1)
+    assert result["name"] == "ABEXEM"
+    assert result["smiles_linker"] == "c1ccc(cc1)C(=O)O"
+    assert len(result["elements"]) == 2
+
+
+@resp_lib.activate
+def test_get_materials_psdi_empty(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials-psdi/",
+                 json=_envelope([]), status=200)
+    df = api.get_materials_psdi()
     assert df.empty
 
 

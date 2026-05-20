@@ -1,6 +1,6 @@
 # PrISMa API — Python Client Reference
 
-> **Package:** `prisma_api` v0.2.7  
+> **Package:** `prisma_api` v0.2.8  
 > **Base URL (production):** `https://prisma-platform.org/api/`  
 > **v2 Base URL:** `https://prisma-platform.org/api/v2/`  
 > **Authentication:** `X-API-Key` header (set via config file or `PRISMA_API_KEY` env var)
@@ -134,6 +134,37 @@ api.v2.get_material(1)
         {'symbol': 'Zn', 'atomic_number': 30, 'mass_fraction': 0.195},
     ]
 }
+```
+
+---
+
+#### `api.v2.get_materials_psdi(name=None, limit=500, offset=0)`
+
+Returns a `pd.DataFrame` of PSDI (extended crystallographic) material records.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `str \| None` | Filter by name substring (case-insensitive) |
+| `limit` | `int` | Max records per page (default 500) |
+| `offset` | `int` | Pagination offset (default 0) |
+
+Columns returned: `id`, `name`, `cif_url`, `cif_filename`, `formula_descriptive`, `formula_hill`, `formula_reduced`, `formula_anonymous`, `formula`, `formula_calculated`, `chemical_name`, `periodic_dimensions`, `smiles`, `spacegroup_hm`, `spacegroup_hall`, `spacegroup_number`, `cell_volume`, `cell_lengths`, `cell_angles`, `cell_ratios`, `unit_cell`
+
+```python
+df = api.v2.get_materials_psdi()
+df = api.v2.get_materials_psdi(name='ABEX')
+```
+
+---
+
+#### `api.v2.get_material_psdi(material_id)`
+
+Returns a `dict` with the full PSDI detail record for a single material, including all list fields plus linker/node chemistry and element composition.
+
+Extra fields over `get_materials_psdi`: `smiles_linker`, `formula_linker`, `smiles_linker_PubChem`, `formula_linker_PubChem`, `count_dict_PubChem`, `smiles_node`, `formula_node`, `elements` (list of dicts with `symbol`, `atomic_number`, `mass_fraction`)
+
+```python
+api.v2.get_material_psdi(1)
 ```
 
 ---
@@ -581,17 +612,15 @@ df2 = api.v2.get_output_kpis(scenario_id=830, limit=100, offset=100)
 
 ---
 
-## URL Fallback
+## API Endpoint
 
-All methods automatically fall back to the legacy host if the primary endpoint
-is unreachable:
+All v2 methods route to:
 
-| Priority | URL |
+| | URL |
 |---|---|
-| 1 (primary) | `https://prisma-platform.org/api/v2/` |
-| 2 (fallback) | `https://www.dun-eideann-labs.co.uk/prisma_cloud/api/v2/` |
+| **Production** | `https://prisma-platform.org/api/v2/` |
+| **Dev mode** | `http://localhost:{dev_host_port}/api/v2/` |
 
-If both fail a `RuntimeError` is raised.  
 For v1 `get_materials_data` the `result['meta']['source']` key indicates which
 host responded.
 

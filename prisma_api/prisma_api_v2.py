@@ -22,7 +22,6 @@ from typing import Any
 
 
 _BASE_PROD = "https://prisma-platform.org/api/v2"
-_BASE_LEGACY = "https://www.dun-eideann-labs.co.uk/prisma_cloud/api/v2"
 
 
 class PrismaAPIv2:
@@ -50,22 +49,15 @@ class PrismaAPIv2:
         }
 
     def _get(self, path: str, params: dict | None = None) -> Any:
-        """GET request, trying prod then legacy fallback (non-dev only)."""
-        urls = (
-            [f"http://localhost:{self._dev_host_port}/api/v2{path}"]
+        """GET request to the v2 API."""
+        url = (
+            f"http://localhost:{self._dev_host_port}/api/v2{path}"
             if self._dev
-            else [f"{_BASE_PROD}{path}", f"{_BASE_LEGACY}{path}"]
+            else f"{_BASE_PROD}{path}"
         )
-        last_exc: Exception | None = None
-        for url in urls:
-            try:
-                resp = requests.get(url, params=params, headers=self._headers(), timeout=60)
-                resp.raise_for_status()
-                return resp.json()
-            except Exception as exc:
-                last_exc = exc
-                continue
-        raise RuntimeError(f"All v2 endpoints failed for GET {path}: {last_exc}")
+        resp = requests.get(url, params=params, headers=self._headers(), timeout=60)
+        resp.raise_for_status()
+        return resp.json()
 
     def _put(self, path: str, data: list) -> dict:
         """PUT (upsert) request."""
@@ -83,6 +75,23 @@ class PrismaAPIv2:
         """Convert a list-endpoint response envelope to a DataFrame."""
         records = response.get(key, response) if isinstance(response, dict) else response
         return pd.DataFrame(records) if records else pd.DataFrame()
+
+    def _resolve_cif_url_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Prepend the base URL to any relative cif_url values in a DataFrame."""
+        if "cif_url" in df.columns:
+            base = self._base_url().rstrip("/").rsplit("/api/v2", 1)[0]
+            df = df.copy()
+            df["cif_url"] = df["cif_url"].apply(
+                lambda v: f"{base}{v}" if isinstance(v, str) and v.startswith("/") else v
+            )
+        return df
+
+    def _resolve_cif_url_dict(self, d: dict) -> dict:
+        """Prepend the base URL to a relative cif_url value in a detail dict."""
+        if isinstance(d.get("cif_url"), str) and d["cif_url"].startswith("/"):
+            base = self._base_url().rstrip("/").rsplit("/api/v2", 1)[0]
+            d = {**d, "cif_url": f"{base}{d['cif_url']}"}
+        return d
 
     # ── Health ────────────────────────────────────────────────────────────────
 
@@ -106,7 +115,7 @@ class PrismaAPIv2:
             DataFrame with one row per material.
         """
         params = _compact(name=name, limit=limit, offset=offset)
-        return self._to_df(self._get("/materials/", params))
+        return self._resolve_cif_url_df(self._to_df(self._get("/materials/", params)))
 
     def get_material(self, material_id: int) -> dict:
         """
@@ -114,7 +123,42 @@ class PrismaAPIv2:
 
         Returns a dict with material detail including element composition.
         """
-        return self._get(f"/materials/{material_id}/")
+        return self._resolve_cif_url_dict(self._get(f"/materials/{material_id}/"))
+
+    def get_materials_psdi(self, name: str | None = None,
+                           limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/materials-psdi/
+
+        Extended material list including full crystallographic and PSDI fields:
+        chemical formulae, SMILES, space group, cell geometry, CIF URL/filename.
+
+        Args:
+            name:   Case-insensitive substring filter on material name.
+            limit:  Max records to return (default 500).
+            offset: Pagination offset.
+
+        Returns:
+            DataFrame with one row per material.
+        """
+        params = _compact(name=name, limit=limit, offset=offset)
+        return self._resolve_cif_url_df(self._to_df(self._get("/materials-psdi/", params)))
+
+    def get_material_psdi(self, material_id: int) -> dict:
+        """
+        GET /api/v2/materials-psdi/{material_id}/
+
+        Full extended MOF record: all crystallographic fields, CIF URL/filename,
+        linker/node chemistry (SMILES, formulae, PubChem pipeline outputs),
+        and element composition.
+
+        Args:
+            material_id: Integer PK of the material.
+
+        Returns:
+            dict with all PSDI fields plus nested 'elements' list.
+        """
+        return self._resolve_cif_url_dict(self._get(f"/materials-psdi/{material_id}/"))
 
     def get_molecules(self, name: str | None = None,
                       limit: int = 500, offset: int = 0) -> pd.DataFrame:
