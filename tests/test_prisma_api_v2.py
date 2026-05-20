@@ -339,6 +339,382 @@ def test_catalog_detail_endpoints_return_dict(api, method, path, record):
     assert result["id"] == pk
 
 
+# ── Transport Modes ───────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_transports_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/transports/",
+                 json=_envelope([{"id": 1, "name": "Ship"}]), status=200)
+    df = api.get_transports()
+    assert len(df) == 1
+
+
+@resp_lib.activate
+def test_get_transports_name_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/transports/",
+                 match=[matchers.query_param_matcher({"name": "ship", "limit": "500", "offset": "0"})],
+                 json=_envelope([{"id": 1, "name": "Ship"}]), status=200)
+    api.get_transports(name="ship")
+
+
+@resp_lib.activate
+def test_get_transport_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/transports/1/",
+                 json={"id": 1, "name": "Ship"}, status=200)
+    assert api.get_transport(1)["name"] == "Ship"
+
+
+# ── Subsystems ────────────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_subsystems_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/subsystems/",
+                 json=_envelope([{"id": 1, "name": "Capture", "type": "dac"}]), status=200)
+    df = api.get_subsystems()
+    assert_df_columns(df, "id", "name", "type")
+
+
+@resp_lib.activate
+def test_get_subsystems_type_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/subsystems/",
+                 match=[matchers.query_param_matcher({"type": "dac", "limit": "500", "offset": "0"})],
+                 json=_envelope([{"id": 1, "name": "Capture", "type": "dac"}]), status=200)
+    api.get_subsystems(type="dac")
+
+
+@resp_lib.activate
+def test_get_subsystem_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/subsystems/1/",
+                 json={"id": 1, "name": "Capture", "type": "dac"}, status=200)
+    assert api.get_subsystem(1)["type"] == "dac"
+
+
+# ── Equipment ─────────────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_equipment_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment/",
+                 json=_envelope([{"id": 1, "name": "Blower"}]), status=200)
+    df = api.get_equipment()
+    assert len(df) == 1
+
+
+@resp_lib.activate
+def test_get_equipment_item_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment/1/",
+                 json={"id": 1, "name": "Blower"}, status=200)
+    assert api.get_equipment_item(1)["name"] == "Blower"
+
+
+# ── Properties ────────────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_properties_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/properties/",
+                 json=_envelope([{"id": 1, "name": "pressure", "domain": "TEA",
+                                  "category": "params_amb"}]), status=200)
+    df = api.get_properties()
+    assert_df_columns(df, "name", "domain", "category")
+
+
+@resp_lib.activate
+def test_get_properties_filters(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/properties/",
+                 match=[matchers.query_param_matcher(
+                     {"domain": "TEA", "category": "params_amb", "limit": "500", "offset": "0"})],
+                 json=_envelope([]), status=200)
+    api.get_properties(domain="TEA", category="params_amb")
+
+
+@resp_lib.activate
+def test_get_property_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/properties/1/",
+                 json={"id": 1, "name": "pressure"}, status=200)
+    assert api.get_property(1)["name"] == "pressure"
+
+
+# ── TEA Equipment ─────────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_tea_equipment_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment/",
+                 json=_envelope([{"id": 1, "name": "Blower A", "group": "Blower"}]),
+                 status=200)
+    df = api.get_tea_equipment()
+    assert_df_columns(df, "name", "group")
+
+
+@resp_lib.activate
+def test_get_tea_equipment_group_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment/",
+                 match=[matchers.query_param_matcher(
+                     {"group": "Blower", "limit": "500", "offset": "0"})],
+                 json=_envelope([]), status=200)
+    api.get_tea_equipment(group="Blower")
+
+
+@resp_lib.activate
+def test_get_tea_equipment_item_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment/1/",
+                 json={"id": 1, "name": "Blower A", "group": "Blower"}, status=200)
+    assert api.get_tea_equipment_item(1)["group"] == "Blower"
+
+
+# ── TEA Equipment Costs ───────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_tea_equipment_costs_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment-costs/",
+                 json=_envelope([{"id": 1, "equipment_id": 1, "cost": 5000.0}]),
+                 status=200)
+    df = api.get_tea_equipment_costs()
+    assert_df_columns(df, "equipment_id", "cost")
+
+
+@resp_lib.activate
+def test_get_tea_equipment_costs_equipment_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment-costs/",
+                 match=[matchers.query_param_matcher(
+                     {"equipment_id": "1", "limit": "500", "offset": "0"})],
+                 json=_envelope([]), status=200)
+    api.get_tea_equipment_costs(equipment_id=1)
+
+
+@resp_lib.activate
+def test_get_tea_equipment_cost_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment-costs/1/",
+                 json={"id": 1, "equipment_id": 1, "cost": 5000.0}, status=200)
+    assert api.get_tea_equipment_cost(1)["cost"] == 5000.0
+
+
+# ── TEA Equipment Designs ─────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_tea_equipment_designs_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment-designs/",
+                 json=_envelope([{"id": 1, "equipment_id": 1, "key": "D1", "value": 1.5}]),
+                 status=200)
+    df = api.get_tea_equipment_designs()
+    assert_df_columns(df, "equipment_id", "key")
+
+
+@resp_lib.activate
+def test_get_tea_equipment_designs_key_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment-designs/",
+                 match=[matchers.query_param_matcher(
+                     {"key": "D1", "limit": "500", "offset": "0"})],
+                 json=_envelope([]), status=200)
+    api.get_tea_equipment_designs(key="D1")
+
+
+@resp_lib.activate
+def test_get_tea_equipment_design_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment-designs/1/",
+                 json={"id": 1, "key": "D1", "value": 1.5}, status=200)
+    assert api.get_tea_equipment_design(1)["key"] == "D1"
+
+
+# ── Process Conditions ────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_process_conditions_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/process-conditions/",
+                 json=_envelope([{"id": 1, "name": "TVSA01", "type": "tvsa"}]),
+                 status=200)
+    df = api.get_process_conditions()
+    assert_df_columns(df, "name", "type")
+
+
+@resp_lib.activate
+def test_get_process_conditions_type_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/process-conditions/",
+                 match=[matchers.query_param_matcher(
+                     {"type": "tvsa", "limit": "500", "offset": "0"})],
+                 json=_envelope([]), status=200)
+    api.get_process_conditions(type="tvsa")
+
+
+@resp_lib.activate
+def test_get_process_condition_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/process-conditions/1/",
+                 json={"id": 1, "name": "TVSA01", "type": "tvsa"}, status=200)
+    assert api.get_process_condition(1)["type"] == "tvsa"
+
+
+# ── Process Configurations ────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_process_configurations_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/process-configurations/",
+                 json=_envelope([{"id": 1, "name": "dac_std", "type": "dac"}]),
+                 status=200)
+    df = api.get_process_configurations()
+    assert_df_columns(df, "name", "type")
+
+
+@resp_lib.activate
+def test_get_process_configuration_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/process-configurations/1/",
+                 json={"id": 1, "name": "dac_std", "type": "dac"}, status=200)
+    assert api.get_process_configuration(1)["type"] == "dac"
+
+
+# ── Contactor Configurations ──────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_contactor_configurations_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/contactor-configurations/",
+                 json=_envelope([{"id": 1, "name": "kiln_std", "type": "kiln"}]),
+                 status=200)
+    df = api.get_contactor_configurations()
+    assert_df_columns(df, "name", "type")
+
+
+@resp_lib.activate
+def test_get_contactor_configuration_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/contactor-configurations/1/",
+                 json={"id": 1, "name": "kiln_std", "type": "kiln"}, status=200)
+    assert api.get_contactor_configuration(1)["type"] == "kiln"
+
+
+# ── Cost Indices ──────────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_cost_indices_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cost-indices/",
+                 json=_envelope([{"id": 1, "year": 2019, "index": 607.5}]),
+                 status=200)
+    df = api.get_cost_indices()
+    assert_df_columns(df, "year", "index")
+
+
+@resp_lib.activate
+def test_get_cost_indices_year_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cost-indices/",
+                 match=[matchers.query_param_matcher(
+                     {"year": "2019", "limit": "500", "offset": "0"})],
+                 json=_envelope([]), status=200)
+    api.get_cost_indices(year=2019)
+
+
+@resp_lib.activate
+def test_get_cost_index_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cost-indices/1/",
+                 json={"id": 1, "year": 2019, "index": 607.5}, status=200)
+    assert api.get_cost_index(1)["year"] == 2019
+
+
+# ── Physical Constants ────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_constants_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/constants/",
+                 json=_envelope([{"id": 1, "param": "R", "value": 8.314, "units": "J/mol/K"}]),
+                 status=200)
+    df = api.get_constants()
+    assert_df_columns(df, "param", "value")
+
+
+@resp_lib.activate
+def test_get_constants_param_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/constants/",
+                 match=[matchers.query_param_matcher(
+                     {"param": "R", "limit": "500", "offset": "0"})],
+                 json=_envelope([{"id": 1, "param": "R", "value": 8.314}]),
+                 status=200)
+    df = api.get_constants(param="R")
+    assert df.iloc[0]["param"] == "R"
+
+
+@resp_lib.activate
+def test_get_constant_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/constants/1/",
+                 json={"id": 1, "param": "R", "value": 8.314}, status=200)
+    assert api.get_constant(1)["param"] == "R"
+
+
+# ── MEA Baseline ──────────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_mea_baselines_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/mea/",
+                 json=_envelope([{"id": 1, "name": "NGCC"}]), status=200)
+    df = api.get_mea_baselines()
+    assert_df_columns(df, "id", "name")
+
+
+@resp_lib.activate
+def test_get_mea_baselines_name_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/mea/",
+                 match=[matchers.query_param_matcher(
+                     {"name": "NGCC", "limit": "500", "offset": "0"})],
+                 json=_envelope([{"id": 1, "name": "NGCC"}]), status=200)
+    api.get_mea_baselines(name="NGCC")
+
+
+@resp_lib.activate
+def test_get_mea_baseline_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/mea/1/",
+                 json={"id": 1, "name": "NGCC"}, status=200)
+    assert api.get_mea_baseline(1)["name"] == "NGCC"
+
+
+# ── MEA KPIs ──────────────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_mea_kpis_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/mea-kpis/",
+                 json=_envelope([{"id": 1, "name": "CAPEX", "category": "CAC"}]),
+                 status=200)
+    df = api.get_mea_kpis()
+    assert_df_columns(df, "name", "category")
+
+
+@resp_lib.activate
+def test_get_mea_kpis_category_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/mea-kpis/",
+                 match=[matchers.query_param_matcher(
+                     {"category": "CAC", "limit": "500", "offset": "0"})],
+                 json=_envelope([]), status=200)
+    api.get_mea_kpis(category="CAC")
+
+
+@resp_lib.activate
+def test_get_mea_kpi_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/mea-kpis/1/",
+                 json={"id": 1, "name": "CAPEX", "category": "CAC"}, status=200)
+    assert api.get_mea_kpi(1)["category"] == "CAC"
+
+@pytest.mark.parametrize("method,path,fixture", [
+    ("get_sources",    "/sources/",    [{"id": 1, "name": "Coal Plant", "short_name": "CP"}]),
+    ("get_sinks",      "/sinks/",      [{"id": 2, "name": "North Sea"}]),
+    ("get_transport_scenarios", "/transport-scenarios/", [{"id": 3, "name": "Pipeline 200km"}]),
+    ("get_utilities",  "/utilities/",  [{"id": 4, "name": "Steam"}]),
+    ("get_references", "/references/", [{"id": 5, "Name": "IPCC AR6", "Doi": "10.1/x"}]),
+])
+@resp_lib.activate
+def test_catalog_list_endpoints_return_dataframe(api, method, path, fixture):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}{path}",
+                 json=_envelope(fixture), status=200)
+    df = getattr(api, method)()
+    assert len(df) == 1
+
+
+@pytest.mark.parametrize("method,path,record", [
+    ("get_source",             "/sources/1/",            {"id": 1, "name": "Coal Plant"}),
+    ("get_sink",               "/sinks/2/",              {"id": 2, "name": "North Sea"}),
+    ("get_transport_scenario", "/transport-scenarios/3/",{"id": 3, "name": "Pipeline"}),
+    ("get_utility",            "/utilities/4/",          {"id": 4, "name": "Steam"}),
+    ("get_reference",          "/references/5/",         {"id": 5, "Name": "IPCC"}),
+])
+@resp_lib.activate
+def test_catalog_detail_endpoints_return_dict(api, method, path, record):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}{path}", json=record, status=200)
+    pk = record["id"]
+    result = getattr(api, method)(pk)
+    assert result["id"] == pk
+
+
 # ── Isotherms ─────────────────────────────────────────────────────────────────
 
 @resp_lib.activate
@@ -406,6 +782,50 @@ def test_get_water_kpis_filters_passed(api):
                  match=[matchers.query_param_matcher(expected)],
                  json=_envelope([]), status=200)
     api.get_water_kpis(mof="MOF1", source="Coal", sim_or_exp="exp")
+
+
+# ── Carbon ZeoPP ─────────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_carbon_zeopp_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/carbon-zeopp/",
+                 json=_envelope([{"id": 1, "mof": "HKUST", "pld": 3.6,
+                                  "good_structure": True}]), status=200)
+    df = api.get_carbon_zeopp()
+    assert_df_columns(df, "mof", "good_structure")
+
+
+@resp_lib.activate
+def test_get_carbon_zeopp_filters(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/carbon-zeopp/",
+                 match=[matchers.query_param_matcher(
+                     {"mof": "HKUST", "good_structure": "true",
+                      "limit": "500", "offset": "0"})],
+                 json=_envelope([]), status=200)
+    api.get_carbon_zeopp(mof="HKUST", good_structure=True)
+
+
+@resp_lib.activate
+def test_get_carbon_zeopp_item_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/carbon-zeopp/1/",
+                 json={"id": 1, "mof": "HKUST", "pld": 3.6}, status=200)
+    assert api.get_carbon_zeopp_item(1)["mof"] == "HKUST"
+
+
+@resp_lib.activate
+def test_get_carbon_zeopp_experimental_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/carbon-zeopp-experimental/",
+                 json=_envelope([{"id": 1, "mof": "HKUST", "pld": 3.4}]),
+                 status=200)
+    df = api.get_carbon_zeopp_experimental()
+    assert_df_columns(df, "mof")
+
+
+@resp_lib.activate
+def test_get_carbon_zeopp_experimental_item_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/carbon-zeopp-experimental/1/",
+                 json={"id": 1, "mof": "HKUST", "pld": 3.4}, status=200)
+    assert api.get_carbon_zeopp_experimental_item(1)["mof"] == "HKUST"
 
 
 # ── Output KPIs ───────────────────────────────────────────────────────────────
@@ -589,6 +1009,34 @@ def test_get_scenario_detail(api):
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/scenarios/830/", json=detail, status=200)
     result = api.get_scenario(830)
     assert result["type"] == "TEA"
+
+
+# ── Screening Summaries ──────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_screening_summaries_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/screening-summaries/",
+                 json=_envelope([{"id": 1, "scenario_id": 830, "mof": "ABEXEM",
+                                  "rank": 1}]), status=200)
+    df = api.get_screening_summaries()
+    assert_df_columns(df, "scenario_id", "mof")
+
+
+@resp_lib.activate
+def test_get_screening_summaries_scenario_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/screening-summaries/",
+                 match=[matchers.query_param_matcher(
+                     {"scenario_id": "830", "limit": "500", "offset": "0"})],
+                 json=_envelope([]), status=200)
+    api.get_screening_summaries(scenario_id=830)
+
+
+@resp_lib.activate
+def test_get_screening_summary_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/screening-summaries/1/",
+                 json={"id": 1, "scenario_id": 830, "mof": "ABEXEM"},
+                 status=200)
+    assert api.get_screening_summary(1)["mof"] == "ABEXEM"
 
 
 # ── PUT sends correct JSON body ───────────────────────────────────────────────

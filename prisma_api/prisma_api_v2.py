@@ -258,6 +258,222 @@ class PrismaAPIv2:
         """GET /api/v2/references/{ref_id}/"""
         return self._get(f"/references/{ref_id}/")
 
+    def get_transports(self, name: str | None = None,
+                       limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """GET /api/v2/transports/"""
+        params = _compact(name=name, limit=limit, offset=offset)
+        return self._to_df(self._get("/transports/", params))
+
+    def get_transport(self, transport_id: int) -> dict:
+        """GET /api/v2/transports/{transport_id}/"""
+        return self._get(f"/transports/{transport_id}/")
+
+    def get_subsystems(self, name: str | None = None, type: str | None = None,
+                       limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/subsystems/
+
+        Args:
+            name: Substring filter on subsystem name.
+            type: Exact type filter (e.g. 'dac').
+        """
+        params = _compact(name=name, type=type, limit=limit, offset=offset)
+        return self._to_df(self._get("/subsystems/", params))
+
+    def get_subsystem(self, subsystem_id: int) -> dict:
+        """GET /api/v2/subsystems/{subsystem_id}/"""
+        return self._get(f"/subsystems/{subsystem_id}/")
+
+    def get_equipment(self, name: str | None = None,
+                      limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """GET /api/v2/equipment/"""
+        params = _compact(name=name, limit=limit, offset=offset)
+        return self._to_df(self._get("/equipment/", params))
+
+    def get_equipment_item(self, equipment_id: int) -> dict:
+        """GET /api/v2/equipment/{equipment_id}/"""
+        return self._get(f"/equipment/{equipment_id}/")
+
+    def get_properties(self,
+                       name: str | None = None,
+                       domain: str | None = None,
+                       category: str | None = None,
+                       object_id: int | None = None,
+                       limit: int = 500,
+                       offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/properties/
+
+        Args:
+            name:      Substring filter on property name.
+            domain:    Domain filter (e.g. 'TEA').
+            category:  Category filter (e.g. 'params_amb').
+            object_id: Exact object PK filter.
+        """
+        params = _compact(name=name, domain=domain, category=category,
+                          object_id=object_id, limit=limit, offset=offset)
+        return self._to_df(self._get("/properties/", params))
+
+    def get_property(self, property_id: int) -> dict:
+        """GET /api/v2/properties/{property_id}/"""
+        return self._get(f"/properties/{property_id}/")
+
+    def get_tea_equipment(self, name: str | None = None, group: str | None = None,
+                          limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/tea-equipment/
+
+        Args:
+            name:  Substring filter on TEA equipment name.
+            group: Exact group filter (e.g. 'Blower').
+        """
+        params = _compact(name=name, group=group, limit=limit, offset=offset)
+        return self._to_df(self._get("/tea-equipment/", params))
+
+    def get_tea_equipment_item(self, tea_equipment_id: int) -> dict:
+        """GET /api/v2/tea-equipment/{tea_equipment_id}/"""
+        return self._get(f"/tea-equipment/{tea_equipment_id}/")
+
+    def get_tea_equipment_costs(self, equipment_id: int | None = None,
+                                limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/tea-equipment-costs/
+
+        Args:
+            equipment_id: Exact TEA equipment PK filter.
+        """
+        params = _compact(equipment_id=equipment_id, limit=limit, offset=offset)
+        return self._to_df(self._get("/tea-equipment-costs/", params))
+
+    def get_tea_equipment_cost(self, cost_id: int) -> dict:
+        """GET /api/v2/tea-equipment-costs/{cost_id}/"""
+        return self._get(f"/tea-equipment-costs/{cost_id}/")
+
+    def get_tea_equipment_designs(self, equipment_id: int | None = None,
+                                  key: str | None = None,
+                                  limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/tea-equipment-designs/
+
+        Args:
+            equipment_id: Exact TEA equipment PK filter.
+            key:          Exact design parameter key filter (e.g. 'D1').
+        """
+        params = _compact(equipment_id=equipment_id, key=key,
+                          limit=limit, offset=offset)
+        return self._to_df(self._get("/tea-equipment-designs/", params))
+
+    def get_tea_equipment_design(self, design_id: int) -> dict:
+        """GET /api/v2/tea-equipment-designs/{design_id}/"""
+        return self._get(f"/tea-equipment-designs/{design_id}/")
+
+    def get_process_conditions(self, name: str | None = None,
+                               type: str | None = None,
+                               limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/process-conditions/
+
+        Args:
+            name: Substring filter on process condition name.
+            type: Exact type filter (e.g. 'tvsa').
+        """
+        params = _compact(name=name, type=type, limit=limit, offset=offset)
+        return self._to_df(self._get("/process-conditions/", params))
+
+    def get_process_condition(self, condition_id: int) -> dict:
+        """GET /api/v2/process-conditions/{condition_id}/"""
+        return self._get(f"/process-conditions/{condition_id}/")
+
+    def get_process_configurations(self, name: str | None = None,
+                                   type: str | None = None,
+                                   limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/process-configurations/
+
+        Args:
+            name: Substring filter on process configuration name.
+            type: Exact type filter (e.g. 'dac').
+        """
+        params = _compact(name=name, type=type, limit=limit, offset=offset)
+        return self._to_df(self._get("/process-configurations/", params))
+
+    def get_process_configuration(self, config_id: int) -> dict:
+        """GET /api/v2/process-configurations/{config_id}/"""
+        return self._get(f"/process-configurations/{config_id}/")
+
+    def get_contactor_configurations(self, name: str | None = None,
+                                     type: str | None = None,
+                                     limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/contactor-configurations/
+
+        Args:
+            name: Substring filter on contactor configuration name.
+            type: Exact type filter (e.g. 'kiln').
+        """
+        params = _compact(name=name, type=type, limit=limit, offset=offset)
+        return self._to_df(self._get("/contactor-configurations/", params))
+
+    def get_contactor_configuration(self, config_id: int) -> dict:
+        """GET /api/v2/contactor-configurations/{config_id}/"""
+        return self._get(f"/contactor-configurations/{config_id}/")
+
+    def get_cost_indices(self, year: int | None = None,
+                         limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/cost-indices/
+
+        Args:
+            year: Exact year filter.
+        """
+        params = _compact(year=year, limit=limit, offset=offset)
+        return self._to_df(self._get("/cost-indices/", params))
+
+    def get_cost_index(self, index_id: int) -> dict:
+        """GET /api/v2/cost-indices/{index_id}/"""
+        return self._get(f"/cost-indices/{index_id}/")
+
+    def get_constants(self, param: str | None = None,
+                      limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/constants/
+
+        Args:
+            param: Exact parameter symbol filter (e.g. 'R').
+        """
+        params = _compact(param=param, limit=limit, offset=offset)
+        return self._to_df(self._get("/constants/", params))
+
+    def get_constant(self, constant_id: int) -> dict:
+        """GET /api/v2/constants/{constant_id}/"""
+        return self._get(f"/constants/{constant_id}/")
+
+    def get_mea_baselines(self, name: str | None = None,
+                          limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """GET /api/v2/mea/"""
+        params = _compact(name=name, limit=limit, offset=offset)
+        return self._to_df(self._get("/mea/", params))
+
+    def get_mea_baseline(self, mea_id: int) -> dict:
+        """GET /api/v2/mea/{mea_id}/"""
+        return self._get(f"/mea/{mea_id}/")
+
+    def get_mea_kpis(self, name: str | None = None, category: str | None = None,
+                     limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/mea-kpis/
+
+        Args:
+            name:     Substring filter on KPI name.
+            category: Exact category filter (e.g. 'CAC').
+        """
+        params = _compact(name=name, category=category, limit=limit, offset=offset)
+        return self._to_df(self._get("/mea-kpis/", params))
+
+    def get_mea_kpi(self, kpi_id: int) -> dict:
+        """GET /api/v2/mea-kpis/{kpi_id}/"""
+        return self._get(f"/mea-kpis/{kpi_id}/")
+
     # ── Science data ──────────────────────────────────────────────────────────
 
     def get_isotherms(self,
@@ -319,6 +535,50 @@ class PrismaAPIv2:
             limit=limit, offset=offset,
         )
         return self._to_df(self._get("/water-kpis/", params))
+
+    def get_carbon_zeopp(self,
+                         mof: str | None = None,
+                         good_structure: bool | None = None,
+                         limit: int = 500,
+                         offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/carbon-zeopp/
+
+        Simulated Zeo++ geometric characterisation data.
+
+        Args:
+            mof:            MOF name substring filter.
+            good_structure: Filter to good/bad structures.
+        """
+        params = _compact(
+            mof=mof,
+            good_structure=None if good_structure is None else str(good_structure).lower(),
+            limit=limit, offset=offset,
+        )
+        return self._to_df(self._get("/carbon-zeopp/", params))
+
+    def get_carbon_zeopp_item(self, item_id: int) -> dict:
+        """GET /api/v2/carbon-zeopp/{item_id}/"""
+        return self._get(f"/carbon-zeopp/{item_id}/")
+
+    def get_carbon_zeopp_experimental(self,
+                                      mof: str | None = None,
+                                      limit: int = 500,
+                                      offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/carbon-zeopp-experimental/
+
+        Experimental Zeo++ geometric characterisation data.
+
+        Args:
+            mof: MOF name substring filter.
+        """
+        params = _compact(mof=mof, limit=limit, offset=offset)
+        return self._to_df(self._get("/carbon-zeopp-experimental/", params))
+
+    def get_carbon_zeopp_experimental_item(self, item_id: int) -> dict:
+        """GET /api/v2/carbon-zeopp-experimental/{item_id}/"""
+        return self._get(f"/carbon-zeopp-experimental/{item_id}/")
 
     # ── TEA / LCA data ────────────────────────────────────────────────────────
 
@@ -457,6 +717,21 @@ class PrismaAPIv2:
     def get_scenario(self, scenario_id: int) -> dict:
         """GET /api/v2/scenarios/{scenario_id}/"""
         return self._get(f"/scenarios/{scenario_id}/")
+
+    def get_screening_summaries(self, scenario_id: int | None = None,
+                                limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/screening-summaries/
+
+        Args:
+            scenario_id: Exact scenario PK filter.
+        """
+        params = _compact(scenario_id=scenario_id, limit=limit, offset=offset)
+        return self._to_df(self._get("/screening-summaries/", params))
+
+    def get_screening_summary(self, summary_id: int) -> dict:
+        """GET /api/v2/screening-summaries/{summary_id}/"""
+        return self._get(f"/screening-summaries/{summary_id}/")
 
 
 # ── Module-level helper ───────────────────────────────────────────────────────
