@@ -14,11 +14,11 @@ import pytest
 import responses as resp_lib
 from responses import matchers
 
-from prisma_api.prisma_api_v2 import PrismaAPIv2
+from prisma_api.prisma_api_v2 import PrismaAPIv2, _BASE_PROD
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
-PROD_BASE = "https://prisma-platform.org/api/v2"
+PROD_BASE = _BASE_PROD
 
 
 @pytest.fixture

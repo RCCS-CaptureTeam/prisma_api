@@ -20,6 +20,8 @@ import pandas as pd
 
 # Initialise — reads API key from config file (~/.config/prisma_api/config.yaml)
 api = prisma_api.init()
+api.update_dev_mode(True)
+api = prisma_api.init()
 
 print(f"prisma_api version : {prisma_api.__version__}")
 print(f"API key loaded     : {'yes' if api.key else 'NO KEY FOUND'}")
@@ -85,6 +87,28 @@ first_id = int(df_materials.iloc[0]['id'])
 api.v2.get_material(first_id)
 
 # %% [markdown]
+# ### 4.1b Materials (PSDI — extended crystallographic fields)
+# 
+# `get_materials_psdi` / `get_material_psdi` return the full set of PSDI fields:
+# chemical formulae, SMILES, space group, cell geometry, CIF URL, and (on detail) linker/node chemistry and element composition.
+
+# %%
+# List all PSDI materials — includes formula, SMILES, space group, cell geometry
+df_psdi = api.v2.get_materials_psdi()
+print(f"{len(df_psdi)} materials")
+print(f"Columns: {list(df_psdi.columns)}")
+df_psdi.head()
+
+# %%
+# Filter by name substring
+api.v2.get_materials_psdi(name='1810_dmp+N398+39_charge')
+
+# %%
+# Full detail record — includes linker/node SMILES, PubChem fields, element composition
+psdi_id = int(df_psdi.iloc[0]['id'])
+api.v2.get_material_psdi(psdi_id)
+
+# %% [markdown]
 # ### 4.2 Molecules
 
 # %%
@@ -108,8 +132,8 @@ df_elements.head()
 api.v2.get_elements(symbol='Zn')
 
 # %%
-el_id = int(df_elements.iloc[0]['id'])
-api.v2.get_element(el_id)
+# el_id = int(df_elements.iloc[0]['id'])
+# api.v2.get_element(el_id)
 
 # %% [markdown]
 # ### 4.4 Regions
@@ -119,7 +143,7 @@ df_regions = api.v2.get_regions()
 df_regions
 
 # %%
-api.v2.get_regions(code='GB')
+api.v2.get_regions(code='UK')
 
 # %%
 region_id = int(df_regions.iloc[0]['id'])
@@ -159,6 +183,19 @@ ts_id = int(df_transport.iloc[0]['id'])
 api.v2.get_transport_scenario(ts_id)
 
 # %% [markdown]
+# ### 4.7b Transport Modes
+
+# %%
+df_transports = api.v2.get_transports()
+print(f"{len(df_transports)} transport modes")
+df_transports
+
+# %%
+if not df_transports.empty:
+    tr_id = int(df_transports.iloc[0]['id'])
+    api.v2.get_transport(tr_id)
+
+# %% [markdown]
 # ### 4.8 Utilities
 
 # %%
@@ -180,6 +217,189 @@ df_refs.head()
 # %%
 ref_id = int(df_refs.iloc[0]['id'])
 api.v2.get_reference(ref_id)
+
+# %% [markdown]
+# ### 4.10 Subsystems
+
+# %%
+df_subsystems = api.v2.get_subsystems()
+print(f"{len(df_subsystems)} subsystems")
+# Filter by type
+api.v2.get_subsystems(type='dac')
+
+# %%
+if not df_subsystems.empty:
+    sub_id = int(df_subsystems.iloc[0]['id'])
+    api.v2.get_subsystem(sub_id)
+
+# %% [markdown]
+# ### 4.11 Equipment
+
+# %%
+df_equipment = api.v2.get_equipment()
+print(f"{len(df_equipment)} equipment items")
+# Filter by name
+api.v2.get_equipment(name='blower')
+
+# %%
+if not df_equipment.empty:
+    eq_id = int(df_equipment.iloc[0]['id'])
+    api.v2.get_equipment_item(eq_id)
+
+# %% [markdown]
+# ### 4.12 Properties
+
+# %%
+df_properties = api.v2.get_properties()
+print(f"{len(df_properties)} properties")
+# Filter by domain and category
+api.v2.get_properties(domain='TEA', category='params_amb')
+
+# %%
+if not df_properties.empty:
+    prop_id = int(df_properties.iloc[0]['id'])
+    api.v2.get_property(prop_id)
+
+# %% [markdown]
+# ### 4.13 TEA Equipment
+
+# %%
+df_tea_equipment = api.v2.get_tea_equipment()
+print(f"{len(df_tea_equipment)} TEA equipment items")
+# Filter by group
+api.v2.get_tea_equipment(group='Blower')
+
+# %%
+if not df_tea_equipment.empty:
+    tea_eq_id = int(df_tea_equipment.iloc[0]['id'])
+    api.v2.get_tea_equipment_item(tea_eq_id)
+
+# %% [markdown]
+# ### 4.14 TEA Equipment Costs
+
+# %%
+df_tea_costs = api.v2.get_tea_equipment_costs()
+print(f"{len(df_tea_costs)} TEA equipment cost records")
+# Filter by equipment PK
+if not df_tea_equipment.empty:
+    api.v2.get_tea_equipment_costs(equipment_id=tea_eq_id)
+
+# %%
+if not df_tea_costs.empty:
+    tea_cost_id = int(df_tea_costs.iloc[0]['id'])
+    api.v2.get_tea_equipment_cost(tea_cost_id)
+
+# %% [markdown]
+# ### 4.15 TEA Equipment Design Parameters
+
+# %%
+df_tea_designs = api.v2.get_tea_equipment_designs()
+print(f"{len(df_tea_designs)} TEA equipment design parameters")
+# Filter by key
+api.v2.get_tea_equipment_designs(key='D1')
+
+# %%
+if not df_tea_designs.empty:
+    tea_design_id = int(df_tea_designs.iloc[0]['id'])
+    api.v2.get_tea_equipment_design(tea_design_id)
+
+# %% [markdown]
+# ### 4.16 Process Conditions
+
+# %%
+df_process_conditions = api.v2.get_process_conditions()
+print(f"{len(df_process_conditions)} process conditions")
+# Filter by type
+api.v2.get_process_conditions(type='tvsa')
+
+# %%
+if not df_process_conditions.empty:
+    pc_id = int(df_process_conditions.iloc[0]['id'])
+    api.v2.get_process_condition(pc_id)
+
+# %% [markdown]
+# ### 4.17 Process Configurations
+
+# %%
+df_process_configs = api.v2.get_process_configurations()
+print(f"{len(df_process_configs)} process configurations")
+# Filter by type
+api.v2.get_process_configurations(type='dac')
+
+# %%
+if not df_process_configs.empty:
+    pconf_id = int(df_process_configs.iloc[0]['id'])
+    api.v2.get_process_configuration(pconf_id)
+
+# %% [markdown]
+# ### 4.18 Contactor Configurations
+
+# %%
+df_contactor_configs = api.v2.get_contactor_configurations()
+print(f"{len(df_contactor_configs)} contactor configurations")
+# Filter by type
+api.v2.get_contactor_configurations(type='kiln')
+
+# %%
+if not df_contactor_configs.empty:
+    cconf_id = int(df_contactor_configs.iloc[0]['id'])
+    api.v2.get_contactor_configuration(cconf_id)
+
+# %% [markdown]
+# ### 4.19 Cost Indices
+
+# %%
+df_cost_indices = api.v2.get_cost_indices()
+print(f"{len(df_cost_indices)} cost index records")
+# Filter by year
+api.v2.get_cost_indices(year=2019)
+
+# %%
+if not df_cost_indices.empty:
+    ci_id = int(df_cost_indices.iloc[0]['id'])
+    api.v2.get_cost_index(ci_id)
+
+# %% [markdown]
+# ### 4.20 Physical Constants
+
+# %%
+df_constants = api.v2.get_constants()
+print(f"{len(df_constants)} physical constants")
+# Retrieve the ideal gas constant by symbol
+api.v2.get_constants(param='R')
+
+# %%
+if not df_constants.empty:
+    const_id = int(df_constants.iloc[0]['id'])
+    api.v2.get_constant(const_id)
+
+# %% [markdown]
+# ### 4.21 MEA Baseline
+
+# %%
+df_mea = api.v2.get_mea_baselines()
+print(f"{len(df_mea)} MEA baseline records")
+# Filter by name
+api.v2.get_mea_baselines(name='NGCC')
+
+# %%
+if not df_mea.empty:
+    mea_id = int(df_mea.iloc[0]['id'])
+    api.v2.get_mea_baseline(mea_id)
+
+# %% [markdown]
+# ### 4.22 MEA KPIs
+
+# %%
+df_mea_kpis = api.v2.get_mea_kpis()
+print(f"{len(df_mea_kpis)} MEA KPI records")
+# Filter by category
+api.v2.get_mea_kpis(category='CAC')
+
+# %%
+if not df_mea_kpis.empty:
+    mea_kpi_id = int(df_mea_kpis.iloc[0]['id'])
+    api.v2.get_mea_kpi(mea_kpi_id)
 
 # %% [markdown]
 # ---
@@ -214,6 +434,24 @@ df_water.head()
 api.v2.get_water_kpis(sim_or_exp='sim', good_structure=True)
 
 # %% [markdown]
+# ### 5.3 Carbon ZeoPP — Simulated
+
+# %%
+df_zeopp = api.v2.get_carbon_zeopp()
+print(f"{len(df_zeopp)} simulated Zeo++ records")
+# Filter: good structures for a specific MOF
+api.v2.get_carbon_zeopp(mof='HKUST', good_structure=True)
+
+# %% [markdown]
+# ### 5.4 Carbon ZeoPP — Experimental
+
+# %%
+df_zeopp_exp = api.v2.get_carbon_zeopp_experimental()
+print(f"{len(df_zeopp_exp)} experimental Zeo++ records")
+# Filter by MOF name
+api.v2.get_carbon_zeopp_experimental(mof='HKUST')
+
+# %% [markdown]
 # ---
 # ## 6 · v2 — TEA / LCA Data
 # 
@@ -222,7 +460,7 @@ api.v2.get_water_kpis(sim_or_exp='sim', good_structure=True)
 # %%
 df_cases = api.v2.get_cases()
 print(f"{len(df_cases)} cases")
-df_cases.head()
+df_cases
 
 # %%
 case_id = int(df_cases.iloc[0]['id'])
@@ -233,17 +471,46 @@ api.v2.get_case(case_id)
 
 # %%
 # All scenarios for this case
-df_scenarios = api.v2.get_scenarios(case_id=case_id)
-df_scenarios
+import copy
+
+
+for case in df_cases.itertuples():
+    case_id = case.id
+    try:
+        df_scenarios = api.v2.get_scenarios(case_id=case_id)
+        if not df_scenarios.empty:
+            # print nice tree
+            print("-" * 40)
+            print(f"Scenarios for case {case_id} ({case.name}):")
+            for scen in df_scenarios.itertuples():
+                print(f"  - {scen.name} (type: {scen.type})")
+            df_scenarios_success = copy.deepcopy(df_scenarios)
+            case_id_success = copy.deepcopy(case_id)
+    except Exception as e:
+        print(f"Error retrieving scenarios for case {case_id}: {e}")
+
+# %%
+# Identify first case with scenarios
+if 'case_id_success' in locals():
+    print(f"First case with scenarios: {case_id_success}")
+    df_scenarios_success
 
 # %%
 # TEA scenarios only
-df_tea = api.v2.get_scenarios(case_id=case_id, type='TEA')
+df_tea = api.v2.get_scenarios(case_id=case_id_success, type='TEA')
 df_tea
 
 # %%
-scenario_id = int(df_scenarios.iloc[0]['id'])
+scenario_id = int(df_scenarios_success.iloc[0]['id'])
 api.v2.get_scenario(scenario_id)
+
+# %% [markdown]
+# ### 6.2b Screening Summaries
+
+# %%
+df_summaries = api.v2.get_screening_summaries(scenario_id=scenario_id)
+print(f"{len(df_summaries)} screening summary records for scenario {scenario_id}")
+df_summaries.head()
 
 # %% [markdown]
 # ### 6.3 Output KPIs
