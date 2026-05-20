@@ -46,7 +46,19 @@ class prisma_api():
             key=self.key,
             dev=self.dev,
             dev_host_port=getattr(self, 'dev_host_port', ''),
+            return_format=getattr(self, '_return_format', 'json'),
         )
+
+    def set_return_format(self, fmt: str) -> None:
+        """
+        Set the output format for all v2 list endpoints.
+
+        Args:
+            fmt: ``'dataframe'`` (default) — return ``pd.DataFrame``.
+                 ``'json'``      — return a plain ``list[dict]``.
+        """
+        self._return_format = fmt
+        self.v2.set_return_format(fmt)
 
     def update_dev_mode(self, dev: bool):
         """Update the dev flag in config.yaml.

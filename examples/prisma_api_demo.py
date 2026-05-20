@@ -20,7 +20,7 @@ import pandas as pd
 
 # Initialise — reads API key from config file (~/.config/prisma_api/config.yaml)
 api = prisma_api.init()
-api.update_dev_mode(True)
+api.update_dev_mode(False)
 api = prisma_api.init()
 
 print(f"prisma_api version : {prisma_api.__version__}")
@@ -625,5 +625,34 @@ print(f"Combined: {len(all_kpis)} rows")
 # api = prisma_api.init()
 # print(f"Dev mode: {api.dev}")
 print("Dev mode cells — uncomment to use.")
+
+# %% [markdown]
+# ---
+# ## 9 · Return Format
+# 
+# All list endpoints support two output formats, switchable at any time:
+# 
+# | Format | Method call | Output type |
+# |---|---|---|
+# | `'json'` | `api.set_return_format('json')` | `list[dict]` (default) |
+# | `'dataframe'` | `api.set_return_format('dataframe')` | `pd.DataFrame` |
+# 
+# Detail endpoints (single-record lookups) always return a `dict` regardless of this setting.
+
+# %%
+# Switch to raw JSON (list of dicts)
+api.set_return_format('json')
+
+molecules_json = api.v2.get_molecules()
+print(type(molecules_json))   # <class 'list'>
+print(molecules_json[:2])
+
+# %%
+# Switch back to DataFrames (default)
+api.set_return_format('dataframe')
+
+molecules_df = api.v2.get_molecules()
+print(type(molecules_df))    # <class 'pandas.core.frame.DataFrame'>
+molecules_df
 
 

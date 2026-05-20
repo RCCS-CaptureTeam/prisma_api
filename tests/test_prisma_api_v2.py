@@ -23,8 +23,8 @@ PROD_BASE = _BASE_PROD
 
 @pytest.fixture
 def api():
-    """Return a PrismaAPIv2 instance pointed at prod (non-dev)."""
-    return PrismaAPIv2(key="test-api-key", dev=False)
+    """Return a PrismaAPIv2 instance pointed at prod (non-dev), DataFrame output."""
+    return PrismaAPIv2(key="test-api-key", dev=False, return_format="dataframe")
 
 
 @pytest.fixture
@@ -44,6 +44,68 @@ def _envelope(results: list, count: int | None = None) -> dict:
 def assert_df_columns(df, *columns):
     for col in columns:
         assert col in df.columns, f"Expected column '{col}' in DataFrame, got: {list(df.columns)}"
+
+
+# ── return_format ─────────────────────────────────────────────────────────────
+
+def test_default_return_format_is_json():
+    api = PrismaAPIv2(key="k")
+    assert api._return_format == "json"
+
+
+def test_set_return_format_json():
+    api = PrismaAPIv2(key="k")
+    api.set_return_format("json")
+    assert api._return_format == "json"
+
+
+def test_set_return_format_invalid():
+    api = PrismaAPIv2(key="k")
+    with pytest.raises(ValueError):
+        api.set_return_format("csv")
+
+
+@resp_lib.activate
+def test_json_format_returns_list(api):
+    api.set_return_format("json")
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/molecules/",
+                 json=_envelope([{"id": 3, "name": "CO2"}]), status=200)
+    result = api.get_molecules()
+    assert isinstance(result, list)
+    assert result[0]["name"] == "CO2"
+
+
+@resp_lib.activate
+def test_json_format_empty_returns_empty_list(api):
+    api.set_return_format("json")
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/molecules/",
+                 json=_envelope([]), status=200)
+    result = api.get_molecules()
+    assert result == []
+
+
+@resp_lib.activate
+def test_json_format_restores_to_dataframe(api):
+    import pandas as pd
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/molecules/",
+                 json=_envelope([{"id": 3, "name": "CO2"}]), status=200)
+    api.set_return_format("json")
+    api.set_return_format("dataframe")
+    result = api.get_molecules()
+    assert isinstance(result, pd.DataFrame)
+
+
+@resp_lib.activate
+def test_json_format_cif_url_resolved(api):
+    """cif_url relative paths are resolved even in json mode."""
+    import pandas as pd
+    api.set_return_format("json")
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 json=_envelope([{"id": 1, "name": "MOF1", "cif_url": "/cifs/MOF1.cif"}]),
+                 status=200)
+    result = api.get_materials()
+    assert isinstance(result, list)
+    assert result[0]["cif_url"].startswith("https://")
 
 
 # ── _compact ─────────────────────────────────────────────────────────────────

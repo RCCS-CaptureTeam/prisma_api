@@ -4,9 +4,9 @@ PrISMa API v2 client wrappers.
 Mirrors the v2 REST surface documented in
 integration/prisma-v2/prisma_cloud_apis_v2/api_v2_examples.md
 
-All methods authenticate using the same API key as the v1 client and
-return pandas DataFrames (or dicts of DataFrames for detail endpoints
-that carry nested data).
+All methods authenticate using the same API key as the v1 client.
+List endpoints return pandas DataFrames by default; set
+``return_format='json'`` for raw list-of-dicts output instead.
 
 Usage:
     import prisma_api
@@ -30,10 +30,12 @@ class PrismaAPIv2:
     Instantiated automatically as ``api.v2`` by the v1 prisma_api class.
     """
 
-    def __init__(self, key: str, dev: bool = False, dev_host_port: str = ""):
+    def __init__(self, key: str, dev: bool = False, dev_host_port: str = "",
+                 return_format: str = "json"):
         self._key = key
         self._dev = dev
         self._dev_host_port = dev_host_port
+        self._return_format = return_format  # 'dataframe' | 'json'
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -41,6 +43,18 @@ class PrismaAPIv2:
         if self._dev:
             return f"http://localhost:{self._dev_host_port}/api/v2"
         return _BASE_PROD
+
+    def set_return_format(self, fmt: str) -> None:
+        """
+        Set the output format for all list endpoints.
+
+        Args:
+            fmt: ``'dataframe'`` (default) — return ``pd.DataFrame``.
+                 ``'json'``      — return a plain ``list[dict]``.
+        """
+        if fmt not in ("dataframe", "json"):
+            raise ValueError("return_format must be 'dataframe' or 'json'")
+        self._return_format = fmt
 
     def _headers(self) -> dict:
         return {
@@ -70,21 +84,32 @@ class PrismaAPIv2:
         resp.raise_for_status()
         return resp.json()
 
-    @staticmethod
-    def _to_df(response: Any, key: str = "results") -> pd.DataFrame:
-        """Convert a list-endpoint response envelope to a DataFrame."""
+    def _to_df(self, response: Any, key: str = "results") -> "pd.DataFrame | list":
+        """Convert a list-endpoint response envelope to a DataFrame or list of dicts."""
         records = response.get(key, response) if isinstance(response, dict) else response
+        records = records or []
+        if self._return_format == "json":
+            return records
         return pd.DataFrame(records) if records else pd.DataFrame()
 
-    def _resolve_cif_url_df(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Prepend the base URL to any relative cif_url values in a DataFrame."""
-        if "cif_url" in df.columns:
-            base = self._base_url().rstrip("/").rsplit("/api/v2", 1)[0]
-            df = df.copy()
-            df["cif_url"] = df["cif_url"].apply(
+    def _resolve_cif_url_df(self, data: "pd.DataFrame | list") -> "pd.DataFrame | list":
+        """Prepend the base URL to any relative cif_url values in a DataFrame or list of dicts."""
+        base = self._base_url().rstrip("/").rsplit("/api/v2", 1)[0]
+        if isinstance(data, pd.DataFrame):
+            if "cif_url" not in data.columns:
+                return data
+            data = data.copy()
+            data["cif_url"] = data["cif_url"].apply(
                 lambda v: f"{base}{v}" if isinstance(v, str) and v.startswith("/") else v
             )
-        return df
+            return data
+        # list of dicts
+        return [
+            {**r, "cif_url": f"{base}{r['cif_url']}"}
+            if isinstance(r.get("cif_url"), str) and r["cif_url"].startswith("/")
+            else r
+            for r in data
+        ]
 
     def _resolve_cif_url_dict(self, d: dict) -> dict:
         """Prepend the base URL to a relative cif_url value in a detail dict."""
