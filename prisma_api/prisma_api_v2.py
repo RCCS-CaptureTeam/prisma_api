@@ -818,6 +818,274 @@ class PrismaAPIv2:
         """GET /api/v2/scenarios/{scenario_id}/"""
         return self._get(f"/scenarios/{scenario_id}/")
 
+    # ── Case-pack builders (ImportedCasePack spec) ────────────────────────────
+
+    @staticmethod
+    def _component_spec(component_type: str, name: str | None) -> dict | None:
+        """
+        Build a minimal ``CaseComponentSpec`` dict from a name string.
+
+        Fields that require a local YAML document (``document``,
+        ``region_use``, ``region_synthesis``, ``region_storage``,
+        ``sink_type``) are set to ``None`` — they are not stored on the
+        remote Django models and can only be populated from the originating
+        YAML pack.
+        """
+        if name is None:
+            return None
+        return {
+            "component_type": component_type,
+            "name": name,
+            "document": None,
+            "region_use": None,
+            "region_synthesis": None,
+            "region_storage": None,
+            "sink_type": None,
+        }
+
+    def build_case_spec(self, case_id: int) -> dict:
+        """
+        Fetch ``GET /api/v2/cases/{case_id}/`` and return a ``CaseSpec``-shaped
+        nested dict conforming to the ``ImportedCasePack`` spec.
+
+        Fields that live only in the originating YAML pack (``root_case_path``,
+        per-component ``document`` sub-trees, ``import_issues``) are
+        returned as ``None`` / ``[]``.
+
+        Args:
+            case_id: PK of the ``CaseStudy`` record.
+
+        Returns:
+            ``dict`` matching the ``CaseSpec`` schema::
+
+                {
+                  "case_name": str,
+                  "source_name": str,
+                  "sink_name": str,
+                  "region": str,
+                  "root_case_path": None,
+                  "source":    { CaseComponentSpec },
+                  "sink":      { CaseComponentSpec },
+                  "transport": { CaseComponentSpec } | None,
+                  "utilities": [ CaseComponentSpec, ... ],
+                  "tea_general": None,
+                  "import_issues": []
+                }
+        """
+        case = self.get_case(case_id)
+        transport_name = case.get("transport_scenario")
+        utilities_raw  = case.get("utilities") or []
+        # utilities may come back as a string or list depending on serializer
+        if isinstance(utilities_raw, str):
+            utilities_raw = [utilities_raw] if utilities_raw else []
+
+        return {
+            "case_name":      case.get("name"),
+            "source_name":    case.get("source"),
+            "sink_name":      case.get("sink"),
+            "region":         case.get("region"),
+            "root_case_path": None,
+            "source":         self._component_spec("source",    case.get("source")),
+            "sink":           self._component_spec("sink",      case.get("sink")),
+            "transport":      self._component_spec("transport", transport_name),
+            "utilities":      [
+                self._component_spec("utility", u)
+                for u in utilities_raw
+                if u
+            ],
+            "tea_general":    None,
+            "import_issues":  [],
+        }
+
+    def build_scenario_spec(self, scenario_id: int) -> dict:
+        """
+        Fetch ``GET /api/v2/scenarios/{scenario_id}/`` and return a
+        ``ScenarioSpec``-shaped nested dict.
+
+        ``process``, ``adsorption_scenario``, ``process_preview`` and the
+        compiled science sub-objects are not stored on the remote Django
+        models; they are returned as ``None``.
+
+        Args:
+            scenario_id: PK of the ``Scenario`` record.
+
+        Returns:
+            ``dict`` matching the ``ScenarioSpec`` schema::
+
+                {
+                  "scenario_name": str,
+                  "case_name": str,
+                  "source_name": None,   # not on Scenario model
+                  "sink_name": None,
+                  "region": None,
+                  "process": None,
+                  "adsorption_scenario": None,
+                  "process_preview": None,
+                  "utilities": [],
+                  "tea_general": None,
+                  "import_issues": []
+                }
+        """
+        scenario = self.get_scenario(scenario_id)
+        return {
+            "scenario_name":       scenario.get("name"),
+            "case_name":           scenario.get("case_study_name"),
+            "source_name":         None,
+            "sink_name":           None,
+            "region":              None,
+            "process":             None,
+            "adsorption_scenario": None,
+            "process_preview":     None,
+            "utilities":           [],
+            "tea_general":         None,
+            "import_issues":       [],
+        }
+
+    def build_case_pack(self, case_id: int,
+                        scenario_id: int | None = None) -> dict:
+        """
+        Assemble an ``ImportedCasePack``-shaped nested dict for a single case,
+        using two remote calls:
+
+        * ``GET /api/v2/cases/{case_id}/``
+        * ``GET /api/v2/scenarios/?case_id={case_id}``  *(or a specific scenario)*
+
+        The result conforms to the ``ImportedCasePack`` JSON contract::
+
+            {
+              "pack_root": None,
+              "case_spec": { CaseSpec },
+              "scenario_spec": { ScenarioSpec } | None,
+              "available_documents": [],
+              "import_issues": []
+            }
+
+        ``pack_root``, ``available_documents``, and per-document ``sections``/
+        ``scalar_entries`` sub-trees are not stored on the remote Django models;
+        they are returned as ``None`` / ``[]``.  The caller can merge in locally
+        scanned document data if needed.
+
+        Args:
+            case_id:     PK of the ``CaseStudy`` record.
+            scenario_id: Optional specific ``Scenario`` PK.  When omitted the
+                         first scenario found for the case is used (if any).
+                         Pass ``-1`` to suppress scenario resolution entirely
+                         and always return ``scenario_spec: null``.
+
+        Returns:
+            Nested ``dict`` matching the ``ImportedCasePack`` spec.
+        """
+        case_spec = self.build_case_spec(case_id)
+
+        scenario_spec: dict | None = None
+        if scenario_id != -1:
+            if scenario_id is not None:
+                scenario_spec = self.build_scenario_spec(scenario_id)
+            else:
+                # Resolve the first available scenario for this case
+                raw = self._get("/scenarios/", {"case_id": case_id, "limit": 1, "offset": 0})
+                results = raw.get("results", [])
+                if results:
+                    sid = results[0]["id"]
+                    scenario_spec = self.build_scenario_spec(sid)
+
+        return {
+            "pack_root":           None,
+            "case_spec":           case_spec,
+            "scenario_spec":       scenario_spec,
+            "available_documents": [],
+            "import_issues":       [],
+        }
+
+    def list_case_packs(self,
+                        source: str | None = None,
+                        sink: str | None = None,
+                        region: str | None = None,
+                        study: str | None = None,
+                        include_scenarios: bool = False,
+                        limit: int = 100,
+                        offset: int = 0) -> list[dict]:
+        """
+        Return a list of ``ImportedCasePack``-shaped dicts for every matching
+        case, using ``GET /api/v2/cases/``.
+
+        By default ``scenario_spec`` is ``null`` for every record to keep the
+        response lightweight.  Set ``include_scenarios=True`` to resolve the
+        first scenario for each case (one extra GET per case).
+
+        Args:
+            source:            Source name substring filter.
+            sink:              Sink name substring filter.
+            region:            Exact region ISO code filter.
+            study:             Exact study label filter.
+            include_scenarios: If ``True``, attach ``scenario_spec`` for each
+                               case (N+1 requests — use with small result sets).
+            limit:             Max cases to return (default 100).
+            offset:            Pagination offset.
+
+        Returns:
+            ``list[dict]`` — each element is an ``ImportedCasePack`` dict.
+        """
+        params = _compact(source=source, sink=sink, region=region,
+                          study=study, limit=limit, offset=offset)
+        raw_cases = self._get("/cases/", params).get("results", [])
+
+        packs: list[dict] = []
+        for case in raw_cases:
+            case_id = case["id"]
+            transport_name = case.get("transport_scenario")
+            utilities_raw  = case.get("utilities") or []
+            if isinstance(utilities_raw, str):
+                utilities_raw = [utilities_raw] if utilities_raw else []
+
+            case_spec: dict = {
+                "case_name":      case.get("name"),
+                "source_name":    case.get("source"),
+                "sink_name":      case.get("sink"),
+                "region":         case.get("region"),
+                "root_case_path": None,
+                "source":         self._component_spec("source",    case.get("source")),
+                "sink":           self._component_spec("sink",      case.get("sink")),
+                "transport":      self._component_spec("transport", transport_name),
+                "utilities":      [
+                    self._component_spec("utility", u)
+                    for u in utilities_raw if u
+                ],
+                "tea_general":    None,
+                "import_issues":  [],
+            }
+
+            scenario_spec: dict | None = None
+            if include_scenarios:
+                raw = self._get("/scenarios/", {"case_id": case_id, "limit": 1})
+                results = raw.get("results", [])
+                if results:
+                    sid = results[0]["id"]
+                    sc  = results[0]
+                    scenario_spec = {
+                        "scenario_name":       sc.get("name"),
+                        "case_name":           sc.get("case_study_name"),
+                        "source_name":         None,
+                        "sink_name":           None,
+                        "region":              None,
+                        "process":             None,
+                        "adsorption_scenario": None,
+                        "process_preview":     None,
+                        "utilities":           [],
+                        "tea_general":         None,
+                        "import_issues":       [],
+                    }
+
+            packs.append({
+                "pack_root":           None,
+                "case_spec":           case_spec,
+                "scenario_spec":       scenario_spec,
+                "available_documents": [],
+                "import_issues":       [],
+            })
+
+        return packs
+
     def get_screening_summaries(self, scenario_id: int | None = None,
                                 limit: int = 500, offset: int = 0) -> pd.DataFrame:
         """

@@ -1169,6 +1169,150 @@ def test_get_scenario_detail(api):
     assert result["type"] == "TEA"
 
 
+# ── ImportedCasePack builders ─────────────────────────────────────────────────
+
+_CASE_DETAIL = {
+    "id": 3372, "name": "UK Coal CCS 2030", "study": "UK2030",
+    "source": "Coal Power Plant", "sink": "North Sea Aquifer",
+    "transport_scenario": "Pipeline 200km", "region": "GB",
+    "utilities": "Steam", "duration": 25,
+}
+_SCENARIO_DETAIL = {
+    "id": 830, "name": "baseline_2030", "print_name": "Baseline 2030",
+    "type": "TEA", "case_study_id": 3372, "case_study_name": "UK Coal CCS 2030",
+}
+
+
+@resp_lib.activate
+def test_build_case_spec_shape(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cases/3372/", json=_CASE_DETAIL, status=200)
+    spec = api.build_case_spec(3372)
+    assert spec["case_name"]   == "UK Coal CCS 2030"
+    assert spec["source_name"] == "Coal Power Plant"
+    assert spec["sink_name"]   == "North Sea Aquifer"
+    assert spec["region"]      == "GB"
+    assert spec["root_case_path"] is None
+    assert spec["source"]["component_type"] == "source"
+    assert spec["sink"]["component_type"]   == "sink"
+    assert spec["transport"]["component_type"] == "transport"
+    assert spec["transport"]["name"] == "Pipeline 200km"
+    assert isinstance(spec["utilities"], list)
+    assert spec["utilities"][0]["component_type"] == "utility"
+    assert spec["tea_general"] is None
+    assert spec["import_issues"] == []
+
+
+@resp_lib.activate
+def test_build_case_spec_no_transport(api):
+    case = {**_CASE_DETAIL, "transport_scenario": None}
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cases/3372/", json=case, status=200)
+    spec = api.build_case_spec(3372)
+    assert spec["transport"] is None
+
+
+@resp_lib.activate
+def test_build_scenario_spec_shape(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/scenarios/830/", json=_SCENARIO_DETAIL, status=200)
+    spec = api.build_scenario_spec(830)
+    assert spec["scenario_name"] == "baseline_2030"
+    assert spec["case_name"]     == "UK Coal CCS 2030"
+    assert spec["process"]             is None
+    assert spec["adsorption_scenario"] is None
+    assert spec["process_preview"]     is None
+    assert spec["utilities"]           == []
+    assert spec["import_issues"]       == []
+
+
+@resp_lib.activate
+def test_build_case_pack_full(api):
+    """build_case_pack fetches case + first scenario and assembles ImportedCasePack."""
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cases/3372/",    json=_CASE_DETAIL,     status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/scenarios/",
+                 json={"count": 1, "results": [_SCENARIO_DETAIL]}, status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/scenarios/830/", json=_SCENARIO_DETAIL, status=200)
+    pack = api.build_case_pack(3372)
+    # Top-level keys match ImportedCasePack spec
+    assert set(pack.keys()) == {"pack_root", "case_spec", "scenario_spec",
+                                 "available_documents", "import_issues"}
+    assert pack["pack_root"]           is None
+    assert pack["available_documents"] == []
+    assert pack["import_issues"]       == []
+    # Nested CaseSpec
+    assert pack["case_spec"]["case_name"]   == "UK Coal CCS 2030"
+    assert pack["case_spec"]["source"]["component_type"] == "source"
+    # Nested ScenarioSpec
+    assert pack["scenario_spec"]["scenario_name"] == "baseline_2030"
+    assert pack["scenario_spec"]["process"] is None
+
+
+@resp_lib.activate
+def test_build_case_pack_no_scenario_resolved(api):
+    """When no scenarios exist, scenario_spec is None."""
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cases/3372/", json=_CASE_DETAIL, status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/scenarios/",
+                 json={"count": 0, "results": []}, status=200)
+    pack = api.build_case_pack(3372)
+    assert pack["scenario_spec"] is None
+
+
+@resp_lib.activate
+def test_build_case_pack_suppress_scenario(api):
+    """scenario_id=-1 skips scenario resolution entirely."""
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cases/3372/", json=_CASE_DETAIL, status=200)
+    pack = api.build_case_pack(3372, scenario_id=-1)
+    assert pack["scenario_spec"] is None
+
+
+@resp_lib.activate
+def test_build_case_pack_explicit_scenario(api):
+    """Explicit scenario_id is fetched directly without listing."""
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cases/3372/",    json=_CASE_DETAIL,     status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/scenarios/830/", json=_SCENARIO_DETAIL, status=200)
+    pack = api.build_case_pack(3372, scenario_id=830)
+    assert pack["scenario_spec"]["scenario_name"] == "baseline_2030"
+
+
+@resp_lib.activate
+def test_list_case_packs_returns_list_of_dicts(api):
+    """list_case_packs returns a list of ImportedCasePack dicts."""
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cases/",
+                 json={"count": 2, "results": [
+                     {**_CASE_DETAIL, "id": 1, "name": "Case A"},
+                     {**_CASE_DETAIL, "id": 2, "name": "Case B"},
+                 ]}, status=200)
+    packs = api.list_case_packs()
+    assert isinstance(packs, list)
+    assert len(packs) == 2
+    for pack in packs:
+        assert set(pack.keys()) == {"pack_root", "case_spec", "scenario_spec",
+                                     "available_documents", "import_issues"}
+        assert pack["scenario_spec"] is None   # include_scenarios=False by default
+
+
+@resp_lib.activate
+def test_list_case_packs_include_scenarios(api):
+    """include_scenarios=True attaches ScenarioSpec for each case."""
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cases/",
+                 json={"count": 1, "results": [{**_CASE_DETAIL, "id": 3372}]},
+                 status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/scenarios/",
+                 json={"count": 1, "results": [_SCENARIO_DETAIL]}, status=200)
+    packs = api.list_case_packs(include_scenarios=True)
+    assert packs[0]["scenario_spec"]["scenario_name"] == "baseline_2030"
+
+
+@resp_lib.activate
+def test_list_case_packs_no_scenarios_available(api):
+    """Case with no scenarios yields scenario_spec=None even with include_scenarios=True."""
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cases/",
+                 json={"count": 1, "results": [{**_CASE_DETAIL, "id": 3372}]},
+                 status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/scenarios/",
+                 json={"count": 0, "results": []}, status=200)
+    packs = api.list_case_packs(include_scenarios=True)
+    assert packs[0]["scenario_spec"] is None
+
+
 # ── Screening Summaries ──────────────────────────────────────────────────────
 
 @resp_lib.activate
