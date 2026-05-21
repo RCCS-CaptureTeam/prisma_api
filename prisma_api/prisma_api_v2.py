@@ -11,7 +11,7 @@ List endpoints return pandas DataFrames by default; set
 Usage:
     import prisma_api
     api = prisma_api.init()        # standard v1 init
-    api.v2.get_isotherms(mof='ABEXEM', molecule='CO2')
+    api.v2.get_isotherm(mof='ABEXEM', molecule='CO2')
 """
 
 from __future__ import annotations
@@ -126,8 +126,8 @@ class PrismaAPIv2:
 
     # ── Catalog ───────────────────────────────────────────────────────────────
 
-    def get_materials(self, name: str | None = None,
-                      limit: int = 500, offset: int = 0) -> pd.DataFrame:
+    def list_materials(self, name: str | None = None,
+                       limit: int = 500, offset: int = 0) -> pd.DataFrame:
         """
         GET /api/v2/materials/
 
@@ -137,7 +137,19 @@ class PrismaAPIv2:
             offset: Pagination offset.
 
         Returns:
-            DataFrame with one row per material.
+            List of materials (format controlled by ``set_return_format``).
+            Each record includes the following fields:
+
+            * ``id`` / ``name`` / ``cif_url``
+            * ``material_id`` — same as ``name``, used as the slug identifier
+            * ``material_backend`` — always ``'tabular_binary_iast'``
+            * ``gas_basis`` — ``['CO2','N2','H2O']`` if Water KPI data exist, else ``['CO2','N2']``
+            * ``supports_humid_ternary`` — ``None`` (reserved)
+            * ``tags`` — ``[]`` (reserved)
+            * ``provenance`` — always ``'tabular_material'``
+            * ``lifecycle`` — ``{"object_kind": "catalog", "version": "legacy.v1"}``
+            * ``metadata`` — ``{"django_tables": [...], "source": "live_db"}``
+            * ``source_path`` — ``None`` (reserved)
         """
         params = _compact(name=name, limit=limit, offset=offset)
         return self._resolve_cif_url_df(self._to_df(self._get("/materials/", params)))
@@ -184,6 +196,69 @@ class PrismaAPIv2:
             dict with all PSDI fields plus nested 'elements' list.
         """
         return self._resolve_cif_url_dict(self._get(f"/materials-psdi/{material_id}/"))
+
+    def get_material_property_bundle(self, mof: str,
+                                     sim_or_exp: str | None = None,
+                                     good_structure: bool | None = None,
+                                     limit: int = 500,
+                                     offset: int = 0) -> dict:
+        """
+        Fetch all science data for a given MOF in a single call.
+
+        Aggregates isotherms, simulated Zeo++, experimental Zeo++ and
+        water KPIs into one dict, applying consistent filters across all
+        four sub-queries.
+
+        Args:
+            mof:            MOF name (substring match applied to all sub-queries).
+            sim_or_exp:     'sim' or 'exp' filter for isotherms and water KPIs.
+            good_structure: Good-structure filter for isotherms, water KPIs
+                            and simulated Zeo++.
+            limit:          Max records per sub-query (default 500).
+            offset:         Pagination offset for all sub-queries.
+
+        Returns:
+            dict with keys:
+                'isotherms'          – isotherm records
+                'zeopp_simulated'    – simulated Zeo++ records
+                'zeopp_experimental' – experimental Zeo++ records
+                'water_kpis'         – water KPI records
+        """
+        return {
+            "isotherms": self.get_isotherm(
+                mof=mof, sim_or_exp=sim_or_exp, good_structure=good_structure,
+                limit=limit, offset=offset,
+            ),
+            "zeopp_simulated": self.get_carbon_zeopp(
+                mof=mof, good_structure=good_structure,
+                limit=limit, offset=offset,
+            ),
+            "zeopp_experimental": self.get_carbon_zeopp_experimental(
+                mof=mof, limit=limit, offset=offset,
+            ),
+            "water_kpis": self.get_water_kpis(
+                mof=mof, sim_or_exp=sim_or_exp, good_structure=good_structure,
+                limit=limit, offset=offset,
+            ),
+        }
+
+    def preflight_material_check(self, name: str) -> bool:
+        """
+        Check whether a material with the given name exists in the database.
+
+        Calls ``list_materials(name=name, limit=1)`` and returns ``True`` if
+        at least one result is returned.
+
+        Args:
+            name: Material name to search for (substring match).
+
+        Returns:
+            ``True`` if at least one matching material is found, ``False`` otherwise.
+        """
+        results = self.list_materials(name=name, limit=1)
+        if isinstance(results, list):
+            return len(results) > 0
+        return not results.empty
 
     def get_molecules(self, name: str | None = None,
                       limit: int = 500, offset: int = 0) -> pd.DataFrame:
@@ -501,15 +576,15 @@ class PrismaAPIv2:
 
     # ── Science data ──────────────────────────────────────────────────────────
 
-    def get_isotherms(self,
-                      mof: str | None = None,
-                      molecule: str | None = None,
-                      temperature_min: float | None = None,
-                      temperature_max: float | None = None,
-                      sim_or_exp: str | None = None,
-                      good_structure: bool | None = None,
-                      limit: int = 500,
-                      offset: int = 0) -> pd.DataFrame:
+    def get_isotherm(self,
+                     mof: str | None = None,
+                     molecule: str | None = None,
+                     temperature_min: float | None = None,
+                     temperature_max: float | None = None,
+                     sim_or_exp: str | None = None,
+                     good_structure: bool | None = None,
+                     limit: int = 500,
+                     offset: int = 0) -> pd.DataFrame:
         """
         GET /api/v2/isotherms/
 

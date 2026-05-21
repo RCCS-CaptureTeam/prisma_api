@@ -103,9 +103,7 @@ def test_json_format_cif_url_resolved(api):
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
                  json=_envelope([{"id": 1, "name": "MOF1", "cif_url": "/cifs/MOF1.cif"}]),
                  status=200)
-    result = api.get_materials()
-    assert isinstance(result, list)
-    assert result[0]["cif_url"].startswith("https://")
+    result = api.list_materials()
 
 
 # ── _compact ─────────────────────────────────────────────────────────────────
@@ -175,24 +173,58 @@ def test_dev_mode_uses_localhost(dev_api):
 
 # ── Materials ─────────────────────────────────────────────────────────────────
 
+_MATERIAL_EXTRA_FIELDS = {
+    "material_id": "ABEXEM",
+    "material_backend": "tabular_binary_iast",
+    "gas_basis": ["CO2", "N2"],
+    "supports_humid_ternary": None,
+    "tags": [],
+    "provenance": "tabular_material",
+    "lifecycle": {"object_kind": "catalog", "version": "legacy.v1"},
+    "metadata": {
+        "django_tables": ["MOF", "Carbon_Isotherm", "Water_KPIs", "Carbon_ZeoPP"],
+        "source": "live_db",
+    },
+    "source_path": None,
+}
+
+_NEW_MATERIAL_FIELDS = list(_MATERIAL_EXTRA_FIELDS.keys())
+
+
 @resp_lib.activate
-def test_get_materials_returns_dataframe(api):
+def test_list_materials_returns_dataframe(api):
     body = _envelope([
-        {"id": 1, "name": "ABEXEM", "cif_url": "/media/ABEXEM.cif"},
-        {"id": 2, "name": "FOOFOO", "cif_url": "/media/FOOFOO.cif"},
+        {"id": 1, "name": "ABEXEM", "cif_url": "/media/ABEXEM.cif", **_MATERIAL_EXTRA_FIELDS},
+        {"id": 2, "name": "FOOFOO", "cif_url": "/media/FOOFOO.cif",
+         **{**_MATERIAL_EXTRA_FIELDS, "material_id": "FOOFOO"}},
     ])
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/", json=body, status=200)
-    df = api.get_materials()
+    df = api.list_materials()
     assert len(df) == 2
-    assert_df_columns(df, "id", "name", "cif_url")
+    assert_df_columns(df, "id", "name", "cif_url", *_NEW_MATERIAL_FIELDS)
 
 
 @resp_lib.activate
-def test_get_materials_name_filter_passed_as_param(api):
+def test_list_materials_new_fields_present(api):
+    """All new schema fields returned by the server are surfaced in the response."""
+    body = _envelope([{"id": 1, "name": "ABEXEM", "cif_url": "", **_MATERIAL_EXTRA_FIELDS}])
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/", json=body, status=200)
+    df = api.list_materials()
+    for field in _NEW_MATERIAL_FIELDS:
+        assert field in df.columns, f"Expected column '{field}' missing from list_materials response"
+    assert df.iloc[0]["material_id"] == "ABEXEM"
+    assert df.iloc[0]["material_backend"] == "tabular_binary_iast"
+    assert df.iloc[0]["provenance"] == "tabular_material"
+    assert df.iloc[0]["lifecycle"] == {"object_kind": "catalog", "version": "legacy.v1"}
+    assert df.iloc[0]["tags"] == []
+
+
+@resp_lib.activate
+def test_list_materials_name_filter(api):
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
                  match=[matchers.query_param_matcher({"name": "ABEXEM", "limit": "500", "offset": "0"})],
-                 json=_envelope([{"id": 1, "name": "ABEXEM", "cif_url": ""}]), status=200)
-    df = api.get_materials(name="ABEXEM")
+                 json=_envelope([{"id": 1, "name": "ABEXEM", "cif_url": "", **_MATERIAL_EXTRA_FIELDS}]), status=200)
+    df = api.list_materials(name="ABEXEM")
     assert df.iloc[0]["name"] == "ABEXEM"
 
 
@@ -207,9 +239,9 @@ def test_get_material_detail(api):
 
 
 @resp_lib.activate
-def test_get_materials_empty(api):
+def test_list_materials_empty(api):
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/", json=_envelope([]), status=200)
-    df = api.get_materials()
+    df = api.list_materials()
     assert df.empty
 
 
@@ -780,7 +812,7 @@ def test_catalog_detail_endpoints_return_dict(api, method, path, record):
 # ── Isotherms ─────────────────────────────────────────────────────────────────
 
 @resp_lib.activate
-def test_get_isotherms_returns_dataframe(api):
+def test_get_isotherm_returns_dataframe(api):
     records = [
         {"id": 1, "mof": "ABEXEM", "molecule": "CO2", "T_ref_K": 298.0,
          "sim_or_exp": "sim", "good_structure": True},
@@ -789,13 +821,13 @@ def test_get_isotherms_returns_dataframe(api):
     ]
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/isotherms/",
                  json=_envelope(records), status=200)
-    df = api.get_isotherms()
+    df = api.get_isotherm()
     assert len(df) == 2
     assert_df_columns(df, "id", "mof", "molecule", "T_ref_K", "sim_or_exp", "good_structure")
 
 
 @resp_lib.activate
-def test_get_isotherms_all_filters_passed(api):
+def test_get_isotherm_all_filters_passed(api):
     expected_params = {
         "mof": "ABEXEM", "molecule": "CO2",
         "temperature_min": "273.0", "temperature_max": "350.0",
@@ -805,7 +837,7 @@ def test_get_isotherms_all_filters_passed(api):
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/isotherms/",
                  match=[matchers.query_param_matcher(expected_params)],
                  json=_envelope([]), status=200)
-    df = api.get_isotherms(
+    df = api.get_isotherm(
         mof="ABEXEM", molecule="CO2",
         temperature_min=273.0, temperature_max=350.0,
         sim_or_exp="sim", good_structure=True,
@@ -815,12 +847,76 @@ def test_get_isotherms_all_filters_passed(api):
 
 
 @resp_lib.activate
-def test_get_isotherms_good_structure_false(api):
+def test_get_isotherm_good_structure_false(api):
     expected_params = {"good_structure": "false", "limit": "500", "offset": "0"}
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/isotherms/",
                  match=[matchers.query_param_matcher(expected_params)],
                  json=_envelope([]), status=200)
-    api.get_isotherms(good_structure=False)
+    api.get_isotherm(good_structure=False)
+
+
+# ── get_material_property_bundle ─────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_material_property_bundle_returns_dict(api):
+    for path in ("/isotherms/", "/carbon-zeopp/",
+                 "/carbon-zeopp-experimental/", "/water-kpis/"):
+        resp_lib.add(resp_lib.GET, f"{PROD_BASE}{path}",
+                     json=_envelope([{"id": 1, "mof": "HKUST"}]), status=200)
+    bundle = api.get_material_property_bundle("HKUST")
+    assert set(bundle.keys()) == {
+        "isotherms", "zeopp_simulated", "zeopp_experimental", "water_kpis"
+    }
+
+
+@resp_lib.activate
+def test_get_material_property_bundle_filters_forwarded(api):
+    """sim_or_exp and good_structure must be forwarded to isotherms and water KPIs."""
+    expected_iso = {"mof": "HKUST", "sim_or_exp": "sim",
+                    "good_structure": "true", "limit": "500", "offset": "0"}
+    expected_w   = {"mof": "HKUST", "sim_or_exp": "sim",
+                    "good_structure": "true", "limit": "500", "offset": "0"}
+    expected_z   = {"mof": "HKUST", "good_structure": "true",
+                    "limit": "500", "offset": "0"}
+    expected_ze  = {"mof": "HKUST", "limit": "500", "offset": "0"}
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/isotherms/",
+                 match=[matchers.query_param_matcher(expected_iso)],
+                 json=_envelope([]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/carbon-zeopp/",
+                 match=[matchers.query_param_matcher(expected_z)],
+                 json=_envelope([]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/carbon-zeopp-experimental/",
+                 match=[matchers.query_param_matcher(expected_ze)],
+                 json=_envelope([]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/water-kpis/",
+                 match=[matchers.query_param_matcher(expected_w)],
+                 json=_envelope([]), status=200)
+    api.get_material_property_bundle("HKUST", sim_or_exp="sim", good_structure=True)
+
+
+# ── preflight_material_check ──────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_preflight_material_check_true(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 json=_envelope([{"id": 1, "name": "HKUST", "cif_url": ""}]), status=200)
+    assert api.preflight_material_check("HKUST") is True
+
+
+@resp_lib.activate
+def test_preflight_material_check_false(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 json=_envelope([]), status=200)
+    assert api.preflight_material_check("DOESNOTEXIST") is False
+
+
+@resp_lib.activate
+def test_preflight_material_check_json_format():
+    """Works correctly when return_format is 'json'."""
+    api_json = PrismaAPIv2(key="k", return_format="json")
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 json=_envelope([{"id": 1, "name": "HKUST", "cif_url": ""}]), status=200)
+    assert api_json.preflight_material_check("HKUST") is True
 
 
 # ── Water KPIs ────────────────────────────────────────────────────────────────

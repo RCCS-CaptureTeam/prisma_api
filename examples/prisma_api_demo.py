@@ -73,13 +73,13 @@ api.v2.health()
 
 # %%
 # List all materials
-df_materials = api.v2.get_materials()
+df_materials = api.v2.list_materials()
 print(f"{len(df_materials)} materials")
 df_materials.head()
 
 # %%
 # Filter by name substring
-api.v2.get_materials(name='ABEX')
+api.v2.list_materials(name='ABEX')
 
 # %%
 # Detail for a single material (replace 1 with a real PK from the list above)
@@ -409,17 +409,17 @@ if not df_mea_kpis.empty:
 
 # %%
 # All isotherms
-df_isotherms = api.v2.get_isotherms()
+df_isotherms = api.v2.get_isotherm()
 print(f"{len(df_isotherms)} isotherm records")
 df_isotherms.head()
 
 # %%
 # Filter: simulated CO2 isotherms, good structures only
-api.v2.get_isotherms(molecule='CO2', sim_or_exp='sim', good_structure=True)
+api.v2.get_isotherm(molecule='CO2', sim_or_exp='sim', good_structure=True)
 
 # %%
 # Temperature range + specific MOF
-api.v2.get_isotherms(mof='ABEXEM', molecule='CO2', temperature_min=273, temperature_max=350)
+api.v2.get_isotherm(mof='ABEXEM', molecule='CO2', temperature_min=273, temperature_max=350)
 
 # %% [markdown]
 # ### 5.2 Water KPIs
