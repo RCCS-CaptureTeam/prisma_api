@@ -242,8 +242,20 @@ class PrismaAPIv2:
                 'zeopp_simulated'    – simulated Zeo++ records
                 'zeopp_experimental' – experimental Zeo++ records
                 'water_kpis'         – water KPI records
+
+        Raises:
+            ValueError: if the name matches more than one material — use an
+                exact name or a more specific substring.
         """
-        return {
+        matches = self._get("/materials/", {"name": mof, "limit": 10}).get("results", [])
+        if len(matches) > 1:
+            names = [m["name"] for m in matches]
+            raise ValueError(
+                f"'{mof}' matched {len(matches)} materials: {names}. "
+                "Use a more specific name."
+            )
+        true_name = matches[0]["name"] if matches else mof
+        bundle = {
             "isotherms": self.get_isotherm(
                 mof=mof, sim_or_exp=sim_or_exp, good_structure=good_structure,
                 limit=limit, offset=offset,
@@ -260,6 +272,11 @@ class PrismaAPIv2:
                 limit=limit, offset=offset,
             ),
         }
+        label = true_name if true_name == mof else f"{true_name} (matched from partial string: '{mof}')"
+        print(f"Property bundle for '{label}':")
+        for key, val in bundle.items():
+            print(f"  {key:25s}: {len(val)} records")
+        return bundle
 
     def preflight_material_check(self, name: str) -> bool:
         """
