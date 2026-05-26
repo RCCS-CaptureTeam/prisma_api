@@ -127,14 +127,18 @@ class PrismaAPIv2:
     # ── Catalog ───────────────────────────────────────────────────────────────
 
     def list_materials(self, name: str | None = None,
-                       limit: int = 500, offset: int = 0) -> pd.DataFrame:
+                       limit: int = 10_000) -> pd.DataFrame:
         """
         GET /api/v2/materials/
 
+        Fetches all matching materials using an internal paginate-in-loop
+        strategy (page size 500) so that result sets larger than the server
+        default are returned transparently.
+
         Args:
             name:   Case-insensitive substring filter on material name.
-            limit:  Max records to return (default 500).
-            offset: Pagination offset.
+            limit:  Maximum total records to return across all pages
+                    (default 10 000).  Pass ``limit=0`` for no cap.
 
         Returns:
             List of materials (format controlled by ``set_return_format``).
@@ -151,8 +155,23 @@ class PrismaAPIv2:
             * ``metadata`` — ``{"django_tables": [...], "source": "live_db"}``
             * ``source_path`` — ``None`` (reserved)
         """
-        params = _compact(name=name, limit=limit, offset=offset)
-        return self._resolve_cif_url_df(self._to_df(self._get("/materials/", params)))
+        page_size = 500
+        all_records: list = []
+        offset = 0
+        while True:
+            fetch = page_size if (limit == 0) else min(page_size, limit - len(all_records))
+            params = _compact(name=name, limit=fetch, offset=offset)
+            raw = self._get("/materials/", params)
+            page: list = raw.get("results", raw) if isinstance(raw, dict) else (raw or [])
+            all_records.extend(page)
+            if len(page) < fetch:
+                break
+            offset += fetch
+            if limit != 0 and len(all_records) >= limit:
+                break
+        server = self._base_url().rsplit("/api/v2", 1)[0]
+        print(f"{len(all_records)} materials loaded from {server}")
+        return self._resolve_cif_url_df(self._to_df({"results": all_records}))
 
     def get_material(self, material_id: int) -> dict:
         """
