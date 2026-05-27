@@ -381,7 +381,6 @@ def _build_catalogue(limit: int) -> list[tuple[str, str, dict]]:
                                            "get_ambient_parameters",        {"limit": L}),
 
         # ── Cases & Scenarios ────────────────────────────────────────────────
-        (f"get_cases(limit={L})",          "get_cases",                     {"limit": L}),
         (f"get_scenarios(limit={L})",      "get_scenarios",                 {"limit": L}),
         (f"get_screening_summaries(limit={L})",
                                            "get_screening_summaries",       {"limit": L}),
@@ -454,7 +453,6 @@ def _probe_detail_checks(
         ("get_constants",          "id", "get_constant",              {"limit": 1}),
         ("get_cost_indices",       "id", "get_cost_index",            {"limit": 1}),
         ("get_process_conditions", "id", "get_process_condition",     {"limit": 1}),
-        ("get_cases",              "id", "get_case",                  {"limit": 1}),
         ("get_scenarios",          "id", "get_scenario",              {"limit": 1}),
     ]
 
