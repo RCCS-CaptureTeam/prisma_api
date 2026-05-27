@@ -247,14 +247,19 @@ class PrismaAPIv2:
             ValueError: if the name matches more than one material — use an
                 exact name or a more specific substring.
         """
-        matches = self._get("/materials/", {"name": mof, "limit": 10}).get("results", [])
-        if len(matches) > 1:
-            names = [m["name"] for m in matches]
+        matches = self._get("/materials/", {"name": mof, "limit": 50}).get("results", [])
+        # The API name filter is a substring match — narrow to exact matches only
+        exact_matches = [m for m in matches if m["name"] == mof]
+        # Fall back to substring matches only if there is no exact match
+        # (supports callers who intentionally pass a substring)
+        candidates = exact_matches if exact_matches else matches
+        if len(candidates) > 1:
+            names = [m["name"] for m in candidates]
             raise ValueError(
-                f"'{mof}' matched {len(matches)} materials: {names}. "
+                f"'{mof}' matched {len(candidates)} materials: {names}. "
                 "Use a more specific name."
             )
-        true_name = matches[0]["name"] if matches else mof
+        true_name = candidates[0]["name"] if candidates else mof
         bundle = {
             "isotherms": self.get_isotherm(
                 mof=mof, sim_or_exp=sim_or_exp, good_structure=good_structure,
