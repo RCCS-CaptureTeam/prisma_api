@@ -260,6 +260,20 @@ class PrismaAPIv2:
                 "Use a more specific name."
             )
         true_name = candidates[0]["name"] if candidates else mof
+
+        # Fields in water_kpis that carry DB integer PKs for MOF / Molecule
+        # (capitalised keys) duplicate the human-readable 'mof' / 'molecule'
+        # string fields and are stripped here to keep the bundle clean.
+        _WK_DROP = frozenset({"MOF", "Molecule"})
+
+        def _drop_wk_id_fields(records):
+            if isinstance(records, list):
+                return [{k: v for k, v in r.items() if k not in _WK_DROP} for r in records]
+            import pandas as pd
+            if isinstance(records, pd.DataFrame):
+                return records.drop(columns=[c for c in _WK_DROP if c in records.columns])
+            return records
+
         bundle = {
             "isotherms": self.get_isotherm(
                 mof=mof, sim_or_exp=sim_or_exp, good_structure=good_structure,
@@ -272,10 +286,10 @@ class PrismaAPIv2:
             "zeopp_experimental": self.get_carbon_zeopp_experimental(
                 mof=mof, limit=limit, offset=offset,
             ),
-            "water_kpis": self.get_water_kpis(
+            "water_kpis": _drop_wk_id_fields(self.get_water_kpis(
                 mof=mof, sim_or_exp=sim_or_exp, good_structure=good_structure,
                 limit=limit, offset=offset,
-            ),
+            )),
         }
         label = true_name if true_name == mof else f"{true_name} (matched from partial string: '{mof}')"
         print(f"Property bundle for '{label}':")
@@ -675,7 +689,15 @@ class PrismaAPIv2:
             good_structure=None if good_structure is None else str(good_structure).lower(),
             limit=limit, offset=offset,
         )
-        return self._to_df(self._get("/water-kpis/", params))
+        records = self._to_df(self._get("/water-kpis/", params))
+        # Strip integer FK fields 'MOF' and 'Molecule' (DB PKs) — the
+        # human-readable equivalents are kept as 'mof' and 'molecule'.
+        _drop = {"MOF", "Molecule"}
+        if isinstance(records, list):
+            return [{k: v for k, v in r.items() if k not in _drop} for r in records]
+        if isinstance(records, pd.DataFrame):
+            return records.drop(columns=[c for c in _drop if c in records.columns])
+        return records
 
     def get_carbon_zeopp(self,
                          mof: str | None = None,
