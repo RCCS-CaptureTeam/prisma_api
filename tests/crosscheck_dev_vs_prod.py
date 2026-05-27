@@ -678,7 +678,9 @@ def main(argv: list[str] | None = None) -> int:
     dev_hp = _cli_hp if _cli_hp and _cli_hp != _DEFAULT_DEV_HP else (_cfg_hp or _DEFAULT_DEV_HP)
     dev_hp = dev_hp.replace("http://", "").replace("https://", "").strip() or _DEFAULT_DEV_HP
 
-    print(_bold("\n═══ PrISMa v2 API Cross-Check: dev vs prod ═══"))
+    print(_bold("\n" + "═" * 72))
+    print(_bold("  PrISMa v2 API Cross-Check: dev vs prod"))
+    print(_bold("═" * 72))
     print(f"  Dev server : http://{dev_hp}/api/v2")
     print(f"  Prod server: {prisma_api.prisma_api_v2._BASE_PROD}")
     print(f"  List limit : {args.limit} records per endpoint")
@@ -708,7 +710,9 @@ def main(argv: list[str] | None = None) -> int:
     _sep = "  " + "-" * 32
 
     # ── List / aggregate endpoints ────────────────────────────────────────────
-    print(_bold("── List & aggregate endpoints ──────────────────────────────────"))
+    print(_bold("═" * 72))
+    print(_bold("  List & aggregate endpoints"))
+    print(_bold("═" * 72))
     for label, method, kwargs in catalogue:
         result = _run_check(label, dev_api, prod_api, method, kwargs, args.verbose)
         all_results.append(result)
@@ -719,7 +723,9 @@ def main(argv: list[str] | None = None) -> int:
     # ── Detail endpoints ──────────────────────────────────────────────────────
     if not args.skip_detail:
         print()
-        print(_bold("── Detail (single-record) endpoints ────────────────────────────"))
+        print(_bold("═" * 72))
+        print(_bold("  Detail (single-record) endpoints"))
+        print(_bold("═" * 72))
         detail_results = _probe_detail_checks(
             dev_api, prod_api, args.limit, args.verbose, args.nameonly
         )
@@ -735,7 +741,9 @@ def main(argv: list[str] | None = None) -> int:
     # ── Count checks ─────────────────────────────────────────────────────────
     if args.count:
         print()
-        print(_bold("── Record count checks (dev vs prod, no limit) ──────────────────"))
+        print(_bold("═" * 72))
+        print(_bold("  Record count checks (dev vs prod, no limit)"))
+        print(_bold("═" * 72))
         count_results = _run_count_checks(dev_api, prod_api, catalogue, args.verbose)
         if count_results:
             for result in count_results:
@@ -752,7 +760,9 @@ def main(argv: list[str] | None = None) -> int:
     failed = total - passed
 
     print()
-    print(_bold("── Summary ─────────────────────────────────────────────────────"))
+    print(_bold("═" * 72))
+    print(_bold("  Summary"))
+    print(_bold("═" * 72))
     print(f"  Total checks : {total}")
     print(f"  {_green('Passed')}       : {passed}")
     if failed:
