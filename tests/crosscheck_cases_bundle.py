@@ -165,11 +165,52 @@ def _compare(label: str, dev_obj: Any, prod_obj: Any, results: list[dict]) -> bo
 
 # ── Per-case bundle comparison ────────────────────────────────────────────────
 
+def _compare_properties(path: str, dev_props: list[dict], prod_props: list[dict],
+                         results: list[dict]) -> None:
+    """
+    Compare two property lists keyed by 'name', independent of list order.
+    Reports:
+      - properties only present on dev
+      - properties only present on prod
+      - properties present on both sides but with differing values/fields
+    Each is a separate result entry for actionable output.
+    """
+    dev_map  = {p.get("name", f"__idx{i}"): p for i, p in enumerate(dev_props)}
+    prod_map = {p.get("name", f"__idx{i}"): p for i, p in enumerate(prod_props)}
+
+    all_names = sorted(set(dev_map) | set(prod_map))
+    any_diff = False
+    for name in all_names:
+        p = f"{path}.properties[{name}]"
+        if name not in dev_map:
+            results.append({"path": p, "status": "diff", "excerpt": "only in prod"})
+            any_diff = True
+        elif name not in prod_map:
+            results.append({"path": p, "status": "diff", "excerpt": "only in dev"})
+            any_diff = True
+        else:
+            d = _canon(dev_map[name])
+            r = _canon(prod_map[name])
+            if d == r:
+                results.append({"path": p, "status": "match"})
+            else:
+                excerpt = _diff_excerpt(d, r)
+                results.append({"path": p, "status": "diff", "excerpt": excerpt})
+                any_diff = True
+
+    if not any_diff:
+        # Consolidate into a single pass entry for cleaner output
+        for name in all_names:
+            results[:] = [r for r in results if r["path"] != f"{path}.properties[{name}]"]
+        results.append({"path": f"{path}.properties", "status": "match"})
+
+
 def _check_object_node(path: str, dev_node: dict, prod_node: dict,
                         results: list[dict]) -> None:
     """Compare a single {record, properties} node."""
-    _compare(f"{path}.record",     dev_node.get("record"),     prod_node.get("record"),     results)
-    _compare(f"{path}.properties", dev_node.get("properties"), prod_node.get("properties"), results)
+    _compare(f"{path}.record", dev_node.get("record"), prod_node.get("record"), results)
+    _compare_properties(path, dev_node.get("properties") or [],
+                        prod_node.get("properties") or [], results)
 
 
 def _check_bundle_pair(case_name: str, dev_bundle: dict,
@@ -257,8 +298,9 @@ def _check_bundle_pair(case_name: str, dev_bundle: dict,
         else:
             _compare(f"{path_s}.process_conditions.record",
                      dev_pc.get("record"), prod_pc.get("record"), results)
-            _compare(f"{path_s}.process_conditions.properties",
-                     dev_pc.get("properties"), prod_pc.get("properties"), results)
+            _compare_properties(f"{path_s}.process_conditions",
+                                dev_pc.get("properties") or [],
+                                prod_pc.get("properties") or [], results)
 
             # Configurations — match by record name
             dev_cfg_map  = {(c.get("record") or {}).get("name", f"__idx{i}"): c
@@ -328,10 +370,11 @@ def run_bundle_check(
         print(f"  Fetching from {prod_label} …", end="", flush=True)
         try:
             prod_bundles = prod_api.get_cases_bundle(name=case_name, limit_cases=50)
-            # Exact-match preference
+            # Require an exact name match; a substring hit for a different case
+            # is not acceptable (it would produce false-positive diffs).
             exact = [b for b in prod_bundles
                      if b["case"].get("name") == case_name]
-            prod_bundle = exact[0] if exact else (prod_bundles[0] if prod_bundles else None)
+            prod_bundle = exact[0] if exact else None
             print(f" {'found' if prod_bundle else 'NOT FOUND'}.")
         except Exception as exc:
             print(_red(f"\n  ERROR: {type(exc).__name__}: {exc}"), file=sys.stderr)
