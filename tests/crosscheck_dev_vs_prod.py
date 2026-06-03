@@ -350,7 +350,9 @@ def _build_catalogue(limit: int) -> list[tuple[str, str, dict]]:
         (f"get_equipment(limit={L})",      "get_equipment",                 {"limit": L}),
 
         # ── Properties / TEA lookup tables ──────────────────────────────────
-        (f"get_properties(limit={L})",     "get_properties",                {"limit": L}),
+        # get_properties skipped: GenericForeignKey (content_type_id, object_id)
+        # differs between dev and prod even when data is consistent; covered by
+        # crosscheck_tables.py --properties for membership checks.
         (f"get_tea_equipment(limit={L})",  "get_tea_equipment",             {"limit": L}),
         (f"get_tea_equipment_costs(limit={L})",
                                            "get_tea_equipment_costs",       {"limit": L}),

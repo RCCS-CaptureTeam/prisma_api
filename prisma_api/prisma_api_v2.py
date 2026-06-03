@@ -315,6 +315,316 @@ class PrismaAPIv2:
             return len(results) > 0
         return not results.empty
 
+    # ── Internal record helpers ───────────────────────────────────────────────
+
+    def _as_records(self, result: Any) -> list[dict]:
+        """Normalise a DataFrame or list[dict] to list[dict]."""
+        if isinstance(result, pd.DataFrame):
+            return result.to_dict(orient="records")
+        if isinstance(result, list):
+            return result
+        return []
+
+    def _properties_for(self, object_id: int, limit: int = 2000) -> list[dict]:
+        """Return all Property records linked to *object_id* via GenericForeignKey.
+
+        The GFK fields (``object_id``, ``content_type``, ``content_type_id``)
+        are stripped from every returned record — they served their purpose for
+        the fetch and carry no semantic value in the assembled bundle.
+        Records are sorted alphabetically by ``name``.
+        """
+        _GFK_DROP = frozenset({"id", "object_id", "content_type", "content_type_id"})
+        records = self._as_records(
+            self.get_properties(object_id=object_id, limit=limit)
+        )
+        cleaned = [
+            {k: v for k, v in r.items() if k not in _GFK_DROP}
+            for r in records
+        ]
+        return sorted(cleaned, key=lambda r: str(r.get("name", "")).lower())
+
+    # ── Cases bundle ──────────────────────────────────────────────────────────
+
+    def get_cases_bundle(
+        self,
+        name: str | None = None,
+        source: str | None = None,
+        sink: str | None = None,
+        region: str | None = None,
+        limit_cases: int = 100,
+        limit_props: int = 2000,
+    ) -> list[dict]:
+        """
+        Aggregate all related data for one or more CaseStudy records into a
+        structured bundle, following the full relationship graph:
+
+            CaseStudy
+            ├── source        → Source         + properties (GFK)
+            ├── sink          → Sink            + properties (GFK)
+            ├── region        → Region          + properties (GFK, ambient params)
+            ├── utilities     → Utility[]       + properties (GFK) each
+            ├── subsystems    → Subsystem[]     + properties (GFK) each  (if present on case detail)
+            └── scenarios     → Scenario[]
+                    └── process_conditions → ProcessConditions  + properties (GFK)
+                                └── configurations → ProcessConfiguration[] + properties (GFK) each
+
+        Args:
+            name:        Substring filter on CaseStudy name (passed to get_cases).
+            source:      Substring filter on source name   (passed to get_cases).
+            sink:        Substring filter on sink name     (passed to get_cases).
+            region:      Exact ISO code filter on region   (passed to get_cases).
+            limit_cases: Maximum number of cases to fetch (default 100).
+            limit_props: Maximum properties per related object (default 2000).
+
+        Returns:
+            list[dict] — one entry per matched case, each structured as::
+
+                {
+                  "case": { ...case fields... },
+                  "source": {
+                      "record":     { ...source fields... },
+                      "properties": [ ...property records... ]
+                  },
+                  "sink": {
+                      "record":     { ...sink fields... },
+                      "properties": [ ...property records... ]
+                  },
+                  "region": {
+                      "record":     { ...region fields... },
+                      "properties": [ ...property records... ]
+                  },
+                  "utilities": [
+                      { "record": {...}, "properties": [...] },
+                      ...
+                  ],
+                  "subsystems": [
+                      { "record": {...}, "properties": [...] },
+                      ...
+                  ],
+                  "scenarios": [
+                      {
+                          "record": { ...scenario fields... },
+                          "process_conditions": {
+                              "record":          { ...process condition fields... },
+                              "properties":      [ ...property records... ],
+                              "configurations":  [
+                                  { "record": {...}, "properties": [...] },
+                                  ...
+                              ]
+                          } | None
+                      },
+                      ...
+                  ]
+                }
+        """
+
+        # ── helpers ────────────────────────────────────────────────────────
+
+        def _sort_props(props: list[dict]) -> list[dict]:
+            """Sort a property list alphabetically by name (case-insensitive)."""
+            return sorted(props, key=lambda r: str(r.get("name", "")).lower())
+
+        def _first_record(result: Any) -> dict | None:
+            records = self._as_records(result)
+            return records[0] if records else None
+
+        def _object_node(record: dict | None) -> dict:
+            """Wrap a single record + its properties into a bundle node."""
+            if record is None:
+                return {"record": None, "properties": []}
+            obj_id = record.get("id")
+            props  = _sort_props(self._properties_for(obj_id, limit=limit_props)) if obj_id else []
+            return {"record": record, "properties": props}
+
+        # ── fetch matching cases ───────────────────────────────────────────
+
+        cases = self._as_records(
+            self.get_cases(source=source, sink=sink,
+                           region=region, limit=limit_cases)
+        )
+        # Client-side name substring filter (get_cases has no name param)
+        if name:
+            name_lower = name.lower()
+            cases = [c for c in cases if name_lower in str(c.get("name", "")).lower()]
+
+        bundles: list[dict] = []
+
+        for case in cases:
+            case_id = case["id"]
+
+            # ── source ────────────────────────────────────────────────────
+            source_name = case.get("source")
+            source_rec  = _first_record(
+                self.get_sources(name=source_name, limit=10)
+            ) if source_name else None
+            # prefer exact match
+            if source_rec and source_rec.get("name") != source_name:
+                candidates = [
+                    r for r in self._as_records(self.get_sources(name=source_name, limit=50))
+                    if r.get("name") == source_name
+                ]
+                if candidates:
+                    source_rec = candidates[0]
+
+            # ── sink ──────────────────────────────────────────────────────
+            sink_name = case.get("sink")
+            sink_rec  = _first_record(
+                self.get_sinks(name=sink_name, limit=10)
+            ) if sink_name else None
+            if sink_rec and sink_rec.get("name") != sink_name:
+                candidates = [
+                    r for r in self._as_records(self.get_sinks(name=sink_name, limit=50))
+                    if r.get("name") == sink_name
+                ]
+                if candidates:
+                    sink_rec = candidates[0]
+
+            # ── region ────────────────────────────────────────────────────
+            region_code = case.get("region")
+            region_rec  = _first_record(
+                self.get_regions(code=region_code, limit=1)
+            ) if region_code else None
+
+            # ── utilities ─────────────────────────────────────────────────
+            utils_raw = case.get("utilities") or []
+            if isinstance(utils_raw, str):
+                utils_raw = [utils_raw] if utils_raw else []
+            utility_nodes: list[dict] = []
+            for util_name in utils_raw:
+                util_rec = _first_record(self.get_utilities(name=util_name, limit=10))
+                if util_rec and util_rec.get("name") != util_name:
+                    candidates = [
+                        r for r in self._as_records(self.get_utilities(name=util_name, limit=50))
+                        if r.get("name") == util_name
+                    ]
+                    if candidates:
+                        util_rec = candidates[0]
+                utility_nodes.append(_object_node(util_rec))
+
+            # ── subsystems (M2M — present on case detail if serialiser exposes them)
+            subsystem_nodes: list[dict] = []
+            case_detail    = self.get_case(case_id)
+            subsystems_raw = case_detail.get("subsystems") or []
+            if isinstance(subsystems_raw, str):
+                subsystems_raw = [subsystems_raw] if subsystems_raw else []
+            for sub_item in subsystems_raw:
+                # sub_item may be a name string or a dict with 'name'/'id'
+                if isinstance(sub_item, dict):
+                    sub_rec = sub_item
+                else:
+                    sub_name = str(sub_item)
+                    sub_rec  = _first_record(self.get_subsystems(name=sub_name, limit=10))
+                    if sub_rec and sub_rec.get("name") != sub_name:
+                        candidates = [
+                            r for r in self._as_records(self.get_subsystems(name=sub_name, limit=50))
+                            if r.get("name") == sub_name
+                        ]
+                        if candidates:
+                            sub_rec = candidates[0]
+                subsystem_nodes.append(_object_node(sub_rec))
+
+            # ── scenarios ─────────────────────────────────────────────────
+            scenario_nodes: list[dict] = []
+            scenarios = self._as_records(
+                self.get_scenarios(case_id=case_id, limit=200)
+            )
+            for scen in scenarios:
+                scen_id     = scen["id"]
+                scen_detail = self.get_scenario(scen_id)
+
+                # Process conditions: look for process_conditions or
+                # process_conditions_id in the scenario detail response
+                pc_node: dict | None = None
+                pc_name = scen_detail.get("process_conditions")
+                pc_id   = scen_detail.get("process_conditions_id")
+
+                if pc_id:
+                    try:
+                        pc_rec = self.get_process_condition(int(pc_id))
+                    except Exception:
+                        pc_rec = None
+                elif pc_name:
+                    pc_rec = _first_record(
+                        self.get_process_conditions(name=pc_name, limit=10)
+                    )
+                    if pc_rec and pc_rec.get("name") != pc_name:
+                        candidates = [
+                            r for r in self._as_records(
+                                self.get_process_conditions(name=pc_name, limit=50)
+                            )
+                            if r.get("name") == pc_name
+                        ]
+                        pc_rec = candidates[0] if candidates else pc_rec
+                else:
+                    pc_rec = None
+
+                if pc_rec:
+                    pc_obj_id = pc_rec.get("id")
+                    pc_props  = _sort_props(self._properties_for(pc_obj_id, limit=limit_props)) if pc_obj_id else []
+
+                    # ProcessConfigurations that reference this ProcessConditions
+                    # (purge / desiccant / process_data FKs on ProcessConfiguration)
+                    cfg_nodes: list[dict] = []
+                    cfgs = self._as_records(
+                        self.get_process_configurations(name=pc_rec.get("name"), limit=100)
+                    )
+                    for cfg in cfgs:
+                        cfg_obj_id = cfg.get("id")
+                        cfg_props  = _sort_props(self._properties_for(cfg_obj_id, limit=limit_props)) if cfg_obj_id else []
+                        cfg_nodes.append({"record": cfg, "properties": cfg_props})
+
+                    pc_node = {
+                        "record":         pc_rec,
+                        "properties":     pc_props,
+                        "configurations": cfg_nodes,
+                    }
+
+                scenario_nodes.append({
+                    "record":             scen_detail,
+                    "process_conditions": pc_node,
+                })
+
+            # ── assemble bundle ───────────────────────────────────────────
+            bundle = {
+                "case":       case_detail,
+                "source":     _object_node(source_rec),
+                "sink":       _object_node(sink_rec),
+                "region":     _object_node(region_rec),
+                "utilities":  utility_nodes,
+                "subsystems": subsystem_nodes,
+                "scenarios":  scenario_nodes,
+            }
+
+            # ── summary print (mirrors get_material_property_bundle style) ──
+            n_props = (
+                len(bundle["source"]["properties"])
+                + len(bundle["sink"]["properties"])
+                + len(bundle["region"]["properties"])
+                + sum(u["properties"].__len__() for u in utility_nodes)
+                + sum(s["properties"].__len__() for s in subsystem_nodes)
+                + sum(
+                    len(sn["process_conditions"]["properties"]) if sn["process_conditions"] else 0
+                    for sn in scenario_nodes
+                )
+                + sum(
+                    len(c["properties"])
+                    for sn in scenario_nodes
+                    if sn["process_conditions"]
+                    for c in sn["process_conditions"]["configurations"]
+                )
+            )
+            print(
+                f"Case bundle '{case_detail.get('name', case_id)}': "
+                f"{len(scenarios)} scenario(s), "
+                f"{len(utility_nodes)} utility/ies, "
+                f"{len(subsystem_nodes)} subsystem(s), "
+                f"{n_props} total property records"
+            )
+
+            bundles.append(bundle)
+
+        return bundles
+
     def get_molecules(self, name: str | None = None,
                       limit: int = 500, offset: int = 0) -> pd.DataFrame:
         """GET /api/v2/molecules/"""
