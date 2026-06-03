@@ -1,5 +1,6 @@
 import os
 from .config import get_or_create_config, update_dev_mode as _update_dev_mode
+from .prisma_api_v2 import PrismaAPIv2
 from pathlib import Path
 import pandas as pd
 import requests
@@ -41,7 +42,24 @@ class prisma_api():
             if self.dev:
                 self.dev_host_port = os.getenv('PRISMA_API_DEV_HOST_PORT', '')
 
-    
+        self.v2 = PrismaAPIv2(
+            key=self.key,
+            dev=self.dev,
+            dev_host_port=getattr(self, 'dev_host_port', ''),
+            return_format=getattr(self, '_return_format', 'json'),
+        )
+
+    def set_return_format(self, fmt: str) -> None:
+        """
+        Set the output format for all v2 list endpoints.
+
+        Args:
+            fmt: ``'dataframe'`` (default) — return ``pd.DataFrame``.
+                 ``'json'``      — return a plain ``list[dict]``.
+        """
+        self._return_format = fmt
+        self.v2.set_return_format(fmt)
+
     def update_dev_mode(self, dev: bool):
         """Update the dev flag in config.yaml.
         
