@@ -20,7 +20,7 @@ import pandas as pd
 
 # Initialise — reads API key from config file (~/.config/prisma_api/config.yaml)
 api = prisma_api.init()
-api.update_dev_mode(False)
+api.update_dev_mode(True)
 api = prisma_api.init()
 
 # Use JSON (list[dict]) return format throughout this notebook
@@ -57,8 +57,7 @@ sim.head()
 
 
 # %%
-exp.head()
-
+exp
 
 # %%
 # Combined — separate_experimental=False
@@ -81,18 +80,16 @@ api.v2.health()
 # %%
 # List all materials
 materials = api.v2.list_materials()
-print(f"{len(materials)} materials")
 
 
 # %%
 # Filter by name substring
-api.v2.list_materials(name='ABEX')
+api.v2.list_materials(name='AB')
 
 # %%
 # Detail for a single material
 first_id = int(materials[0]['id'])
 api.v2.get_material(first_id)
-
 
 # %% [markdown]
 # ### 4.1b Materials (PSDI — extended crystallographic fields)
@@ -110,11 +107,12 @@ psdi[:5]
 
 # %%
 # Filter by name substring
-api.v2.get_materials_psdi(name='1810_dmp+N398+39_charge')
+api.v2.get_materials_psdi(name='Lewatit_1065_exp')
 
 # %%
 # Full detail record — includes linker/node SMILES, PubChem fields, element composition
-psdi_id = int(psdi[0]['id'])
+first_psdi = psdi.iloc[0] if hasattr(psdi, 'iloc') else psdi[0]
+psdi_id = int(first_psdi['id'])
 api.v2.get_material_psdi(psdi_id)
 
 
@@ -130,15 +128,20 @@ api.v2.get_material_psdi(psdi_id)
 mof_name = materials[0]['name']
 exists = api.v2.preflight_material_check(mof_name)
 print(f"'{mof_name}' exists: {exists}")
+
+# %% [markdown]
+# Example null response
+
+# %%
 print(f"'DOESNOTEXIST123' exists: {api.v2.preflight_material_check('DOESNOTEXIST123')}")
 
 
 # %%
 # Fetch all science data for a MOF in one call
 bundle = api.v2.get_material_property_bundle(mof_name)
-for key, val in bundle.items():
-    n = len(val) if isinstance(val, list) else len(val)
-    print(f"  {key:25s}: {n} records")
+
+# %%
+bundle
 
 # %% [markdown]
 # ### 4.2 Molecules
@@ -146,7 +149,6 @@ for key, val in bundle.items():
 # %%
 molecules = api.v2.get_molecules()
 molecules[:5]
-
 
 # %%
 mol_id = int(molecules[0]['id'])
@@ -194,11 +196,12 @@ api.v2.get_region(region_id)
 sources = api.v2.get_sources()
 sources
 
+# %%
+# source = api.v2.get_source(name='coal_source')
 
 # %%
 src_id = int(sources[0]['id'])
 api.v2.get_source(src_id)
-
 
 # %% [markdown]
 # ### 4.6 Sinks
@@ -288,17 +291,34 @@ if subsystems:
 # ### 4.11 Equipment
 
 # %%
-equipment = api.v2.get_equipment()
-print(f"{len(equipment)} equipment items")
-# Filter by name
-api.v2.get_equipment(name='blower')
+try:
+    equipment = api.v2.get_equipment()
+    display(equipment)
+except Exception as e:
+    print(f"get_equipment unavailable: {e}")
+    equipment = None
 
 
 # %%
-if equipment:
-    eq_id = int(equipment[0]['id'])
-    api.v2.get_equipment_item(eq_id)
+if equipment is not None:
+    print(f"{len(equipment)} equipment items")
+    # Filter by name substring
+    try:
+        display(api.v2.get_equipment(name='blower'))
+    except Exception as e:
+        print(f"Filter unavailable: {e}")
 
+# %%
+if equipment is not None:
+    eq_id = int(equipment[0]['id'])
+    try:
+        api.v2.get_equipment_item(eq_id)
+
+    except Exception as e:
+        print(f"get_equipment_item unavailable: {e}")
+
+# %%
+equipment
 
 # %% [markdown]
 # ### 4.12 Properties
@@ -320,49 +340,52 @@ if properties:
 # ### 4.13 TEA Equipment
 
 # %%
-tea_equipment = api.v2.get_tea_equipment()
-print(f"{len(tea_equipment)} TEA equipment items")
+equipment = api.v2.get_equipment()
+print(f"{len(equipment)} TEA equipment items")
 # Filter by group
-api.v2.get_tea_equipment(group='Blower')
+api.v2.get_equipment(group='Blower')
 
 
 # %%
-if tea_equipment:
-    tea_eq_id = int(tea_equipment[0]['id'])
-    api.v2.get_tea_equipment_item(tea_eq_id)
+if equipment:
+    eq_id = int(equipment[0]['id'])
+    api.v2.get_equipment_item(eq_id)
 
+
+# %%
+api.v2.get_equipment(name="GenericHeatPump")
 
 # %% [markdown]
 # ### 4.14 TEA Equipment Costs
 
 # %%
-tea_costs = api.v2.get_tea_equipment_costs()
-print(f"{len(tea_costs)} TEA equipment cost records")
+costs = api.v2.get_equipment_costs()
+print(f"{len(costs)} TEA equipment cost records")
 # Filter by equipment PK
-if tea_equipment:
-    api.v2.get_tea_equipment_costs(equipment_id=tea_eq_id)
+if equipment:
+    api.v2.get_equipment_costs(equipment_id=eq_id)
 
 
 # %%
-if tea_costs:
-    tea_cost_id = int(tea_costs[0]['id'])
-    api.v2.get_tea_equipment_cost(tea_cost_id)
+if costs:
+    cost_id = int(costs[0]['id'])
+    api.v2.get_equipment_cost(cost_id)
 
 
 # %% [markdown]
 # ### 4.15 TEA Equipment Design Parameters
 
 # %%
-tea_designs = api.v2.get_tea_equipment_designs()
-print(f"{len(tea_designs)} TEA equipment design parameters")
+designs = api.v2.get_equipment_designs()
+print(f"{len(designs)} TEA equipment design parameters")
 # Filter by key
-api.v2.get_tea_equipment_designs(key='D1')
+api.v2.get_equipment_designs(key='D1')
 
 
 # %%
-if tea_designs:
-    tea_design_id = int(tea_designs[0]['id'])
-    api.v2.get_tea_equipment_design(tea_design_id)
+if designs:
+    design_id = int(designs[0]['id'])
+    api.v2.get_equipment_design(design_id)
 
 
 # %% [markdown]
@@ -658,8 +681,8 @@ if 'case_id_success' in locals():
 
 # %%
 # TEA scenarios only
-tea_scenarios = api.v2.get_scenarios(case_id=case_id_success, type='TEA')
-tea_scenarios
+scenarios = api.v2.get_scenarios(case_id=case_id_success, type='TEA')
+scenarios
 
 
 # %%
