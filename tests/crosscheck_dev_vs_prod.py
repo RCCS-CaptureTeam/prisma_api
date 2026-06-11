@@ -96,9 +96,8 @@ _FK_FIELDS: frozenset[str] = frozenset({
     "reference_id",
     "transport_id",
     "subsystem_id",
-    "equipment_id",
     "property_id",
-    "tea_equipment_id",
+    "equipment_id",
     "cost_id",
     "design_id",
     "condition_id",
@@ -347,17 +346,16 @@ def _build_catalogue(limit: int) -> list[tuple[str, str, dict]]:
         (f"get_references(limit={L})",     "get_references",                {"limit": L}),
         (f"get_transports(limit={L})",     "get_transports",                {"limit": L}),
         (f"get_subsystems(limit={L})",     "get_subsystems",                {"limit": L}),
-        (f"get_equipment(limit={L})",      "get_equipment",                 {"limit": L}),
 
-        # ── Properties / TEA lookup tables ──────────────────────────────────
+        # ── Properties / equipment lookup tables ──────────────────────────────────
         # get_properties skipped: GenericForeignKey (content_type_id, object_id)
         # differs between dev and prod even when data is consistent; covered by
         # crosscheck_tables.py --properties for membership checks.
-        (f"get_tea_equipment(limit={L})",  "get_tea_equipment",             {"limit": L}),
-        (f"get_tea_equipment_costs(limit={L})",
-                                           "get_tea_equipment_costs",       {"limit": L}),
-        (f"get_tea_equipment_designs(limit={L})",
-                                           "get_tea_equipment_designs",     {"limit": L}),
+        (f"get_equipment(limit={L})",  "get_equipment",             {"limit": L}),
+        (f"get_equipment_costs(limit={L})",
+                                           "get_equipment_costs",       {"limit": L}),
+        (f"get_equipment_designs(limit={L})",
+                                           "get_equipment_designs",     {"limit": L}),
         (f"get_process_conditions(limit={L})",
                                            "get_process_conditions",        {"limit": L}),
         (f"get_process_configurations(limit={L})",

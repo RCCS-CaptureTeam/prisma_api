@@ -483,23 +483,6 @@ def test_get_subsystem_detail(api):
     assert api.get_subsystem(1)["type"] == "dac"
 
 
-# ── Equipment ─────────────────────────────────────────────────────────────────
-
-@resp_lib.activate
-def test_get_equipment_returns_dataframe(api):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment/",
-                 json=_envelope([{"id": 1, "name": "Blower"}]), status=200)
-    df = api.get_equipment()
-    assert len(df) == 1
-
-
-@resp_lib.activate
-def test_get_equipment_item_detail(api):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment/1/",
-                 json={"id": 1, "name": "Blower"}, status=200)
-    assert api.get_equipment_item(1)["name"] == "Blower"
-
-
 # ── Properties ────────────────────────────────────────────────────────────────
 
 @resp_lib.activate
@@ -527,85 +510,85 @@ def test_get_property_detail(api):
     assert api.get_property(1)["name"] == "pressure"
 
 
-# ── TEA Equipment ─────────────────────────────────────────────────────────────
+# ── Equipment ─────────────────────────────────────────────────────────────
 
 @resp_lib.activate
-def test_get_tea_equipment_returns_dataframe(api):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment/",
+def test_get_equipment_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment/",
                  json=_envelope([{"id": 1, "name": "Blower A", "group": "Blower"}]),
                  status=200)
-    df = api.get_tea_equipment()
+    df = api.get_equipment()
     assert_df_columns(df, "name", "group")
 
 
 @resp_lib.activate
-def test_get_tea_equipment_group_filter(api):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment/",
+def test_get_equipment_group_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment/",
                  match=[matchers.query_param_matcher(
                      {"group": "Blower", "limit": "500", "offset": "0"})],
                  json=_envelope([]), status=200)
-    api.get_tea_equipment(group="Blower")
+    api.get_equipment(group="Blower")
 
 
 @resp_lib.activate
-def test_get_tea_equipment_item_detail(api):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment/1/",
+def test_get_equipment_item_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment/1/",
                  json={"id": 1, "name": "Blower A", "group": "Blower"}, status=200)
-    assert api.get_tea_equipment_item(1)["group"] == "Blower"
+    assert api.get_equipment_item(1)["group"] == "Blower"
 
 
-# ── TEA Equipment Costs ───────────────────────────────────────────────────────
+# ── Equipment Costs ───────────────────────────────────────────────────────
 
 @resp_lib.activate
-def test_get_tea_equipment_costs_returns_dataframe(api):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment-costs/",
+def test_get_equipment_costs_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment-costs/",
                  json=_envelope([{"id": 1, "equipment_id": 1, "cost": 5000.0}]),
                  status=200)
-    df = api.get_tea_equipment_costs()
+    df = api.get_equipment_costs()
     assert_df_columns(df, "equipment_id", "cost")
 
 
 @resp_lib.activate
-def test_get_tea_equipment_costs_equipment_filter(api):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment-costs/",
+def test_get_equipment_costs_equipment_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment-costs/",
                  match=[matchers.query_param_matcher(
                      {"equipment_id": "1", "limit": "500", "offset": "0"})],
                  json=_envelope([]), status=200)
-    api.get_tea_equipment_costs(equipment_id=1)
+    api.get_equipment_costs(equipment_id=1)
 
 
 @resp_lib.activate
-def test_get_tea_equipment_cost_detail(api):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment-costs/1/",
+def test_get_equipment_cost_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment-costs/1/",
                  json={"id": 1, "equipment_id": 1, "cost": 5000.0}, status=200)
-    assert api.get_tea_equipment_cost(1)["cost"] == 5000.0
+    assert api.get_equipment_cost(1)["cost"] == 5000.0
 
 
-# ── TEA Equipment Designs ─────────────────────────────────────────────────────
+# ── Equipment Designs ─────────────────────────────────────────────────────
 
 @resp_lib.activate
-def test_get_tea_equipment_designs_returns_dataframe(api):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment-designs/",
+def test_get_equipment_designs_returns_dataframe(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment-designs/",
                  json=_envelope([{"id": 1, "equipment_id": 1, "key": "D1", "value": 1.5}]),
                  status=200)
-    df = api.get_tea_equipment_designs()
+    df = api.get_equipment_designs()
     assert_df_columns(df, "equipment_id", "key")
 
 
 @resp_lib.activate
-def test_get_tea_equipment_designs_key_filter(api):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment-designs/",
+def test_get_equipment_designs_key_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment-designs/",
                  match=[matchers.query_param_matcher(
                      {"key": "D1", "limit": "500", "offset": "0"})],
                  json=_envelope([]), status=200)
-    api.get_tea_equipment_designs(key="D1")
+    api.get_equipment_designs(key="D1")
 
 
 @resp_lib.activate
-def test_get_tea_equipment_design_detail(api):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/tea-equipment-designs/1/",
+def test_get_equipment_design_detail(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/equipment-designs/1/",
                  json={"id": 1, "key": "D1", "value": 1.5}, status=200)
-    assert api.get_tea_equipment_design(1)["key"] == "D1"
+    assert api.get_equipment_design(1)["key"] == "D1"
 
 
 # ── Process Conditions ────────────────────────────────────────────────────────
@@ -859,6 +842,8 @@ def test_get_isotherm_good_structure_false(api):
 
 @resp_lib.activate
 def test_get_material_property_bundle_returns_dict(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 json=_envelope([{"id": 1, "name": "HKUST"}]), status=200)
     for path in ("/isotherms/", "/carbon-zeopp/",
                  "/carbon-zeopp-experimental/", "/water-kpis/"):
         resp_lib.add(resp_lib.GET, f"{PROD_BASE}{path}",
@@ -872,6 +857,8 @@ def test_get_material_property_bundle_returns_dict(api):
 @resp_lib.activate
 def test_get_material_property_bundle_filters_forwarded(api):
     """sim_or_exp and good_structure must be forwarded to isotherms and water KPIs."""
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 json=_envelope([{"id": 1, "name": "HKUST"}]), status=200)
     expected_iso = {"mof": "HKUST", "sim_or_exp": "sim",
                     "good_structure": "true", "limit": "500", "offset": "0"}
     expected_w   = {"mof": "HKUST", "sim_or_exp": "sim",

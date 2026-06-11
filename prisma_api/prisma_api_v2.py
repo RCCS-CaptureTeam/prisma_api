@@ -749,15 +749,6 @@ class PrismaAPIv2:
         """GET /api/v2/subsystems/{subsystem_id}/"""
         return self._get(f"/subsystems/{subsystem_id}/")
 
-    def get_equipment(self, name: str | None = None,
-                      limit: int = 500, offset: int = 0) -> pd.DataFrame:
-        """GET /api/v2/equipment/"""
-        params = _compact(name=name, limit=limit, offset=offset)
-        return self._to_df(self._get("/equipment/", params))
-
-    def get_equipment_item(self, equipment_id: int) -> dict:
-        """GET /api/v2/equipment/{equipment_id}/"""
-        return self._get(f"/equipment/{equipment_id}/")
 
     def get_properties(self,
                        name: str | None = None,
@@ -783,54 +774,54 @@ class PrismaAPIv2:
         """GET /api/v2/properties/{property_id}/"""
         return self._get(f"/properties/{property_id}/")
 
-    def get_tea_equipment(self, name: str | None = None, group: str | None = None,
+    def get_equipment(self, name: str | None = None, group: str | None = None,
                           limit: int = 500, offset: int = 0) -> pd.DataFrame:
         """
-        GET /api/v2/tea-equipment/
+        GET /api/v2/equipment/
 
         Args:
-            name:  Substring filter on TEA equipment name.
+            name:  Substring filter on equipment name.
             group: Exact group filter (e.g. 'Blower').
         """
         params = _compact(name=name, group=group, limit=limit, offset=offset)
-        return self._to_df(self._get("/tea-equipment/", params))
+        return self._to_df(self._get("/equipment/", params))
 
-    def get_tea_equipment_item(self, tea_equipment_id: int) -> dict:
-        """GET /api/v2/tea-equipment/{tea_equipment_id}/"""
-        return self._get(f"/tea-equipment/{tea_equipment_id}/")
+    def get_equipment_item(self, equipment_id: int) -> dict:
+        """GET /api/v2/equipment/{equipment_id}/"""
+        return self._get(f"/equipment/{equipment_id}/")
 
-    def get_tea_equipment_costs(self, equipment_id: int | None = None,
+    def get_equipment_costs(self, equipment_id: int | None = None,
                                 limit: int = 500, offset: int = 0) -> pd.DataFrame:
         """
-        GET /api/v2/tea-equipment-costs/
+        GET /api/v2/equipment-costs/
 
         Args:
-            equipment_id: Exact TEA equipment PK filter.
+            equipment_id: Exact equipment PK filter.
         """
         params = _compact(equipment_id=equipment_id, limit=limit, offset=offset)
-        return self._to_df(self._get("/tea-equipment-costs/", params))
+        return self._to_df(self._get("/equipment-costs/", params))
 
-    def get_tea_equipment_cost(self, cost_id: int) -> dict:
-        """GET /api/v2/tea-equipment-costs/{cost_id}/"""
-        return self._get(f"/tea-equipment-costs/{cost_id}/")
+    def get_equipment_cost(self, cost_id: int) -> dict:
+        """GET /api/v2/equipment-costs/{cost_id}/"""
+        return self._get(f"/equipment-costs/{cost_id}/")
 
-    def get_tea_equipment_designs(self, equipment_id: int | None = None,
+    def get_equipment_designs(self, equipment_id: int | None = None,
                                   key: str | None = None,
                                   limit: int = 500, offset: int = 0) -> pd.DataFrame:
         """
-        GET /api/v2/tea-equipment-designs/
+        GET /api/v2/equipment-designs/
 
         Args:
-            equipment_id: Exact TEA equipment PK filter.
+            equipment_id: Exact equipment PK filter.
             key:          Exact design parameter key filter (e.g. 'D1').
         """
         params = _compact(equipment_id=equipment_id, key=key,
                           limit=limit, offset=offset)
-        return self._to_df(self._get("/tea-equipment-designs/", params))
+        return self._to_df(self._get("/equipment-designs/", params))
 
-    def get_tea_equipment_design(self, design_id: int) -> dict:
-        """GET /api/v2/tea-equipment-designs/{design_id}/"""
-        return self._get(f"/tea-equipment-designs/{design_id}/")
+    def get_equipment_design(self, design_id: int) -> dict:
+        """GET /api/v2/equipment-designs/{design_id}/"""
+        return self._get(f"/equipment-designs/{design_id}/")
 
     def get_process_conditions(self, name: str | None = None,
                                type: str | None = None,
