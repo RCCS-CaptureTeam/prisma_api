@@ -881,6 +881,65 @@ def test_get_material_property_bundle_filters_forwarded(api):
     api.get_material_property_bundle("HKUST", sim_or_exp="sim", good_structure=True)
 
 
+@resp_lib.activate
+def test_get_material_property_bundle_supports_query_dict(api):
+    """Advanced query dict filters are merged and forwarded per endpoint."""
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 match=[matchers.query_param_matcher({"name": "HKUST", "limit": "20"})],
+                 json=_envelope([{"id": 1, "name": "HKUST"}]), status=200)
+
+    expected_iso = {
+        "mof": "HKUST",
+        "limit": "10",
+        "offset": "0",
+        "good_structure": "true",
+        "molecule": "CO2",
+        "temperature_min": "273",
+    }
+    expected_z = {
+        "mof": "HKUST",
+        "limit": "10",
+        "offset": "0",
+        "good_structure": "true",
+    }
+    expected_ze = {
+        "mof": "HKUST",
+        "limit": "10",
+        "offset": "0",
+    }
+    expected_w = {
+        "mof": "HKUST",
+        "limit": "10",
+        "offset": "0",
+        "good_structure": "true",
+        "source": "Coal",
+    }
+
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/isotherms/",
+                 match=[matchers.query_param_matcher(expected_iso)],
+                 json=_envelope([]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/carbon-zeopp/",
+                 match=[matchers.query_param_matcher(expected_z)],
+                 json=_envelope([]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/carbon-zeopp-experimental/",
+                 match=[matchers.query_param_matcher(expected_ze)],
+                 json=_envelope([]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/water-kpis/",
+                 match=[matchers.query_param_matcher(expected_w)],
+                 json=_envelope([]), status=200)
+
+    api.get_material_property_bundle(
+        "HKUST",
+        good_structure=True,
+        query={
+            "common": {"limit": 10},
+            "materials": {"limit": 20},
+            "isotherms": {"molecule": "CO2", "temperature_min": 273},
+            "water_kpis": {"source": "Coal"},
+        },
+    )
+
+
 # ── preflight_material_check ──────────────────────────────────────────────────
 
 @resp_lib.activate

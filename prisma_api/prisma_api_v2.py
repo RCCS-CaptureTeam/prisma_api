@@ -228,7 +228,8 @@ class PrismaAPIv2:
                                      sim_or_exp: str | None = None,
                                      good_structure: bool | None = None,
                                      limit: int = 500,
-                                     offset: int = 0) -> dict:
+                                     offset: int = 0,
+                                     query: dict[str, dict[str, Any]] | None = None) -> dict:
         """
         Fetch all science data for a given MOF in a single call.
 
@@ -243,6 +244,14 @@ class PrismaAPIv2:
                             and simulated Zeo++.
             limit:          Max records per sub-query (default 500).
             offset:         Pagination offset for all sub-queries.
+            query:          Optional advanced parameter map for endpoint-specific
+                            filtering. Supported keys:
+                            ``materials``, ``isotherms``, ``zeopp_simulated``,
+                            ``zeopp_experimental``, ``water_kpis``, and
+                            ``common``.
+
+                            ``common`` is merged into all four science endpoints.
+                            Endpoint-specific keys override defaults.
 
         Returns:
             dict with keys:
@@ -255,7 +264,26 @@ class PrismaAPIv2:
             ValueError: if the name matches more than one material — use an
                 exact name or a more specific substring.
         """
-        matches = self._get("/materials/", {"name": mof, "limit": 50}).get("results", [])
+        if query is not None and not isinstance(query, dict):
+            raise TypeError("query must be a dict[str, dict] or None")
+
+        query = query or {}
+
+        common_filters = query.get("common", {}) or {}
+        if not isinstance(common_filters, dict):
+            raise TypeError("query['common'] must be a dict when provided")
+
+        def _merge_filters(defaults: dict[str, Any], key: str) -> dict[str, Any]:
+            endpoint_filters = query.get(key, {}) or {}
+            if not isinstance(endpoint_filters, dict):
+                raise TypeError(f"query['{key}'] must be a dict when provided")
+            merged = {**defaults, **common_filters, **endpoint_filters}
+            return _compact(**merged)
+
+        matches = self._get(
+            "/materials/",
+            _merge_filters({"name": mof, "limit": 50}, "materials"),
+        ).get("results", [])
         # The API name filter is a substring match — narrow to exact matches only
         exact_matches = [m for m in matches if m["name"] == mof]
         # Fall back to substring matches only if there is no exact match
@@ -282,22 +310,46 @@ class PrismaAPIv2:
                 return records.drop(columns=[c for c in _WK_DROP if c in records.columns])
             return records
 
+        good_structure_q = None if good_structure is None else str(good_structure).lower()
+
         bundle = {
-            "isotherms": self.get_isotherm(
-                mof=mof, sim_or_exp=sim_or_exp, good_structure=good_structure,
-                limit=limit, offset=offset,
-            ),
-            "zeopp_simulated": self.get_carbon_zeopp(
-                mof=mof, good_structure=good_structure,
-                limit=limit, offset=offset,
-            ),
-            "zeopp_experimental": self.get_carbon_zeopp_experimental(
-                mof=mof, limit=limit, offset=offset,
-            ),
-            "water_kpis": _drop_wk_id_fields(self.get_water_kpis(
-                mof=mof, sim_or_exp=sim_or_exp, good_structure=good_structure,
-                limit=limit, offset=offset,
+            "isotherms": self._to_df(self._get(
+                "/isotherms/",
+                _merge_filters({
+                    "mof": mof,
+                    "sim_or_exp": sim_or_exp,
+                    "good_structure": good_structure_q,
+                    "limit": limit,
+                    "offset": offset,
+                }, "isotherms"),
             )),
+            "zeopp_simulated": self._to_df(self._get(
+                "/carbon-zeopp/",
+                _merge_filters({
+                    "mof": mof,
+                    "good_structure": good_structure_q,
+                    "limit": limit,
+                    "offset": offset,
+                }, "zeopp_simulated"),
+            )),
+            "zeopp_experimental": self._to_df(self._get(
+                "/carbon-zeopp-experimental/",
+                _merge_filters({
+                    "mof": mof,
+                    "limit": limit,
+                    "offset": offset,
+                }, "zeopp_experimental"),
+            )),
+            "water_kpis": _drop_wk_id_fields(self._to_df(self._get(
+                "/water-kpis/",
+                _merge_filters({
+                    "mof": mof,
+                    "sim_or_exp": sim_or_exp,
+                    "good_structure": good_structure_q,
+                    "limit": limit,
+                    "offset": offset,
+                }, "water_kpis"),
+            ))),
         }
         label = true_name if true_name == mof else f"{true_name} (matched from partial string: '{mof}')"
         print(f"Property bundle for '{label}':")

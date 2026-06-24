@@ -148,6 +148,41 @@ print(f"'DOESNOTEXIST123' exists: {api.v2.preflight_material_check('DOESNOTEXIST
 bundle = api.v2.get_material_property_bundle(mof_name)
 
 # %%
+mof_name = 'CALF20'
+bundle = api.v2.get_material_property_bundle(
+    mof_name,
+    query={
+        'isotherms': {'molecule': 'CO2'},
+        'water_kpis': {'source': 'DAC'},
+    },
+)
+# bundle
+
+# %%
+
+
+# %%
+
+
+# %%
+
+
+# %%
+
+
+# %%
+
+
+# %%
+
+
+# %%
+
+
+# %%
+
+
+# %%
 bundle
 
 # %% [markdown]
