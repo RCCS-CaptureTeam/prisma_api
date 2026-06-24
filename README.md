@@ -7,7 +7,6 @@ This package provides:
 - legacy v1 wrappers on the main `api` object
 - a larger v2 REST client on `api.v2`
 - local config-based API-key management
-- optional local development routing via `api.update_dev_mode(True)`
 
 PrISMa is a platform for numerical synthesis and assessment of metal-organic frameworks and related carbon-capture workflows.
 
@@ -17,22 +16,6 @@ PrISMa is a platform for numerical synthesis and assessment of metal-organic fra
 
 ```bash
 pip install prisma_api
-```
-
-### From source
-
-```bash
-git clone https://github.com/RCCS-CaptureTeam/prisma_api.git
-cd prisma_api
-pip install .
-```
-
-### Development install
-
-```bash
-git clone https://github.com/RCCS-CaptureTeam/prisma_api.git
-cd prisma_api
-pip install -e ".[dev]"
 ```
 
 ### Requirements
@@ -53,6 +36,12 @@ api = prisma_api.init()
 ```
 
 On first use, the package creates a config file and prompts for an API key.
+
+### Upgrades
+
+```python
+pip install --upgrade prisma_api
+```
 
 ### Find the config path
 
@@ -107,24 +96,16 @@ materials_df = api.v2.list_materials(name="ABEX")
 print(materials_df.head())
 ```
 
-### Dev mode
+### Flowsheets
 
 ```python
 import prisma_api
 
 api = prisma_api.init()
-api.update_dev_mode(True)
-api = prisma_api.init()
 
 flowsheet = api.v2.get_flowsheet(name="dac_min")
 ```
 
-Disable dev mode the same way:
-
-```python
-api.update_dev_mode(False)
-api = prisma_api.init()
-```
 
 ## Return formats
 
