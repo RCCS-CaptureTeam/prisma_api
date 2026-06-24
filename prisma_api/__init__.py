@@ -1,4 +1,4 @@
-__version__ = "0.2.11"
+__version__ = "0.3.0"
 
 
 from prisma_api.prisma_api import prisma_api as init        # Main prisma_api class for initialisation
