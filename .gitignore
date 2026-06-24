@@ -187,3 +187,4 @@ cython_debug/
 .DS_Store*
 *.ipynb
 *tmp_*
+reference_data/*

@@ -32,6 +32,13 @@ print(f"Dev mode           : {api.dev}")
 print(f"Return format      : json (list[dict])")
 
 # %% [markdown]
+# ## Latest additions
+
+# %%
+flowsheet = api.v2.get_flowsheet(name='dac_min')
+flowsheet
+
+# %% [markdown]
 # ---
 # ## 2 · v1 — `get_materials_data`
 # 
@@ -182,7 +189,7 @@ regions
 
 
 # %%
-api.v2.get_regions(code='UK')
+api.v2.get_regions(code='US')
 
 # %%
 region_id = int(regions[0]['id'])

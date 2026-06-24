@@ -124,6 +124,14 @@ class PrismaAPIv2:
         """GET /api/v2/health/ — returns status dict."""
         return self._get("/health/")
 
+    def get_flowsheet(self, name: str = "dac_min") -> dict:
+        """
+        GET /api/v2/flowsheets/{name}/
+
+        Returns the DB-normalised flowsheet payload for the named object.
+        """
+        return self._get(f"/flowsheets/{name}/")
+
     # ── Catalog ───────────────────────────────────────────────────────────────
 
     def list_materials(self, name: str | None = None,

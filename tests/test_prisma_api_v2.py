@@ -1359,3 +1359,25 @@ def test_api_key_header_sent(api):
                  json={"status": "ok", "version": "2.0.0"}, status=200)
     api.health()
     assert resp_lib.calls[0].request.headers["X-API-Key"] == "test-api-key"
+
+
+# ── Flowsheets ────────────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_flowsheet_matches_reference_fixture(api):
+    fixture_path = "reference_data/01-prisma-v2--flowsheets/dac_min_db.json"
+    with open(fixture_path, "r", encoding="utf-8") as f:
+        expected = json.load(f)
+
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/flowsheets/dac_min/",
+                 json=expected, status=200)
+    result = api.get_flowsheet(name="dac_min")
+    assert result == expected
+
+
+@resp_lib.activate
+def test_get_flowsheet_uses_dev_mode_base_url(dev_api):
+    resp_lib.add(resp_lib.GET, f"{dev_api._base_url()}/flowsheets/dac_min/",
+                 json={"template_id": "dac_min"}, status=200)
+    result = dev_api.get_flowsheet(name="dac_min")
+    assert result["template_id"] == "dac_min"
