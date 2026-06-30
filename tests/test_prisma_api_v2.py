@@ -1440,3 +1440,20 @@ def test_get_flowsheet_uses_dev_mode_base_url(dev_api):
                  json={"template_id": "dac_min"}, status=200)
     result = dev_api.get_flowsheet(name="dac_min")
     assert result["template_id"] == "dac_min"
+
+
+@resp_lib.activate
+def test_get_flowsheet_bundle_returns_dict(api):
+    expected = {"template_id": "dac_min", "bundle": {"nodes": [], "edges": []}}
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/flowsheets/dac_min/bundle/",
+                 json=expected, status=200)
+    result = api.get_flowsheet_bundle()
+    assert result == expected
+
+
+@resp_lib.activate
+def test_get_flowsheet_bundle_uses_dev_mode_base_url(dev_api):
+    resp_lib.add(resp_lib.GET, f"{dev_api._base_url()}/flowsheets/dac_min/bundle/",
+                 json={"template_id": "dac_min"}, status=200)
+    result = dev_api.get_flowsheet_bundle()
+    assert result["template_id"] == "dac_min"
