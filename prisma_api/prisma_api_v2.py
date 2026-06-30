@@ -132,13 +132,13 @@ class PrismaAPIv2:
         """
         return self._get(f"/flowsheets/{name}/")
 
-    def get_flowsheet_bundle(self) -> dict:
+    def get_flowsheet_bundle(self, name: str = "dac_min") -> dict:
         """
-        GET /api/v2/flowsheets/dac_min/bundle/
+        GET /api/v2/flowsheets/{name}/bundle/
 
-        Returns the bundled flowsheet payload for the dac_min object.
+        Returns the bundled flowsheet payload for the named object.
         """
-        return self._get("/flowsheets/dac_min/bundle/")
+        return self._get(f"/flowsheets/{name}/bundle/")
 
     # ── Catalog ───────────────────────────────────────────────────────────────
 

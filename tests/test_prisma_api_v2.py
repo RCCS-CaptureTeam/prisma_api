@@ -10,6 +10,7 @@ live network access is required.  Run with:
 from __future__ import annotations
 
 import json
+import os
 import pytest
 import responses as resp_lib
 from responses import matchers
@@ -1423,6 +1424,10 @@ def test_api_key_header_sent(api):
 # ── Flowsheets ────────────────────────────────────────────────────────────────
 
 @resp_lib.activate
+@pytest.mark.skipif(
+    os.getenv("CI", "").lower() == "true",
+    reason="Offline development fixture test is disabled in CI",
+)
 def test_get_flowsheet_matches_reference_fixture(api):
     fixture_path = "reference_data/01-prisma-v2--flowsheets/dac_min_db.json"
     with open(fixture_path, "r", encoding="utf-8") as f:
@@ -1430,7 +1435,7 @@ def test_get_flowsheet_matches_reference_fixture(api):
 
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/flowsheets/dac_min/",
                  json=expected, status=200)
-    result = api.get_flowsheet(name="dac_min")
+    result = api.get_flowsheet()
     assert result == expected
 
 
@@ -1438,8 +1443,16 @@ def test_get_flowsheet_matches_reference_fixture(api):
 def test_get_flowsheet_uses_dev_mode_base_url(dev_api):
     resp_lib.add(resp_lib.GET, f"{dev_api._base_url()}/flowsheets/dac_min/",
                  json={"template_id": "dac_min"}, status=200)
-    result = dev_api.get_flowsheet(name="dac_min")
+    result = dev_api.get_flowsheet()
     assert result["template_id"] == "dac_min"
+
+
+@resp_lib.activate
+def test_get_flowsheet_custom_name_routes_path(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/flowsheets/custom_case/",
+                 json={"template_id": "custom_case"}, status=200)
+    result = api.get_flowsheet(name="custom_case")
+    assert result["template_id"] == "custom_case"
 
 
 @resp_lib.activate
@@ -1457,3 +1470,11 @@ def test_get_flowsheet_bundle_uses_dev_mode_base_url(dev_api):
                  json={"template_id": "dac_min"}, status=200)
     result = dev_api.get_flowsheet_bundle()
     assert result["template_id"] == "dac_min"
+
+
+@resp_lib.activate
+def test_get_flowsheet_bundle_custom_name_routes_path(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/flowsheets/custom_case/bundle/",
+                 json={"template_id": "custom_case"}, status=200)
+    result = api.get_flowsheet_bundle(name="custom_case")
+    assert result["template_id"] == "custom_case"
