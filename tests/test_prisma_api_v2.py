@@ -1423,6 +1423,13 @@ def test_api_key_header_sent(api):
 
 # ── Flowsheets ────────────────────────────────────────────────────────────────
 
+_UPSERT_FLOWSHEET_FIXTURE = "reference_data/prisma_v2/dac_min_2026-07-01.json"
+
+
+def _load_upsert_flowsheet_payload() -> list[dict]:
+    with open(_UPSERT_FLOWSHEET_FIXTURE, "r", encoding="utf-8") as f:
+        return [json.load(f)]
+
 @resp_lib.activate
 @pytest.mark.skipif(
     os.getenv("CI", "").lower() == "true",
@@ -1478,3 +1485,48 @@ def test_get_flowsheet_bundle_custom_name_routes_path(api):
                  json={"template_id": "custom_case"}, status=200)
     result = api.get_flowsheet_bundle(name="custom_case")
     assert result["template_id"] == "custom_case"
+
+
+@resp_lib.activate
+def test_upsert_flowsheets_default_append_mode(api):
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/flowsheets/upsert/?on_exists=append&appendix=_v4",
+        json={"created": 1, "updated": 0},
+        status=200,
+    )
+    payload = _load_upsert_flowsheet_payload()
+    result = api.upsert_flowsheets(payload)
+    assert result["created"] == 1
+
+
+@resp_lib.activate
+def test_upsert_flowsheets_overwrite_mode(api):
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/flowsheets/upsert/?on_exists=overwrite",
+        json={"created": 0, "updated": 1},
+        status=200,
+    )
+    payload = _load_upsert_flowsheet_payload()
+    result = api.upsert_flowsheets(payload, on_exists="overwrite")
+    assert result["updated"] == 1
+
+
+@resp_lib.activate
+def test_upsert_flowsheets_uses_dev_mode_base_url(dev_api):
+    resp_lib.add(
+        resp_lib.PUT,
+        "http://localhost:8000/api/v2/flowsheets/upsert/?on_exists=append&appendix=_dev",
+        json={"created": 1, "updated": 0},
+        status=200,
+    )
+    payload = _load_upsert_flowsheet_payload()
+    result = dev_api.upsert_flowsheets(payload, appendix="_dev")
+    assert result["created"] == 1
+
+
+def test_upsert_flowsheets_rejects_invalid_on_exists(api):
+    payload = _load_upsert_flowsheet_payload()
+    with pytest.raises(ValueError):
+        api.upsert_flowsheets(payload, on_exists="replace")

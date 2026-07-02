@@ -140,6 +140,43 @@ class PrismaAPIv2:
         """
         return self._get(f"/flowsheets/{name}/bundle/")
 
+    def upsert_flowsheets(
+        self,
+        flowsheets: pd.DataFrame | list[dict],
+        on_exists: str = "append",
+        appendix: str = "_v4",
+    ) -> dict:
+        """
+        PUT /api/v2/flowsheets/upsert/
+
+        Modes:
+            * append (default): ``?on_exists=append&appendix=<suffix>``
+            * overwrite:        ``?on_exists=overwrite``
+
+        Args:
+            flowsheets: DataFrame or list of dict payload records.
+            on_exists:  Conflict mode; one of ``'append'`` or ``'overwrite'``.
+            appendix:   Suffix used only in append mode (default ``'_v4'``).
+
+        Returns:
+            API response dict.
+        """
+        if on_exists not in ("append", "overwrite"):
+            raise ValueError("on_exists must be 'append' or 'overwrite'")
+
+        records = (
+            flowsheets.to_dict(orient="records")
+            if isinstance(flowsheets, pd.DataFrame)
+            else flowsheets
+        )
+
+        if on_exists == "overwrite":
+            path = "/flowsheets/upsert/?on_exists=overwrite"
+        else:
+            path = f"/flowsheets/upsert/?on_exists=append&appendix={appendix}"
+
+        return self._put(path, records)
+
     # ── Catalog ───────────────────────────────────────────────────────────────
 
     def list_materials(self, name: str | None = None,
