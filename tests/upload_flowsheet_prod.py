@@ -8,6 +8,7 @@ Usage:
 Defaults:
     on_exists=append
     appendix=_2026-07-01
+    screening_analysis_name=dac_screening_2026-07-01
 """
 
 from __future__ import annotations
@@ -39,6 +40,11 @@ def _parse_args() -> argparse.Namespace:
         default="_2026-07-01",
         help="Appendix value used when on_exists=append.",
     )
+    parser.add_argument(
+        "--screening-analysis-name",
+        default="dac_screening_2026-07-01",
+        help="Required screening analysis name passed to the upsert endpoint.",
+    )
     return parser.parse_args()
 
 
@@ -58,6 +64,7 @@ def main() -> int:
     api_v2 = PrismaAPIv2(key=args.api_key, dev=False, return_format="json")
     result = api_v2.upsert_flowsheets(
         [payload],
+        screening_analysis_name=args.screening_analysis_name,
         on_exists="append",
         appendix=args.appendix,
     )
@@ -66,6 +73,7 @@ def main() -> int:
     print(f"Payload: {payload_path}")
     print("Endpoint mode: append")
     print(f"Appendix: {args.appendix}")
+    print(f"Screening analysis name: {args.screening_analysis_name}")
     print("Response:")
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

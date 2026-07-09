@@ -1,4 +1,5 @@
 import os
+import warnings
 from .config import get_or_create_config, update_dev_mode as _update_dev_mode
 from .prisma_api_v2 import PrismaAPIv2
 from pathlib import Path
@@ -24,23 +25,25 @@ def _safe_nan_check(x):
 # prisma_api main class
 class prisma_api():
 
-    def __init__(self, use_config_file=True):
+    def __init__(self, use_config_file=True, local_dev: bool = False):
         
         # Initialise `prisma_api` object with api_key location
         self.verbose = False
         # Initialise `prisma_api` object with api_key location
         if use_config_file:
             cfg = get_or_create_config()
-            self.key = cfg['api_key']
-            self.dev = cfg.get('dev', False)
-            if self.dev:
-                self.dev_host_port = cfg['dev_host_port']
-                self.key = cfg['dev_api_key']
+            prod_key = cfg.get('api_key', '')
+            dev_key = cfg.get('dev_api_key', prod_key)
+            dev_host_port = cfg.get('dev_host_port', '8000')
         else:
-            self.key = os.getenv('PRISMA_API_KEY', '')
-            self.dev = os.getenv('PRISMA_API_DEV', 'False').lower() in ('true', '1', 't')
-            if self.dev:
-                self.dev_host_port = os.getenv('PRISMA_API_DEV_HOST_PORT', '')
+            prod_key = os.getenv('PRISMA_API_KEY', '')
+            dev_key = os.getenv('PRISMA_API_DEV_API_KEY', prod_key)
+            dev_host_port = os.getenv('PRISMA_API_DEV_HOST_PORT', '8000')
+
+        # local_dev now controls target DB explicitly at init time.
+        self.dev = bool(local_dev)
+        self.dev_host_port = dev_host_port
+        self.key = dev_key if self.dev else prod_key
 
         self.v2 = PrismaAPIv2(
             key=self.key,
@@ -69,6 +72,12 @@ class prisma_api():
         Returns:
             dict: Updated config.
         """
+        warnings.warn(
+            "update_dev_mode() is deprecated and will be removed in a future release. "
+            "Use prisma_api.init(local_dev=True|False) instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
         return _update_dev_mode(dev)
         
     def get_mofs(self, payload={}):

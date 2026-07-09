@@ -1491,12 +1491,12 @@ def test_get_flowsheet_bundle_custom_name_routes_path(api):
 def test_upsert_flowsheets_default_append_mode(api):
     resp_lib.add(
         resp_lib.PUT,
-        f"{PROD_BASE}/flowsheets/upsert/?on_exists=append&appendix=_v4",
+        f"{PROD_BASE}/flowsheets/upsert/?on_exists=append&appendix=_v4&screening_analysis_name=screening_case",
         json={"created": 1, "updated": 0},
         status=200,
     )
     payload = _load_upsert_flowsheet_payload()
-    result = api.upsert_flowsheets(payload)
+    result = api.upsert_flowsheets(payload, screening_analysis_name="screening_case")
     assert result["created"] == 1
 
 
@@ -1504,12 +1504,16 @@ def test_upsert_flowsheets_default_append_mode(api):
 def test_upsert_flowsheets_overwrite_mode(api):
     resp_lib.add(
         resp_lib.PUT,
-        f"{PROD_BASE}/flowsheets/upsert/?on_exists=overwrite",
+        f"{PROD_BASE}/flowsheets/upsert/?on_exists=overwrite&screening_analysis_name=screening_case",
         json={"created": 0, "updated": 1},
         status=200,
     )
     payload = _load_upsert_flowsheet_payload()
-    result = api.upsert_flowsheets(payload, on_exists="overwrite")
+    result = api.upsert_flowsheets(
+        payload,
+        screening_analysis_name="screening_case",
+        on_exists="overwrite",
+    )
     assert result["updated"] == 1
 
 
@@ -1517,16 +1521,30 @@ def test_upsert_flowsheets_overwrite_mode(api):
 def test_upsert_flowsheets_uses_dev_mode_base_url(dev_api):
     resp_lib.add(
         resp_lib.PUT,
-        "http://localhost:8000/api/v2/flowsheets/upsert/?on_exists=append&appendix=_dev",
+        "http://localhost:8000/api/v2/flowsheets/upsert/?on_exists=append&appendix=_dev&screening_analysis_name=screening_dev",
         json={"created": 1, "updated": 0},
         status=200,
     )
     payload = _load_upsert_flowsheet_payload()
-    result = dev_api.upsert_flowsheets(payload, appendix="_dev")
+    result = dev_api.upsert_flowsheets(
+        payload,
+        screening_analysis_name="screening_dev",
+        appendix="_dev",
+    )
     assert result["created"] == 1
 
 
 def test_upsert_flowsheets_rejects_invalid_on_exists(api):
     payload = _load_upsert_flowsheet_payload()
     with pytest.raises(ValueError):
-        api.upsert_flowsheets(payload, on_exists="replace")
+        api.upsert_flowsheets(
+            payload,
+            screening_analysis_name="screening_case",
+            on_exists="replace",
+        )
+
+
+def test_upsert_flowsheets_rejects_empty_screening_analysis_name(api):
+    payload = _load_upsert_flowsheet_payload()
+    with pytest.raises(ValueError):
+        api.upsert_flowsheets(payload, screening_analysis_name="   ")

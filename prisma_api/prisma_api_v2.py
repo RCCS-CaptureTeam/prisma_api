@@ -19,6 +19,7 @@ from __future__ import annotations
 import pandas as pd
 import requests
 from typing import Any
+from urllib.parse import urlencode
 
 
 _BASE_PROD = "https://prisma-platform.org/api/v2"
@@ -143,6 +144,7 @@ class PrismaAPIv2:
     def upsert_flowsheets(
         self,
         flowsheets: pd.DataFrame | list[dict],
+        screening_analysis_name: str,
         on_exists: str = "append",
         appendix: str = "_v4",
     ) -> dict:
@@ -155,6 +157,8 @@ class PrismaAPIv2:
 
         Args:
             flowsheets: DataFrame or list of dict payload records.
+            screening_analysis_name: Required analysis identifier forwarded to the
+                API for upsert attribution/routing.
             on_exists:  Conflict mode; one of ``'append'`` or ``'overwrite'``.
             appendix:   Suffix used only in append mode (default ``'_v4'``).
 
@@ -163,6 +167,8 @@ class PrismaAPIv2:
         """
         if on_exists not in ("append", "overwrite"):
             raise ValueError("on_exists must be 'append' or 'overwrite'")
+        if not screening_analysis_name or not screening_analysis_name.strip():
+            raise ValueError("screening_analysis_name must be a non-empty string")
 
         records = (
             flowsheets.to_dict(orient="records")
@@ -171,9 +177,21 @@ class PrismaAPIv2:
         )
 
         if on_exists == "overwrite":
-            path = "/flowsheets/upsert/?on_exists=overwrite"
+            query = urlencode(
+                {
+                    "on_exists": "overwrite",
+                    "screening_analysis_name": screening_analysis_name,
+                }
+            )
         else:
-            path = f"/flowsheets/upsert/?on_exists=append&appendix={appendix}"
+            query = urlencode(
+                {
+                    "on_exists": "append",
+                    "appendix": appendix,
+                    "screening_analysis_name": screening_analysis_name,
+                }
+            )
+        path = f"/flowsheets/upsert/?{query}"
 
         return self._put(path, records)
 

@@ -94,6 +94,66 @@ def test_v2_is_attached():
     assert isinstance(api.v2, PrismaAPIv2)
 
 
+@patch("prisma_api.prisma_api.get_or_create_config")
+def test_init_local_dev_false_uses_prod_config(mock_cfg):
+    from prisma_api.prisma_api import prisma_api
+
+    mock_cfg.return_value = {
+        "api_key": "prod-key",
+        "dev_api_key": "dev-key",
+        "dev_host_port": "8000",
+        "dev": True,
+    }
+    api = prisma_api(local_dev=False)
+    assert api.dev is False
+    assert api.key == "prod-key"
+    assert api.v2._dev is False
+
+
+@patch("prisma_api.prisma_api.get_or_create_config")
+def test_init_local_dev_true_uses_dev_config(mock_cfg):
+    from prisma_api.prisma_api import prisma_api
+
+    mock_cfg.return_value = {
+        "api_key": "prod-key",
+        "dev_api_key": "dev-key",
+        "dev_host_port": "8000",
+        "dev": False,
+    }
+    api = prisma_api(local_dev=True)
+    assert api.dev is True
+    assert api.key == "dev-key"
+    assert api.dev_host_port == "8000"
+    assert api.v2._dev is True
+
+
+def test_init_local_dev_true_uses_env_when_no_config(monkeypatch):
+    from prisma_api.prisma_api import prisma_api
+
+    monkeypatch.setenv("PRISMA_API_KEY", "prod-env-key")
+    monkeypatch.setenv("PRISMA_API_DEV_API_KEY", "dev-env-key")
+    monkeypatch.setenv("PRISMA_API_DEV_HOST_PORT", "9001")
+
+    api = prisma_api(use_config_file=False, local_dev=True)
+    assert api.dev is True
+    assert api.key == "dev-env-key"
+    assert api.dev_host_port == "9001"
+
+
+@patch("prisma_api.prisma_api._update_dev_mode")
+def test_update_dev_mode_emits_deprecation_warning(mock_update):
+    from prisma_api.prisma_api import prisma_api
+
+    mock_update.return_value = {"dev": False}
+    api = prisma_api.__new__(prisma_api)
+
+    with pytest.warns(FutureWarning, match="deprecated"):
+        result = api.update_dev_mode(False)
+
+    assert result == {"dev": False}
+    mock_update.assert_called_once_with(False)
+
+
 # ── get_materials_data: basic response ────────────────────────────────────────
 
 @resp_lib.activate
