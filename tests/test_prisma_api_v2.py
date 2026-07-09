@@ -1571,11 +1571,29 @@ def test_upsert_flowsheets_rejects_invalid_on_exists(api):
         )
 
 
-@pytest.mark.skipif(
-    os.getenv("PRISMA_API_PRODUCTION_BYPASS", "").lower() == "true",
-    reason="Bypassed in production mode",
-)
-def test_upsert_flowsheets_rejects_empty_screening_analysis_name(api):
+@resp_lib.activate
+def test_upsert_flowsheets_allows_missing_screening_analysis_name_with_warning(api):
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/flowsheets/upsert/?on_exists=append&appendix=_v4",
+        json={"created": 1, "updated": 0},
+        status=200,
+    )
     payload = _load_upsert_flowsheet_payload()
-    with pytest.raises(ValueError):
-        api.upsert_flowsheets(payload, screening_analysis_name="   ")
+    with pytest.warns(UserWarning, match="for experimentation only"):
+        result = api.upsert_flowsheets(payload)
+    assert result["created"] == 1
+
+
+@resp_lib.activate
+def test_upsert_flowsheets_blank_screening_analysis_name_warns_and_omits_query_param(api):
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/flowsheets/upsert/?on_exists=overwrite",
+        json={"created": 0, "updated": 1},
+        status=200,
+    )
+    payload = _load_upsert_flowsheet_payload()
+    with pytest.warns(UserWarning, match="list_case_studies"):
+        result = api.upsert_flowsheets(payload, screening_analysis_name="   ", on_exists="overwrite")
+    assert result["updated"] == 1

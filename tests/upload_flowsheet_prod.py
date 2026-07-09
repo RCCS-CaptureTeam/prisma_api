@@ -8,7 +8,7 @@ Usage:
 Defaults:
     on_exists=append
     appendix=_2026-07-01
-    screening_analysis_name=dac_screening_2026-07-01
+    screening_analysis_name=dac_screening_2026-07-01 (recommended)
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--screening-analysis-name",
         default="dac_screening_2026-07-01",
-        help="Required screening analysis name passed to the upsert endpoint.",
+        help="Optional screening analysis name passed to upsert (recommended for production).",
     )
     return parser.parse_args()
 

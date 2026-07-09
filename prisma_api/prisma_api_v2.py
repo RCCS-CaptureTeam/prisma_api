@@ -20,6 +20,7 @@ import pandas as pd
 import requests
 from typing import Any
 from urllib.parse import urlencode
+import warnings
 
 
 _BASE_PROD = "https://prisma-platform.org/api/v2"
@@ -144,7 +145,7 @@ class PrismaAPIv2:
     def upsert_flowsheets(
         self,
         flowsheets: pd.DataFrame | list[dict],
-        screening_analysis_name: str,
+        screening_analysis_name: str | None = None,
         on_exists: str = "append",
         appendix: str = "_v4",
     ) -> dict:
@@ -157,8 +158,10 @@ class PrismaAPIv2:
 
         Args:
             flowsheets: DataFrame or list of dict payload records.
-            screening_analysis_name: Required analysis identifier forwarded to the
-                API for upsert attribution/routing.
+            screening_analysis_name: Optional analysis identifier forwarded to the
+                API for upsert attribution/routing. For production uploads this
+                should be set and should match one of the nested screening
+                analysis names returned by ``list_case_studies()``.
             on_exists:  Conflict mode; one of ``'append'`` or ``'overwrite'``.
             appendix:   Suffix used only in append mode (default ``'_v4'``).
 
@@ -167,30 +170,33 @@ class PrismaAPIv2:
         """
         if on_exists not in ("append", "overwrite"):
             raise ValueError("on_exists must be 'append' or 'overwrite'")
-        if not screening_analysis_name or not screening_analysis_name.strip():
-            raise ValueError("screening_analysis_name must be a non-empty string")
 
         records = (
             flowsheets.to_dict(orient="records")
             if isinstance(flowsheets, pd.DataFrame)
             else flowsheets
         )
+        cleaned_screening_name = (screening_analysis_name or "").strip()
 
-        if on_exists == "overwrite":
-            query = urlencode(
-                {
-                    "on_exists": "overwrite",
-                    "screening_analysis_name": screening_analysis_name,
-                }
-            )
+        query_params: dict[str, str] = (
+            {"on_exists": "overwrite"}
+            if on_exists == "overwrite"
+            else {"on_exists": "append", "appendix": appendix}
+        )
+
+        if cleaned_screening_name:
+            query_params["screening_analysis_name"] = cleaned_screening_name
         else:
-            query = urlencode(
-                {
-                    "on_exists": "append",
-                    "appendix": appendix,
-                    "screening_analysis_name": screening_analysis_name,
-                }
+            warnings.warn(
+                "Uploading flowsheets without screening_analysis_name is intended "
+                "for experimentation only and is not recommended for production. "
+                "Provide screening_analysis_name matching one of the nested "
+                "screening analysis names returned by list_case_studies().",
+                UserWarning,
+                stacklevel=2,
             )
+
+        query = urlencode(query_params)
         path = f"/flowsheets/upsert/?{query}"
 
         return self._put(path, records)
