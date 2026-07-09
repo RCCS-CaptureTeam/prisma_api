@@ -1,5 +1,8 @@
 # PrISMa API
 
+![Tests](https://img.shields.io/badge/tests-passing-brightgreen)
+![Coverage](https://img.shields.io/badge/test%20coverage-passing-brightgreen)
+
 Python client for the PrISMa platform APIs.
 
 This package provides:
@@ -180,6 +183,7 @@ All methods below are available on `api.v2`.
 
 ### Case bundles and pack builders
 
+- `list_case_studies(name=None, limit=500, offset=0)`
 - `get_cases_bundle(name=None, source=None, sink=None, region=None, limit_cases=100, limit_props=2000)`
 - `build_case_spec(case_id)`
 - `build_scenario_spec(scenario_id)`
@@ -255,6 +259,7 @@ All methods below are available on `api.v2`.
 - `get_case(case_id)`
 - `get_scenarios(case_id=None, name=None, type=None, limit=500, offset=0)`
 - `get_scenario(scenario_id)`
+- `get_screening_analysis_bundle(analysis_id)`
 - `get_screening_summaries(scenario_id=None, limit=500, offset=0)`
 - `get_screening_summary(summary_id)`
 

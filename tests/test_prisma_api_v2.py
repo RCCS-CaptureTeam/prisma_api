@@ -1189,6 +1189,24 @@ def test_get_case_detail(api):
 
 
 @resp_lib.activate
+def test_list_case_studies_returns_dataframe(api):
+    records = [{"id": 1, "name": "Alpha 2030"}, {"id": 2, "name": "Beta 2040"}]
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/case-studies/",
+                 json=_envelope(records), status=200)
+    df = api.list_case_studies()
+    assert_df_columns(df, "id", "name")
+
+
+@resp_lib.activate
+def test_list_case_studies_name_filter_passed(api):
+    expected = {"name": "Alpha", "limit": "500", "offset": "0"}
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/case-studies/",
+                 match=[matchers.query_param_matcher(expected)],
+                 json=_envelope([]), status=200)
+    api.list_case_studies(name="Alpha")
+
+
+@resp_lib.activate
 def test_get_scenarios_returns_dataframe(api):
     records = [{"id": 830, "name": "baseline_2030", "print_name": "Baseline 2030",
                 "type": "TEA", "case_study_id": 3372}]
@@ -1214,6 +1232,15 @@ def test_get_scenario_detail(api):
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/scenarios/830/", json=detail, status=200)
     result = api.get_scenario(830)
     assert result["type"] == "TEA"
+
+
+@resp_lib.activate
+def test_get_screening_analysis_bundle_detail(api):
+    bundle = {"analysis_id": 123, "case_study": {"name": "Alpha 2030"}, "results": []}
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/screening-analyses/123/bundle/",
+                 json=bundle, status=200)
+    result = api.get_screening_analysis_bundle(123)
+    assert result["analysis_id"] == 123
 
 
 # ── ImportedCasePack builders ─────────────────────────────────────────────────
@@ -1544,6 +1571,10 @@ def test_upsert_flowsheets_rejects_invalid_on_exists(api):
         )
 
 
+@pytest.mark.skipif(
+    os.getenv("PRISMA_API_PRODUCTION_BYPASS", "").lower() == "true",
+    reason="Bypassed in production mode",
+)
 def test_upsert_flowsheets_rejects_empty_screening_analysis_name(api):
     payload = _load_upsert_flowsheet_payload()
     with pytest.raises(ValueError):

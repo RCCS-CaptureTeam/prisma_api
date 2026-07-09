@@ -1283,6 +1283,21 @@ class PrismaAPIv2:
         """GET /api/v2/cases/{case_id}/"""
         return self._get(f"/cases/{case_id}/")
 
+    def list_case_studies(self,
+                          name: str | None = None,
+                          limit: int = 500,
+                          offset: int = 0) -> pd.DataFrame:
+        """
+        GET /api/v2/case-studies/
+
+        Args:
+            name:   Optional substring filter on case-study name.
+            limit:  Maximum number of records to return.
+            offset: Pagination offset.
+        """
+        params = _compact(name=name, limit=limit, offset=offset)
+        return self._to_df(self._get("/case-studies/", params))
+
     def get_scenarios(self,
                       case_id: int | None = None,
                       name: str | None = None,
@@ -1304,6 +1319,10 @@ class PrismaAPIv2:
     def get_scenario(self, scenario_id: int) -> dict:
         """GET /api/v2/scenarios/{scenario_id}/"""
         return self._get(f"/scenarios/{scenario_id}/")
+
+    def get_screening_analysis_bundle(self, analysis_id: int) -> dict:
+        """GET /api/v2/screening-analyses/{analysis_id}/bundle/"""
+        return self._get(f"/screening-analyses/{analysis_id}/bundle/")
 
     # ── Case-pack builders (ImportedCasePack spec) ────────────────────────────
 
