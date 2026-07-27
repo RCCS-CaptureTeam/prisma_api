@@ -1,7 +1,6 @@
 # PrISMa API
 
 [![CI](https://github.com/RCCS-CaptureTeam/prisma_api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RCCS-CaptureTeam/prisma_api/actions/workflows/ci.yml)
-[![Coverage](https://codecov.io/gh/RCCS-CaptureTeam/prisma_api/graph/badge.svg?branch=main)](https://codecov.io/gh/RCCS-CaptureTeam/prisma_api)
 
 Python client for the PrISMa platform APIs.
 
