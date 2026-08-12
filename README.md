@@ -174,10 +174,11 @@ All methods below are available on `api.v2`.
 ### Materials and bundles
 
 - `list_materials(name=None, limit=10000)`
-- `get_material(material_id)`
+- `get_material(material_id=None, name=None, bundle=['isotherms','zeopp','water_kpis','cif'])` (`bundle=None` returns root-only material detail)
 - `get_materials_psdi(name=None, limit=500, offset=0)`
 - `get_material_psdi(material_id)`
 - `get_material_property_bundle(mof, sim_or_exp=None, good_structure=None, limit=500, offset=0, query=None)`
+- `get_material_bundle(mof, sim_or_exp=None, good_structure=None, limit=500, offset=0, query=None, include_cif=False, include_cif_text=False, cif_timeout=60)`
 - `preflight_material_check(name)`
 
 ### Case bundles and pack builders

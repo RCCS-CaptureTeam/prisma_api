@@ -24,6 +24,7 @@ import warnings
 
 
 _BASE_PROD = "https://prisma-platform.org/api/v2"
+_DEFAULT_BUNDLE = object()
 
 
 class PrismaAPIv2:
@@ -119,6 +120,25 @@ class PrismaAPIv2:
             base = self._base_url().rstrip("/").rsplit("/api/v2", 1)[0]
             d = {**d, "cif_url": f"{base}{d['cif_url']}"}
         return d
+
+    def _parse_cif_text(self, cif_text: str) -> dict[str, Any]:
+        """Parse CIF text into a compact structured dict for notebook-friendly use."""
+        lines = cif_text.splitlines()
+        fields: dict[str, str] = {}
+        for line in lines:
+            s = line.strip()
+            if not s or not s.startswith("_") or " " not in s:
+                continue
+            key, value = s.split(None, 1)
+            fields[key] = value.strip()
+
+        return {
+            "line_count": len(lines),
+            "field_count": len(fields),
+            "fields": fields,
+            "preview": lines[:20],
+            "raw": cif_text,
+        }
 
     # ── Health ────────────────────────────────────────────────────────────────
 
@@ -250,13 +270,160 @@ class PrismaAPIv2:
         print(f"{len(all_records)} materials loaded from {server}")
         return self._resolve_cif_url_df(self._to_df({"results": all_records}))
 
-    def get_material(self, material_id: int) -> dict:
+    def get_material(
+        self,
+        material_id: int | None = None,
+        *,
+        name: str | list[str] | None = None,
+        bundle: list[str] | None | object = _DEFAULT_BUNDLE,
+        sim_or_exp: str | None = None,
+        good_structure: bool | None = None,
+        limit: int = 500,
+        offset: int = 0,
+        include_cif_text: bool = False,
+        cif_timeout: int = 60,
+    ) -> dict | list[dict]:
         """
         GET /api/v2/materials/{material_id}/
 
-        Returns a dict with material detail including element composition.
+        Return one or more material detail records, optionally bundled with
+        related isotherms / Zeo++ / water KPIs / CIF metadata.
+
+        Resolution modes:
+            * ``material_id`` (int): fetch one material by PK.
+            * ``name`` (str): fetch one material by name match resolution.
+            * ``name`` (list[str]): fetch many materials, one per name.
+
+        Bundle behavior:
+            * omitted ``bundle``: include all bundles
+              ``['isotherms', 'zeopp', 'water_kpis', 'cif']``
+            * ``bundle=None``: include no additional bundled data (root only)
+            * explicit list: include only requested bundle sections.
+
+        Returns:
+            dict for a single material lookup; list[dict] for ``name=list[str]``.
         """
-        return self._resolve_cif_url_dict(self._get(f"/materials/{material_id}/"))
+
+        def _resolve_one_by_name(material_name: str) -> dict:
+            matches = self._get(
+                "/materials/",
+                _compact(name=material_name, limit=50),
+            ).get("results", [])
+            exact_matches = [m for m in matches if m.get("name") == material_name]
+            candidates = exact_matches if exact_matches else matches
+            if len(candidates) > 1:
+                names = [m.get("name") for m in candidates]
+                raise ValueError(
+                    f"'{material_name}' matched {len(candidates)} materials: {names}. "
+                    "Use a more specific name."
+                )
+            if not candidates:
+                raise ValueError(f"No material matched '{material_name}'.")
+            return candidates[0]
+
+        def _as_records_local(result: Any) -> list[dict]:
+            if isinstance(result, pd.DataFrame):
+                return result.to_dict(orient="records")
+            if isinstance(result, list):
+                return result
+            return []
+
+        def _resolve_bundle_list(bundle_arg: list[str] | None | object) -> list[str]:
+            if bundle_arg is _DEFAULT_BUNDLE:
+                selected = ["isotherms", "zeopp", "water_kpis", "cif"]
+            elif bundle_arg is None:
+                selected = []
+            else:
+                selected = [str(b).strip().lower() for b in bundle_arg]
+            allowed = {"isotherms", "zeopp", "water_kpis", "cif"}
+            unknown = [b for b in selected if b not in allowed]
+            if unknown:
+                raise ValueError(
+                    f"Unknown bundle key(s): {unknown}. "
+                    "Allowed: ['isotherms','zeopp','water_kpis','cif']"
+                )
+            return selected
+
+        def _build_material_payload(base_record: dict, selected_bundles: list[str]) -> dict:
+            root = self._resolve_cif_url_dict(self._get(f"/materials/{int(base_record['id'])}/"))
+            out = dict(root)
+            mof_name = root.get("name")
+
+            if "isotherms" in selected_bundles:
+                out["isotherms"] = _as_records_local(self.get_isotherm(
+                    mof=mof_name,
+                    sim_or_exp=sim_or_exp,
+                    good_structure=good_structure,
+                    limit=limit,
+                    offset=offset,
+                ))
+
+            if "zeopp" in selected_bundles:
+                zeopp_sim = _as_records_local(self.get_carbon_zeopp(
+                    mof=mof_name,
+                    good_structure=good_structure,
+                    limit=limit,
+                    offset=offset,
+                ))
+                zeopp_exp = _as_records_local(self.get_carbon_zeopp_experimental(
+                    mof=mof_name,
+                    limit=limit,
+                    offset=offset,
+                ))
+                out["zeopp"] = [
+                    {**r, "_zeopp_source": "simulated"} for r in zeopp_sim
+                ] + [
+                    {**r, "_zeopp_source": "experimental"} for r in zeopp_exp
+                ]
+
+            if "water_kpis" in selected_bundles:
+                out["water_kpis"] = _as_records_local(self.get_water_kpis(
+                    mof=mof_name,
+                    sim_or_exp=sim_or_exp,
+                    good_structure=good_structure,
+                    limit=limit,
+                    offset=offset,
+                ))
+
+            if "cif" in selected_bundles:
+                material_psdi = self.get_material_psdi(int(base_record["id"]))
+                cif_url = material_psdi.get("cif_url") or root.get("cif_url")
+                cif_filename = material_psdi.get("cif_filename")
+                if not cif_filename and isinstance(cif_url, str) and cif_url:
+                    cif_filename = cif_url.rsplit("/", 1)[-1]
+
+                cif_payload: dict[str, Any] = {
+                    "url": cif_url,
+                    "filename": cif_filename,
+                }
+                if include_cif_text and isinstance(cif_url, str) and cif_url:
+                    resp = requests.get(cif_url, headers=self._headers(), timeout=cif_timeout)
+                    resp.raise_for_status()
+                    cif_payload["text"] = self._parse_cif_text(resp.text)
+                out["cif"] = cif_payload
+
+            return out
+
+        if (material_id is None) == (name is None):
+            raise ValueError("Provide exactly one of material_id or name")
+
+        selected_bundles = _resolve_bundle_list(bundle)
+
+        if material_id is not None:
+            base = {"id": int(material_id)}
+            return _build_material_payload(base, selected_bundles)
+
+        if isinstance(name, str):
+            base = _resolve_one_by_name(name)
+            return _build_material_payload(base, selected_bundles)
+
+        if isinstance(name, list):
+            if not all(isinstance(n, str) for n in name):
+                raise TypeError("name list must contain only strings")
+            bases = [_resolve_one_by_name(n) for n in name]
+            return [_build_material_payload(b, selected_bundles) for b in bases]
+
+        raise TypeError("name must be a string or list of strings")
 
     def get_materials_psdi(self, name: str | None = None,
                            limit: int = 500, offset: int = 0) -> pd.DataFrame:
@@ -293,12 +460,13 @@ class PrismaAPIv2:
         """
         return self._resolve_cif_url_dict(self._get(f"/materials-psdi/{material_id}/"))
 
-    def get_material_property_bundle(self, mof: str,
+    def get_material_property_bundle(self, mof: str | None = None,
                                      sim_or_exp: str | None = None,
                                      good_structure: bool | None = None,
                                      limit: int = 500,
                                      offset: int = 0,
-                                     query: dict[str, dict[str, Any]] | None = None) -> dict:
+                                     query: dict[str, dict[str, Any]] | None = None,
+                                     name: str | None = None) -> dict:
         """
         Fetch all science data for a given MOF in a single call.
 
@@ -308,6 +476,7 @@ class PrismaAPIv2:
 
         Args:
             mof:            MOF name (substring match applied to all sub-queries).
+                            Kept for backward compatibility; ``name`` is an alias.
             sim_or_exp:     'sim' or 'exp' filter for isotherms and water KPIs.
             good_structure: Good-structure filter for isotherms, water KPIs
                             and simulated Zeo++.
@@ -333,6 +502,12 @@ class PrismaAPIv2:
             ValueError: if the name matches more than one material — use an
                 exact name or a more specific substring.
         """
+        if mof is None and name is None:
+            raise TypeError("Provide either 'mof' or 'name'.")
+        if mof is not None and name is not None:
+            raise TypeError("Provide only one of 'mof' or 'name', not both.")
+        mof = name if mof is None else mof
+
         if query is not None and not isinstance(query, dict):
             raise TypeError("query must be a dict[str, dict] or None")
 
@@ -425,6 +600,101 @@ class PrismaAPIv2:
         for key, val in bundle.items():
             print(f"  {key:25s}: {len(val)} records")
         return bundle
+
+    def get_material_bundle(
+        self,
+        mof: str,
+        sim_or_exp: str | None = None,
+        good_structure: bool | None = None,
+        limit: int = 500,
+        offset: int = 0,
+        query: dict[str, dict[str, Any]] | None = None,
+        include_cif: bool = False,
+        include_cif_text: bool = False,
+        cif_timeout: int = 60,
+    ) -> dict:
+        """
+        Fetch material detail, PSDI detail, and science bundle in one call flow.
+
+        Args:
+            mof:              MOF name.
+            sim_or_exp:       Optional 'sim' or 'exp' filter for bundle endpoints.
+            good_structure:   Optional structure-quality filter for bundle endpoints.
+            limit:            Max records per bundle endpoint.
+            offset:           Pagination offset for bundle endpoints.
+            query:            Advanced per-endpoint filters forwarded to
+                              ``get_material_property_bundle``.
+            include_cif:      If True, include CIF metadata (URL/filename).
+            include_cif_text: If True, download and include CIF text content.
+            cif_timeout:      Timeout in seconds for CIF download.
+
+        Returns:
+            dict with keys:
+                'material'        – output of ``get_material``
+                'material_psdi'   – output of ``get_material_psdi``
+                'property_bundle' – output of ``get_material_property_bundle``
+                'cif'             – optional CIF metadata plus structured text dict
+
+        Raises:
+            ValueError: if the name resolves to multiple materials or no material.
+        """
+        matches = self._get(
+            "/materials/",
+            _compact(name=mof, limit=50),
+        ).get("results", [])
+
+        exact_matches = [m for m in matches if m.get("name") == mof]
+        candidates = exact_matches if exact_matches else matches
+        if len(candidates) > 1:
+            names = [m.get("name") for m in candidates]
+            raise ValueError(
+                f"'{mof}' matched {len(candidates)} materials: {names}. "
+                "Use a more specific name."
+            )
+        if not candidates:
+            raise ValueError(f"No material matched '{mof}'.")
+
+        selected = candidates[0]
+        material_id = int(selected["id"])
+        true_name = selected.get("name", mof)
+
+        material = self.get_material(material_id, bundle=None)
+        material_psdi = self.get_material_psdi(material_id)
+        property_bundle = self.get_material_property_bundle(
+            true_name,
+            sim_or_exp=sim_or_exp,
+            good_structure=good_structure,
+            limit=limit,
+            offset=offset,
+            query=query,
+        )
+
+        result: dict[str, Any] = {
+            "material": material,
+            "material_psdi": material_psdi,
+            "property_bundle": property_bundle,
+        }
+
+        if include_cif:
+            cif_url = material_psdi.get("cif_url") or material.get("cif_url")
+            cif_filename = material_psdi.get("cif_filename")
+            if not cif_filename and isinstance(cif_url, str) and cif_url:
+                cif_filename = cif_url.rsplit("/", 1)[-1]
+
+            cif_payload: dict[str, Any] = {
+                "url": cif_url,
+                "filename": cif_filename,
+            }
+
+            if include_cif_text and isinstance(cif_url, str) and cif_url:
+                resp = requests.get(cif_url, headers=self._headers(), timeout=cif_timeout)
+                resp.raise_for_status()
+                cif_payload["text"] = self._parse_cif_text(resp.text)
+
+            result["cif"] = cif_payload
+        else:
+            result["cif"] = None
+        return result
 
     def preflight_material_check(self, name: str) -> bool:
         """

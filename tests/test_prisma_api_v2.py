@@ -234,9 +234,64 @@ def test_get_material_detail(api):
     detail = {"id": 1, "name": "ABEXEM", "cif_url": "/media/ABEXEM.cif",
               "elements": [{"symbol": "C", "mass_fraction": 0.45}]}
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/1/", json=detail, status=200)
-    result = api.get_material(1)
+    result = api.get_material(1, bundle=None)
     assert result["name"] == "ABEXEM"
     assert len(result["elements"]) == 1
+
+
+@resp_lib.activate
+def test_get_material_default_bundle_from_id(api):
+    detail = {"id": 1, "name": "HKUST", "cif_url": "/media/HKUST.cif", "elements": []}
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/1/", json=detail, status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/isotherms/",
+                 json=_envelope([{"id": 10, "mof": "HKUST"}]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/carbon-zeopp/",
+                 json=_envelope([{"id": 20, "mof": "HKUST"}]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/carbon-zeopp-experimental/",
+                 json=_envelope([{"id": 21, "mof": "HKUST"}]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/water-kpis/",
+                 json=_envelope([{"id": 30, "mof": "HKUST", "Molecule": 1}]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials-psdi/1/",
+                 json={"id": 1, "name": "HKUST", "cif_url": "/media/HKUST.cif", "cif_filename": "HKUST.cif"},
+                 status=200)
+
+    result = api.get_material(1)
+    assert "isotherms" in result
+    assert "zeopp" in result
+    assert "water_kpis" in result
+    assert "cif" in result
+    assert result["zeopp"][0]["_zeopp_source"] in {"simulated", "experimental"}
+
+
+@resp_lib.activate
+def test_get_material_by_name_string_root_only(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 match=[matchers.query_param_matcher({"name": "HKUST", "limit": "50"})],
+                 json=_envelope([{"id": 1, "name": "HKUST"}]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/1/",
+                 json={"id": 1, "name": "HKUST", "cif_url": "/media/HKUST.cif", "elements": []}, status=200)
+
+    result = api.get_material(name="HKUST", bundle=None)
+    assert result["id"] == 1
+    assert result["name"] == "HKUST"
+
+
+@resp_lib.activate
+def test_get_material_by_name_list(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 match=[matchers.query_param_matcher({"name": "HKUST", "limit": "50"})],
+                 json=_envelope([{"id": 1, "name": "HKUST"}]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 match=[matchers.query_param_matcher({"name": "ABEXEM", "limit": "50"})],
+                 json=_envelope([{"id": 2, "name": "ABEXEM"}]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/1/",
+                 json={"id": 1, "name": "HKUST", "cif_url": "/media/HKUST.cif", "elements": []}, status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/2/",
+                 json={"id": 2, "name": "ABEXEM", "cif_url": "/media/ABEXEM.cif", "elements": []}, status=200)
+
+    result = api.get_material(name=["HKUST", "ABEXEM"], bundle=None)
+    assert isinstance(result, list)
+    assert [r["name"] for r in result] == ["HKUST", "ABEXEM"]
 
 
 @resp_lib.activate
@@ -856,6 +911,21 @@ def test_get_material_property_bundle_returns_dict(api):
 
 
 @resp_lib.activate
+def test_get_material_property_bundle_accepts_name_keyword(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 json=_envelope([{"id": 1, "name": "HKUST"}]), status=200)
+    for path in ("/isotherms/", "/carbon-zeopp/",
+                 "/carbon-zeopp-experimental/", "/water-kpis/"):
+        resp_lib.add(resp_lib.GET, f"{PROD_BASE}{path}",
+                     json=_envelope([{"id": 1, "mof": "HKUST"}]), status=200)
+
+    bundle = api.get_material_property_bundle(name="HKUST")
+    assert set(bundle.keys()) == {
+        "isotherms", "zeopp_simulated", "zeopp_experimental", "water_kpis"
+    }
+
+
+@resp_lib.activate
 def test_get_material_property_bundle_filters_forwarded(api):
     """sim_or_exp and good_structure must be forwarded to isotherms and water KPIs."""
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
@@ -939,6 +1009,120 @@ def test_get_material_property_bundle_supports_query_dict(api):
             "water_kpis": {"source": "Coal"},
         },
     )
+
+
+@resp_lib.activate
+def test_get_material_bundle_includes_text(api, monkeypatch):
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/materials/",
+        match=[matchers.query_param_matcher({"name": "HKUST", "limit": "50"})],
+        json=_envelope([{"id": 1, "name": "HKUST", "cif_url": "/media/HKUST.cif"}]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/materials/1/",
+        json={"id": 1, "name": "HKUST", "cif_url": "/media/HKUST.cif"},
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/materials-psdi/1/",
+        json={"id": 1, "name": "HKUST", "cif_url": "/media/HKUST.cif", "cif_filename": "HKUST.cif"},
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        "https://prisma-platform.org/media/HKUST.cif",
+        body="data_test\n_cell_length_a 10.0",
+        status=200,
+        content_type="text/plain",
+    )
+
+    expected_bundle = {
+        "isotherms": [],
+        "zeopp_simulated": [],
+        "zeopp_experimental": [],
+        "water_kpis": [],
+    }
+
+    def _fake_bundle(*args, **kwargs):
+        return expected_bundle
+
+    monkeypatch.setattr(api, "get_material_property_bundle", _fake_bundle)
+
+    result = api.get_material_bundle("HKUST", include_cif=True, include_cif_text=True)
+
+    assert result["material"]["id"] == 1
+    assert result["material_psdi"]["cif_filename"] == "HKUST.cif"
+    assert result["property_bundle"] == expected_bundle
+    assert result["cif"]["url"] == "https://prisma-platform.org/media/HKUST.cif"
+    assert isinstance(result["cif"]["text"], dict)
+    assert result["cif"]["text"]["line_count"] == 2
+    assert result["cif"]["text"]["fields"]["_cell_length_a"] == "10.0"
+    assert "data_test" in result["cif"]["text"]["raw"]
+
+
+@resp_lib.activate
+def test_get_material_bundle_raises_on_ambiguous_name(api):
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/materials/",
+        match=[matchers.query_param_matcher({"name": "HK", "limit": "50"})],
+        json=_envelope([
+            {"id": 1, "name": "HKUST"},
+            {"id": 2, "name": "HK-MOF-2"},
+        ]),
+        status=200,
+    )
+
+    with pytest.raises(ValueError, match="matched 2 materials"):
+        api.get_material_bundle("HK")
+
+
+@resp_lib.activate
+def test_get_material_bundle_can_skip_cif(api, monkeypatch):
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/materials/",
+        match=[matchers.query_param_matcher({"name": "HKUST", "limit": "50"})],
+        json=_envelope([{"id": 1, "name": "HKUST", "cif_url": "/media/HKUST.cif"}]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/materials/1/",
+        json={"id": 1, "name": "HKUST", "cif_url": "/media/HKUST.cif"},
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/materials-psdi/1/",
+        json={"id": 1, "name": "HKUST", "cif_url": "/media/HKUST.cif", "cif_filename": "HKUST.cif"},
+        status=200,
+    )
+
+    expected_bundle = {
+        "isotherms": [],
+        "zeopp_simulated": [],
+        "zeopp_experimental": [],
+        "water_kpis": [],
+    }
+
+    def _fake_bundle(*args, **kwargs):
+        return expected_bundle
+
+    monkeypatch.setattr(api, "get_material_property_bundle", _fake_bundle)
+
+    result = api.get_material_bundle(
+        "HKUST",
+        include_cif=False,
+        include_cif_text=True,
+    )
+
+    assert result["property_bundle"] == expected_bundle
+    assert result["cif"] is None
 
 
 # ── preflight_material_check ──────────────────────────────────────────────────

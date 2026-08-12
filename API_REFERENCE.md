@@ -116,10 +116,13 @@ api.v2.get_materials(name='ABEX')   # substring filter
 
 ---
 
-#### `api.v2.get_material(material_id)`
+#### `api.v2.get_material(material_id=None, name=None, bundle=['isotherms','zeopp','water_kpis','cif'])`
 
 ```python
-api.v2.get_material(1)
+api.v2.get_material(1)                     # by numeric id (default includes bundles)
+api.v2.get_material(1, bundle=None)        # root-only (legacy single-record shape)
+api.v2.get_material(name='ABEXEM')         # direct name lookup
+api.v2.get_material(name=['ABEXEM','HKUST'], bundle=None)  # list lookup
 ```
 ```python
 {
