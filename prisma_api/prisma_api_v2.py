@@ -19,6 +19,7 @@ from __future__ import annotations
 import pandas as pd
 import requests
 from typing import Any
+from pathlib import Path
 from urllib.parse import urlencode
 import warnings
 
@@ -291,6 +292,74 @@ class PrismaAPIv2:
         records = response.get("results", response) if isinstance(response, dict) else response
         records = records or []
         return [r["mof"] if isinstance(r, dict) else r for r in records]
+
+    def get_cifs(self, mof: str | list[str],
+                 save_dir: str | None = None) -> requests.Response | list[requests.Response] | str | list[str]:
+        """
+        GET /api/v2/cifs/files/
+
+        Dev-only endpoint (not yet available on the production server).
+
+        Args:
+            mof: One MOF name (str) or list of MOF names.
+            save_dir: Optional directory to save downloaded CIF attachment(s).
+                      If provided, returns saved file path(s) instead of
+                      response object(s).
+
+        Returns:
+            Streamed CIF response for a single MOF, or a list of streamed
+            CIF responses for multiple MOFs. If ``save_dir`` is provided,
+            returns saved file path(s).
+        """
+        if not self._dev:
+            raise RuntimeError(
+                "get_cifs() is only available on the dev server. "
+                "Initialise with dev=True (e.g. prisma_api.init(local_dev=True))."
+            )
+
+        output_dir = Path(save_dir).expanduser() if save_dir is not None else None
+        if output_dir is not None:
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+        def _extract_filename(resp: requests.Response, fallback_mof: str) -> str:
+            cd = resp.headers.get("Content-Disposition", "")
+            marker = "filename="
+            if marker in cd:
+                filename = cd.split(marker, 1)[1].strip().strip('"')
+                if filename:
+                    return filename
+            return f"{fallback_mof}.cif"
+
+        def _one(mof_name: str) -> requests.Response | str:
+            if not isinstance(mof_name, str) or not mof_name.strip():
+                raise TypeError("Each 'mof' value must be a non-empty string.")
+            mof_name = mof_name.strip()
+            url = f"{self._base_url()}/cifs/files/"
+            resp = requests.get(
+                url,
+                params={"mof": mof_name},
+                headers=self._headers(),
+                timeout=120,
+                stream=True,
+            )
+            resp.raise_for_status()
+
+            if output_dir is not None:
+                filename = _extract_filename(resp, mof_name)
+                target = output_dir / filename
+                with target.open("wb") as f:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                resp.close()
+                return str(target)
+            return resp
+
+        if isinstance(mof, str):
+            return _one(mof)
+        if isinstance(mof, list):
+            return [_one(name) for name in mof]
+        raise TypeError("'mof' must be a string or list of strings.")
 
     def get_material(
         self,
