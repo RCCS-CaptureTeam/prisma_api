@@ -294,7 +294,9 @@ class PrismaAPIv2:
         return [r["mof"] if isinstance(r, dict) else r for r in records]
 
     def get_cifs(self, mof: str | list[str],
-                 save_dir: str | None = None) -> requests.Response | list[requests.Response] | str | list[str]:
+                 structured: bool = True,
+                 pandas: bool = True,
+                 save_dir: str | None = None) -> dict | list[dict] | requests.Response | list[requests.Response] | str | list[str]:
         """
         GET /api/v2/cifs/files/
 
@@ -302,14 +304,20 @@ class PrismaAPIv2:
 
         Args:
             mof: One MOF name (str) or list of MOF names.
+            structured: Request structured JSON response from the API.
+                        Defaults to ``True``.
+            pandas: Convert pandas-suitable structured fields to
+                    ``pd.DataFrame`` when ``structured=True``.
+                    Defaults to ``True``.
             save_dir: Optional directory to save downloaded CIF attachment(s).
-                      If provided, returns saved file path(s) instead of
-                      response object(s).
+                      Only used when ``structured=False``.
 
         Returns:
-            Streamed CIF response for a single MOF, or a list of streamed
-            CIF responses for multiple MOFs. If ``save_dir`` is provided,
-            returns saved file path(s).
+            If ``structured=True``: nested dict for single MOF or list of nested
+            dicts for multiple MOFs, with null-valued keys removed and tabular
+            list-of-dict sections converted to ``pd.DataFrame``.
+            If ``structured=False``: streamed CIF response(s), or saved path(s)
+            when ``save_dir`` is provided.
         """
         if not self._dev:
             raise RuntimeError(
@@ -317,9 +325,87 @@ class PrismaAPIv2:
                 "Initialise with dev=True (e.g. prisma_api.init(local_dev=True))."
             )
 
+        if structured and save_dir is not None:
+            raise ValueError("save_dir is only supported when structured=False.")
+
         output_dir = Path(save_dir).expanduser() if save_dir is not None else None
         if output_dir is not None:
             output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Field-aware conversion keeps nested structures readable while
+        # still promoting genuinely tabular sections to DataFrames.
+        _TABULAR_FIELD_NAMES = {
+            "tags",
+            "elements",
+            "citations",
+            "references",
+            "authors",
+            "atom_site",
+            "atom_sites",
+            "symmetry_operations",
+            "symmetry_equiv_pos",
+            "bonds",
+            "angles",
+            "torsions",
+            "contacts",
+            "void_fractions",
+            "channels",
+            "coordination",
+            "topology",
+        }
+
+        def _is_scalar(value: Any) -> bool:
+            return isinstance(value, (str, int, float, bool)) or value is None
+
+        def _looks_like_tabular_records(records: list[dict]) -> bool:
+            if not records:
+                return False
+            keys = [set(r.keys()) for r in records if isinstance(r, dict)]
+            if len(keys) != len(records):
+                return False
+            shared = set.intersection(*keys) if keys else set()
+            if not shared:
+                return False
+            scalar_hits = 0
+            total = 0
+            for row in records:
+                for value in row.values():
+                    total += 1
+                    if _is_scalar(value):
+                        scalar_hits += 1
+            return total > 0 and (scalar_hits / total) >= 0.8
+
+        def _should_convert_to_df(path: tuple[str, ...], records: list[dict]) -> bool:
+            if not pandas:
+                return False
+            if not _looks_like_tabular_records(records):
+                return False
+            field_name = path[-1].lower() if path else ""
+            if field_name in {"atoms", "geom_bonds", "commit_history"}:
+                return True
+            if field_name in _TABULAR_FIELD_NAMES:
+                return True
+            if field_name.endswith(("_table", "_rows", "_records", "_sites")):
+                return True
+            if field_name.startswith(("atoms_", "bond_", "symmetry_", "cell_")):
+                return True
+            return False
+
+        def _clean_and_convert(value: Any, path: tuple[str, ...] = ()) -> Any:
+            if isinstance(value, dict):
+                cleaned = {
+                    k: _clean_and_convert(v, path + (k,))
+                    for k, v in value.items()
+                    if v is not None
+                }
+                return cleaned
+            if isinstance(value, list):
+                cleaned_list = [_clean_and_convert(v, path) for v in value]
+                if cleaned_list and all(isinstance(x, dict) for x in cleaned_list):
+                    if _should_convert_to_df(path, cleaned_list):
+                        return pd.DataFrame(cleaned_list)
+                return cleaned_list
+            return value
 
         def _extract_filename(resp: requests.Response, fallback_mof: str) -> str:
             cd = resp.headers.get("Content-Disposition", "")
@@ -330,19 +416,22 @@ class PrismaAPIv2:
                     return filename
             return f"{fallback_mof}.cif"
 
-        def _one(mof_name: str) -> requests.Response | str:
+        def _one(mof_name: str) -> dict | requests.Response | str:
             if not isinstance(mof_name, str) or not mof_name.strip():
                 raise TypeError("Each 'mof' value must be a non-empty string.")
             mof_name = mof_name.strip()
             url = f"{self._base_url()}/cifs/files/"
             resp = requests.get(
                 url,
-                params={"mof": mof_name},
+                params={"mof": mof_name, "structured": str(structured).lower()},
                 headers=self._headers(),
                 timeout=120,
-                stream=True,
+                stream=not structured,
             )
             resp.raise_for_status()
+
+            if structured:
+                return _clean_and_convert(resp.json())
 
             if output_dir is not None:
                 filename = _extract_filename(resp, mof_name)
