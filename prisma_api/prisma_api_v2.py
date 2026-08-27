@@ -270,6 +270,28 @@ class PrismaAPIv2:
         print(f"{len(all_records)} materials loaded from {server}")
         return self._resolve_cif_url_df(self._to_df({"results": all_records}))
 
+    def list_cifs(self, tag: str | None = None) -> list[str]:
+        """
+        GET /api/v2/list_cifs/
+
+        Dev-only endpoint (not yet available on the production server).
+
+        Args:
+            tag: Optional tag to filter CIFs by. If omitted, all CIFs are returned.
+
+        Returns:
+            List of MOF names matching ``tag``.
+        """
+        if not self._dev:
+            raise RuntimeError(
+                "list_cifs() is only available on the dev server. "
+                "Initialise with dev=True (e.g. prisma_api.init(local_dev=True))."
+            )
+        response = self._get("/cifs/", _compact(tag=tag))
+        records = response.get("results", response) if isinstance(response, dict) else response
+        records = records or []
+        return [r["mof"] if isinstance(r, dict) else r for r in records]
+
     def get_material(
         self,
         material_id: int | None = None,
