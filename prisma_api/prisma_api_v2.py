@@ -275,7 +275,7 @@ class PrismaAPIv2:
         """
         GET /api/v2/list_cifs/
 
-        Dev-only endpoint (not yet available on the production server).
+        List CIF-backed MOF records.
 
         Args:
             tag: Optional tag to filter CIFs by. If omitted, all CIFs are returned.
@@ -283,11 +283,6 @@ class PrismaAPIv2:
         Returns:
             List of MOF names matching ``tag``.
         """
-        if not self._dev:
-            raise RuntimeError(
-                "list_cifs() is only available on the dev server. "
-                "Initialise with dev=True (e.g. prisma_api.init(local_dev=True))."
-            )
         response = self._get("/cifs/", _compact(tag=tag))
         records = response.get("results", response) if isinstance(response, dict) else response
         records = records or []
@@ -300,7 +295,7 @@ class PrismaAPIv2:
         """
         GET /api/v2/cifs/files/
 
-        Dev-only endpoint (not yet available on the production server).
+        Fetch CIF payload(s) for one or more MOF names.
 
         Args:
             mof: One MOF name (str) or list of MOF names.
@@ -319,12 +314,6 @@ class PrismaAPIv2:
             If ``structured=False``: streamed CIF response(s), or saved path(s)
             when ``save_dir`` is provided.
         """
-        if not self._dev:
-            raise RuntimeError(
-                "get_cifs() is only available on the dev server. "
-                "Initialise with dev=True (e.g. prisma_api.init(local_dev=True))."
-            )
-
         if structured and save_dir is not None:
             raise ValueError("save_dir is only supported when structured=False.")
 
