@@ -14,6 +14,9 @@ import os
 import pytest
 import responses as resp_lib
 from responses import matchers
+from datetime import datetime
+
+import pandas as pd
 
 from prisma_api.prisma_api_v2 import PrismaAPIv2, _BASE_PROD
 
@@ -461,6 +464,7 @@ def test_get_region_detail(api):
 
 @pytest.mark.parametrize("method,path,fixture", [
     ("get_sources",    "/sources/",    [{"id": 1, "name": "Coal Plant", "short_name": "CP"}]),
+    ("get_scopes",     "/scopes/",     [{"id": 7, "name": "Point Source"}]),
     ("get_sinks",      "/sinks/",      [{"id": 2, "name": "North Sea"}]),
     ("get_transport_scenarios", "/transport-scenarios/", [{"id": 3, "name": "Pipeline 200km"}]),
     ("get_utilities",  "/utilities/",  [{"id": 4, "name": "Steam"}]),
@@ -476,6 +480,7 @@ def test_catalog_list_endpoints_return_dataframe(api, method, path, fixture):
 
 @pytest.mark.parametrize("method,path,record", [
     ("get_source",             "/sources/1/",            {"id": 1, "name": "Coal Plant"}),
+    ("get_scope",              "/scopes/7/",             {"id": 7, "name": "Point Source"}),
     ("get_sink",               "/sinks/2/",              {"id": 2, "name": "North Sea"}),
     ("get_transport_scenario", "/transport-scenarios/3/",{"id": 3, "name": "Pipeline"}),
     ("get_utility",            "/utilities/4/",          {"id": 4, "name": "Steam"}),
@@ -820,6 +825,7 @@ def test_get_mea_kpi_detail(api):
 
 @pytest.mark.parametrize("method,path,fixture", [
     ("get_sources",    "/sources/",    [{"id": 1, "name": "Coal Plant", "short_name": "CP"}]),
+    ("get_scopes",     "/scopes/",     [{"id": 7, "name": "Point Source"}]),
     ("get_sinks",      "/sinks/",      [{"id": 2, "name": "North Sea"}]),
     ("get_transport_scenarios", "/transport-scenarios/", [{"id": 3, "name": "Pipeline 200km"}]),
     ("get_utilities",  "/utilities/",  [{"id": 4, "name": "Steam"}]),
@@ -835,6 +841,7 @@ def test_catalog_list_endpoints_return_dataframe(api, method, path, fixture):
 
 @pytest.mark.parametrize("method,path,record", [
     ("get_source",             "/sources/1/",            {"id": 1, "name": "Coal Plant"}),
+    ("get_scope",              "/scopes/7/",             {"id": 7, "name": "Point Source"}),
     ("get_sink",               "/sinks/2/",              {"id": 2, "name": "North Sea"}),
     ("get_transport_scenario", "/transport-scenarios/3/",{"id": 3, "name": "Pipeline"}),
     ("get_utility",            "/utilities/4/",          {"id": 4, "name": "Steam"}),
@@ -863,6 +870,76 @@ def test_get_isotherm_returns_dataframe(api):
     df = api.get_isotherm()
     assert len(df) == 2
     assert_df_columns(df, "id", "mof", "molecule", "T_ref_K", "sim_or_exp", "good_structure")
+
+
+# ── Scopes ───────────────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_scopes_name_filter(api):
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/scopes/",
+        match=[matchers.query_param_matcher({"name": "point", "limit": "500", "offset": "0"})],
+        json=_envelope([{"id": 7, "name": "Point Source"}]),
+        status=200,
+    )
+    df = api.get_scopes(name="point")
+    assert df.iloc[0]["name"] == "Point Source"
+
+
+@resp_lib.activate
+def test_get_scopes_coerces_types(api):
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/scopes/",
+        json=_envelope([
+            {
+                "id": "7",
+                "name": "Point Source",
+                "active": "true",
+                "capture_efficiency": "0.935",
+                "created_at": "2026-07-01T12:34:56Z",
+                "tags": "[\"pilot\", \"uk\"]",
+            }
+        ]),
+        status=200,
+    )
+
+    df = api.get_scopes()
+    row = df.iloc[0]
+
+    assert isinstance(row["id"], int)
+    assert isinstance(row["name"], str)
+    assert isinstance(row["active"], bool)
+    assert isinstance(row["capture_efficiency"], float)
+    assert pd.api.types.is_datetime64_any_dtype(df["created_at"])
+    assert isinstance(row["tags"], list)
+
+
+@resp_lib.activate
+def test_get_scope_detail_coerces_types(api):
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/scopes/7/",
+        json={
+            "id": "7",
+            "name": "Point Source",
+            "active": "false",
+            "capture_efficiency": "1.05",
+            "created_at": "2026-07-01T12:34:56Z",
+            "tags": "[\"a\", \"b\"]",
+        },
+        status=200,
+    )
+
+    scope = api.get_scope(7)
+
+    assert isinstance(scope["id"], int)
+    assert isinstance(scope["name"], str)
+    assert isinstance(scope["active"], bool)
+    assert isinstance(scope["capture_efficiency"], float)
+    assert isinstance(scope["created_at"], datetime)
+    assert isinstance(scope["tags"], list)
 
 
 @resp_lib.activate

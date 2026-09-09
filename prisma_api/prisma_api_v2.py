@@ -22,6 +22,9 @@ from typing import Any
 from pathlib import Path
 from urllib.parse import urlencode
 import warnings
+import json
+import re
+from datetime import datetime
 
 
 _BASE_PROD = "https://prisma-platform.org/api/v2"
@@ -140,6 +143,77 @@ class PrismaAPIv2:
             "preview": lines[:20],
             "raw": cif_text,
         }
+
+    def _coerce_scalar(self, value: Any) -> Any:
+        """Best-effort conversion of scalar API values to native Python types."""
+        if not isinstance(value, str):
+            return value
+
+        text = value.strip()
+        if text == "":
+            return value
+
+        lowered = text.lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+
+        # Strict integer parsing first to avoid converting floats like '1.0' to int.
+        if re.fullmatch(r"[+-]?\d+", text):
+            try:
+                return int(text)
+            except ValueError:
+                pass
+
+        # Support decimal/scientific notation.
+        if re.fullmatch(r"[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?", text):
+            try:
+                return float(text)
+            except ValueError:
+                pass
+
+        # Parse JSON list/dict payloads often returned as strings.
+        if (text.startswith("[") and text.endswith("]")) or (
+            text.startswith("{") and text.endswith("}")
+        ):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, (list, dict)):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        # Parse ISO-ish datetime strings.
+        if any(sep in text for sep in ("-", "T", ":")):
+            try:
+                return datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+        return value
+
+    def _coerce_scope_types(self, payload: Any) -> Any:
+        """Normalize scope endpoint payload values to useful runtime types."""
+        if isinstance(payload, dict):
+            return {k: self._coerce_scalar(v) for k, v in payload.items()}
+
+        if isinstance(payload, list):
+            if payload and all(isinstance(item, dict) for item in payload):
+                return [{k: self._coerce_scalar(v) for k, v in row.items()} for row in payload]
+            return [self._coerce_scalar(v) for v in payload]
+
+        if isinstance(payload, pd.DataFrame):
+            df = payload.copy()
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    df[col] = df[col].map(self._coerce_scalar)
+                    non_null = df[col].dropna()
+                    if len(non_null) > 0 and non_null.map(lambda v: isinstance(v, datetime)).all():
+                        df[col] = pd.to_datetime(df[col], errors="coerce")
+            return df
+
+        return payload
 
     # ── Health ────────────────────────────────────────────────────────────────
 
@@ -1244,6 +1318,16 @@ class PrismaAPIv2:
     def get_source(self, source_id: int) -> dict:
         """GET /api/v2/sources/{source_id}/"""
         return self._get(f"/sources/{source_id}/")
+
+    def get_scopes(self, name: str | None = None,
+                   limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        """GET /api/v2/scopes/"""
+        params = _compact(name=name, limit=limit, offset=offset)
+        return self._coerce_scope_types(self._to_df(self._get("/scopes/", params)))
+
+    def get_scope(self, scope_id: int) -> dict:
+        """GET /api/v2/scopes/{scope_id}/"""
+        return self._coerce_scope_types(self._get(f"/scopes/{scope_id}/"))
 
     def get_sinks(self, name: str | None = None,
                   limit: int = 500, offset: int = 0) -> pd.DataFrame:
