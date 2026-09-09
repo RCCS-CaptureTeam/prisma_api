@@ -206,11 +206,10 @@ class PrismaAPIv2:
         if isinstance(payload, pd.DataFrame):
             df = payload.copy()
             for col in df.columns:
-                if df[col].dtype == "object":
-                    df[col] = df[col].map(self._coerce_scalar)
-                    non_null = df[col].dropna()
-                    if len(non_null) > 0 and non_null.map(lambda v: isinstance(v, datetime)).all():
-                        df[col] = pd.to_datetime(df[col], errors="coerce")
+                df[col] = df[col].map(self._coerce_scalar)
+                non_null = df[col].dropna()
+                if len(non_null) > 0 and non_null.map(lambda v: isinstance(v, datetime)).all():
+                    df[col] = pd.to_datetime(df[col], errors="coerce")
             return df
 
         return payload

@@ -254,6 +254,16 @@ api.v2.get_source(1)
 
 #### `api.v2.get_scopes(name=None, limit=500, offset=0)` / `api.v2.get_scope(scope_id)`
 
+Scope wrappers normalise common scalar payload values to practical runtime types:
+
+- `"7"` -> `int`
+- `"0.935"` -> `float`
+- `"true"`/`"false"` -> `bool`
+- ISO datetime strings (for example `2026-07-01T12:34:56Z`) -> `datetime`
+- JSON-encoded arrays/objects (for example `'["pilot", "uk"]'`) -> `list`/`dict`
+
+For `get_scopes(...)` in default DataFrame mode, datetime-like columns are converted to pandas datetime dtype.
+
 ```python
 api.v2.get_scopes()
 api.v2.get_scopes(name='point')
@@ -928,7 +938,10 @@ All v2 methods route to:
 ## Dev Mode
 
 ```python
-# Enable dev mode (writes to config.yaml)
+# Preferred: choose target at init time
+api = prisma_api.init(local_dev=True)
+
+# Legacy config toggle (deprecated)
 api.update_dev_mode(True)
 
 # Or set at init time via env vars
