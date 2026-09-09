@@ -15,6 +15,7 @@ import pytest
 import responses as resp_lib
 from responses import matchers
 from datetime import datetime
+from numbers import Integral
 
 import pandas as pd
 
@@ -908,9 +909,9 @@ def test_get_scopes_coerces_types(api):
     df = api.get_scopes()
     row = df.iloc[0]
 
-    assert isinstance(row["id"], int)
+    assert isinstance(row["id"], Integral)
     assert isinstance(row["name"], str)
-    assert isinstance(row["active"], bool)
+    assert pd.api.types.is_bool_dtype(df["active"])
     assert isinstance(row["capture_efficiency"], float)
     assert pd.api.types.is_datetime64_any_dtype(df["created_at"])
     assert isinstance(row["tags"], list)
