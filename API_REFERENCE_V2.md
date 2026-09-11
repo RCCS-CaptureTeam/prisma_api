@@ -496,6 +496,127 @@ api.v2.get_carbon_zeopp_experimental_item(1)
 
 ---
 
+### AutoPrism Tables
+
+#### `api.v2.get_computation_runs(workflow_id=None, step=None, status=None, limit=500, offset=0)` / `api.v2.get_computation_run(run_id)`
+
+```python
+api.v2.get_computation_runs(workflow_id='wf-1', step='adsorption', status='done')
+api.v2.get_computation_run(7)
+```
+
+---
+
+#### `api.v2.upsert_computation_runs(payload)`
+
+PUT wrapper for `/api/v2/computation-runs/`. `payload` may be a `dict`,
+`list[dict]`, or `pd.DataFrame`. All provided fields are forwarded unchanged,
+including newly introduced server fields.
+
+```python
+api.v2.upsert_computation_runs({
+    'id': 7,
+    'workflow_id': 'wf-7',
+    'step': 'adsorption',
+    'status': 'done',
+})
+```
+
+---
+
+#### `api.v2.get_adsorption_singlepoint(structure=None, md5=None, mixture_id=None, component=None, limit=500, offset=0)`
+
+```python
+api.v2.get_adsorption_singlepoint(structure='ABEXEM', component='CO2')
+```
+
+`api.v2.get_adsorption_singlepoint_item(row_id)` returns one row by id.
+
+`api.v2.upsert_adsorption_singlepoint(payload)` upserts one-or-many rows via
+`dict`, `list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged.
+
+---
+
+#### `api.v2.get_heat_capacity(structure=None, temperature_K=None, limit=500, offset=0)`
+
+```python
+api.v2.get_heat_capacity(structure='ABEXEM', temperature_K=298.0)
+```
+
+`api.v2.get_heat_capacity_item(row_id)` returns one row by id.
+
+`api.v2.upsert_heat_capacity(payload)` upserts one-or-many rows via `dict`,
+`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged.
+
+---
+
+#### `api.v2.get_isotherm_h2(structure=None, isotherm_id=None, component=None, temperature_K=None, pressure_bar=None, limit=500, offset=0)`
+
+```python
+api.v2.get_isotherm_h2(structure='ABEXEM', component='H2')
+```
+
+`api.v2.get_isotherm_h2_item(row_id)` returns one row by id.
+
+`api.v2.upsert_isotherm_h2(payload)` upserts one-or-many rows via `dict`,
+`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged.
+
+---
+
+#### `api.v2.get_mofchecker(structure=None, md5=None, is_mof=None, MOFQ=None, limit=500, offset=0)`
+
+```python
+api.v2.get_mofchecker(structure='ABEXEM', is_mof=True)
+```
+
+`api.v2.get_mofchecker_item(row_id)` returns one row by id.
+
+`api.v2.upsert_mofchecker(payload)` upserts one-or-many rows via `dict`,
+`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged.
+
+---
+
+#### `api.v2.get_zeopp_metrics(mof=None, md5=None, probe=None, limit=500, offset=0)`
+
+```python
+api.v2.get_zeopp_metrics(mof='ABEXEM', probe='N2')
+```
+
+`api.v2.get_zeopp_metrics_item(row_id)` returns one row by id.
+
+`api.v2.upsert_zeopp_metrics(payload)` upserts one-or-many rows via `dict`,
+`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged.
+
+---
+
+#### `api.v2.get_autoprism_collection(workflow_id=None, step=None, status=None, structure=None, mof=None, md5=None, mixture_id=None, component=None, isotherm_id=None, temperature_K=None, pressure_bar=None, probe=None, is_mof=None, MOFQ=None, limit=500, offset=0)`
+
+Fetches AutoPrism records in one call and returns a dict with:
+
+- `computation_runs`
+- `adsorption_singlepoint`
+- `heat_capacity`
+- `isotherm_H2`
+- `mofchecker`
+- `zeopp_metrics`
+
+If `structure` is omitted and `mof` is provided, `mof` is also used as the
+structure filter for non-ZeoPP AutoPrism endpoints.
+
+```python
+bundle = api.v2.get_autoprism_collection(
+    mof='ABEXEM',
+    md5='abc123',
+    component='CO2',
+    probe='N2',
+)
+
+bundle['mofchecker']
+bundle['zeopp_metrics']
+```
+
+---
+
 ### TEA / LCA Data
 
 #### `api.v2.get_output_kpis(scenario_id=None, mof=None, good_structure=None, limit=500, offset=0)`

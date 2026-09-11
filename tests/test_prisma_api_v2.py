@@ -1295,6 +1295,374 @@ def test_get_carbon_zeopp_experimental_item_detail(api):
     assert api.get_carbon_zeopp_experimental_item(1)["mof"] == "HKUST"
 
 
+# ── AutoPrism Tables ─────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_autoprism_collection_returns_all_records(api):
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/computation-runs/",
+        match=[matchers.query_param_matcher({
+            "workflow_id": "wf-1",
+            "step": "adsorption",
+            "status": "done",
+            "limit": "50",
+            "offset": "0",
+        })],
+        json=_envelope([{"id": 99, "workflow_id": "wf-1", "step": "adsorption", "status": "done"}]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/adsorption-singlepoint/",
+        match=[matchers.query_param_matcher({
+            "structure": "ABEXEM",
+            "md5": "abc123",
+            "mixture_id": "mix-1",
+            "component": "CO2",
+            "limit": "50",
+            "offset": "0",
+        })],
+        json=_envelope([{"id": 1, "structure": "ABEXEM"}]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/heat-capacity/",
+        match=[matchers.query_param_matcher({
+            "structure": "ABEXEM",
+            "temperature_K": "298.0",
+            "limit": "50",
+            "offset": "0",
+        })],
+        json=_envelope([{"id": 2, "structure": "ABEXEM", "temperature_K": 298.0}]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/isotherm-h2/",
+        match=[matchers.query_param_matcher({
+            "structure": "ABEXEM",
+            "isotherm_id": "iso-1",
+            "component": "CO2",
+            "temperature_K": "298.0",
+            "pressure_bar": "1.0",
+            "limit": "50",
+            "offset": "0",
+        })],
+        json=_envelope([{"id": 3, "structure": "ABEXEM", "isotherm_id": "iso-1"}]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/mofchecker/",
+        match=[matchers.query_param_matcher({
+            "structure": "ABEXEM",
+            "md5": "abc123",
+            "is_mof": "true",
+            "MOFQ": "yes",
+            "limit": "50",
+            "offset": "0",
+        })],
+        json=_envelope([{"id": 4, "structure": "ABEXEM", "is_mof": True}]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/zeopp-metrics/",
+        match=[matchers.query_param_matcher({
+            "mof": "ABEXEM",
+            "md5": "abc123",
+            "probe": "N2",
+            "limit": "50",
+            "offset": "0",
+        })],
+        json=_envelope([{"id": 5, "mof": "ABEXEM", "probe": "N2"}]),
+        status=200,
+    )
+
+    bundle = api.get_autoprism_collection(
+        workflow_id="wf-1",
+        step="adsorption",
+        status="done",
+        structure="ABEXEM",
+        mof="ABEXEM",
+        md5="abc123",
+        mixture_id="mix-1",
+        component="CO2",
+        isotherm_id="iso-1",
+        temperature_K=298.0,
+        pressure_bar=1.0,
+        probe="N2",
+        is_mof=True,
+        MOFQ="yes",
+        limit=50,
+        offset=0,
+    )
+
+    assert set(bundle.keys()) == {
+        "computation_runs",
+        "adsorption_singlepoint",
+        "heat_capacity",
+        "isotherm_H2",
+        "mofchecker",
+        "zeopp_metrics",
+    }
+    assert len(bundle["computation_runs"]) == 1
+    assert len(bundle["adsorption_singlepoint"]) == 1
+    assert len(bundle["heat_capacity"]) == 1
+    assert len(bundle["isotherm_H2"]) == 1
+    assert len(bundle["mofchecker"]) == 1
+    assert len(bundle["zeopp_metrics"]) == 1
+
+
+@resp_lib.activate
+def test_get_autoprism_collection_uses_mof_as_structure_fallback(api):
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/computation-runs/",
+        match=[matchers.query_param_matcher({"limit": "500", "offset": "0"})],
+        json=_envelope([]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/adsorption-singlepoint/",
+        match=[matchers.query_param_matcher({"structure": "HKUST", "limit": "500", "offset": "0"})],
+        json=_envelope([]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/heat-capacity/",
+        match=[matchers.query_param_matcher({"structure": "HKUST", "limit": "500", "offset": "0"})],
+        json=_envelope([]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/isotherm-h2/",
+        match=[matchers.query_param_matcher({"structure": "HKUST", "limit": "500", "offset": "0"})],
+        json=_envelope([]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/mofchecker/",
+        match=[matchers.query_param_matcher({"structure": "HKUST", "limit": "500", "offset": "0"})],
+        json=_envelope([]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/zeopp-metrics/",
+        match=[matchers.query_param_matcher({"mof": "HKUST", "limit": "500", "offset": "0"})],
+        json=_envelope([]),
+        status=200,
+    )
+
+    api.get_autoprism_collection(mof="HKUST")
+
+
+@resp_lib.activate
+def test_get_computation_runs_filters(api):
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/computation-runs/",
+        match=[matchers.query_param_matcher({
+            "workflow_id": "wf-1",
+            "step": "zeopp",
+            "status": "running",
+            "limit": "25",
+            "offset": "5",
+        })],
+        json=_envelope([{"id": 1, "workflow_id": "wf-1", "step": "zeopp", "status": "running"}]),
+        status=200,
+    )
+    df = api.get_computation_runs(workflow_id="wf-1", step="zeopp", status="running", limit=25, offset=5)
+    assert_df_columns(df, "id", "workflow_id", "step", "status")
+
+
+@resp_lib.activate
+def test_get_computation_run_detail(api):
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/computation-runs/7/",
+        json={"id": 7, "workflow_id": "wf-7", "step": "mofchecker", "status": "done"},
+        status=200,
+    )
+    result = api.get_computation_run(7)
+    assert result["id"] == 7
+    assert result["status"] == "done"
+
+
+@resp_lib.activate
+def test_upsert_computation_runs_accepts_single_dict_and_new_fields(api):
+    payload = {
+        "id": 7,
+        "workflow_id": "wf-7",
+        "step": "adsorption",
+        "status": "done",
+        "new_field_from_server": "kept",
+    }
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/computation-runs/",
+        match=[matchers.json_params_matcher([payload])],
+        json={"created": 0, "updated": 1},
+        status=200,
+    )
+    result = api.upsert_computation_runs(payload)
+    assert result["updated"] == 1
+
+
+@resp_lib.activate
+def test_autoprism_detail_endpoints(api):
+    detail_endpoints = [
+        ("/adsorption-singlepoint/1/", "get_adsorption_singlepoint_item", {"id": 1, "structure": "ABEXEM"}),
+        ("/heat-capacity/2/", "get_heat_capacity_item", {"id": 2, "structure": "ABEXEM"}),
+        ("/isotherm-h2/3/", "get_isotherm_h2_item", {"id": 3, "structure": "ABEXEM"}),
+        ("/mofchecker/4/", "get_mofchecker_item", {"id": 4, "structure": "ABEXEM"}),
+        ("/zeopp-metrics/5/", "get_zeopp_metrics_item", {"id": 5, "mof": "ABEXEM"}),
+    ]
+
+    for path, _, body in detail_endpoints:
+        resp_lib.add(resp_lib.GET, f"{PROD_BASE}{path}", json=body, status=200)
+
+    assert api.get_adsorption_singlepoint_item(1)["id"] == 1
+    assert api.get_heat_capacity_item(2)["id"] == 2
+    assert api.get_isotherm_h2_item(3)["id"] == 3
+    assert api.get_mofchecker_item(4)["id"] == 4
+    assert api.get_zeopp_metrics_item(5)["id"] == 5
+
+
+@resp_lib.activate
+def test_upsert_autoprism_tables_accept_dataframes_and_pass_all_fields(api):
+    adsorption_df = pd.DataFrame([
+        {
+            "structure": "ABEXEM",
+            "md5": "a1",
+            "mixture_id": "mix-1",
+            "component": "CO2",
+            "temperature_K": 298.0,
+            "pressure_bar": 1.0,
+            "new_extra_field": "pass-through",
+        }
+    ])
+    heat_capacity_df = pd.DataFrame([
+        {"structure": "ABEXEM", "temperature_K": 298.0, "Cp": 123.4, "new_extra_field": "pass-through"}
+    ])
+    isotherm_h2_df = pd.DataFrame([
+        {
+            "structure": "ABEXEM",
+            "md5": "a1",
+            "isotherm_id": "iso-1",
+            "component": "H2",
+            "temperature_K": 298.0,
+            "pressure_bar": 1.0,
+            "uptake": 2.1,
+            "new_extra_field": "pass-through",
+        }
+    ])
+    mofchecker_df = pd.DataFrame([
+        {"structure": "ABEXEM", "md5": "a1", "is_mof": True, "MOFQ": "yes", "new_extra_field": "pass-through"}
+    ])
+    zeopp_df = pd.DataFrame([
+        {"mof": "ABEXEM", "md5": "a1", "probe": "N2", "pld": 3.4, "new_extra_field": "pass-through"}
+    ])
+
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/adsorption-singlepoint/",
+        match=[matchers.json_params_matcher(adsorption_df.to_dict(orient="records"))],
+        json={"created": 1, "updated": 0},
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/heat-capacity/",
+        match=[matchers.json_params_matcher(heat_capacity_df.to_dict(orient="records"))],
+        json={"created": 1, "updated": 0},
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/isotherm-h2/",
+        match=[matchers.json_params_matcher(isotherm_h2_df.to_dict(orient="records"))],
+        json={"created": 1, "updated": 0},
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/mofchecker/",
+        match=[matchers.json_params_matcher(mofchecker_df.to_dict(orient="records"))],
+        json={"created": 1, "updated": 0},
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/zeopp-metrics/",
+        match=[matchers.json_params_matcher(zeopp_df.to_dict(orient="records"))],
+        json={"created": 1, "updated": 0},
+        status=200,
+    )
+
+    assert api.upsert_adsorption_singlepoint(adsorption_df)["created"] == 1
+    assert api.upsert_heat_capacity(heat_capacity_df)["created"] == 1
+    assert api.upsert_isotherm_h2(isotherm_h2_df)["created"] == 1
+    assert api.upsert_mofchecker(mofchecker_df)["created"] == 1
+    assert api.upsert_zeopp_metrics(zeopp_df)["created"] == 1
+
+
+def test_get_autoprism_collection_allows_empty_payloads(api, monkeypatch):
+    monkeypatch.setattr(api, "get_computation_runs", lambda **kwargs: None)
+    monkeypatch.setattr(api, "get_adsorption_singlepoint", lambda **kwargs: None)
+    monkeypatch.setattr(api, "get_heat_capacity", lambda **kwargs: {"results": []})
+    monkeypatch.setattr(api, "get_isotherm_h2", lambda **kwargs: 0)
+    monkeypatch.setattr(api, "get_mofchecker", lambda **kwargs: [])
+    monkeypatch.setattr(api, "get_zeopp_metrics", lambda **kwargs: pd.DataFrame())
+
+    collection = api.get_autoprism_collection(mof="ABEXEM")
+
+    assert set(collection.keys()) == {
+        "computation_runs",
+        "adsorption_singlepoint",
+        "heat_capacity",
+        "isotherm_H2",
+        "mofchecker",
+        "zeopp_metrics",
+    }
+    assert len(collection["computation_runs"]) == 0
+    assert len(collection["adsorption_singlepoint"]) == 0
+    assert len(collection["heat_capacity"]) == 0
+    assert len(collection["isotherm_H2"]) == 0
+    assert len(collection["mofchecker"]) == 0
+    assert len(collection["zeopp_metrics"]) == 0
+
+
+def test_get_autoprism_collection_tolerates_endpoint_http_error(api, monkeypatch):
+    import requests
+
+    def _raise_http_error(**kwargs):
+        raise requests.HTTPError("500 Server Error")
+
+    monkeypatch.setattr(api, "get_computation_runs", _raise_http_error)
+    monkeypatch.setattr(api, "get_adsorption_singlepoint", lambda **kwargs: [{"id": 1}])
+    monkeypatch.setattr(api, "get_heat_capacity", lambda **kwargs: [{"id": 2}])
+    monkeypatch.setattr(api, "get_isotherm_h2", lambda **kwargs: [{"id": 3}])
+    monkeypatch.setattr(api, "get_mofchecker", lambda **kwargs: [{"id": 4}])
+    monkeypatch.setattr(api, "get_zeopp_metrics", lambda **kwargs: [{"id": 5}])
+
+    collection = api.get_autoprism_collection(mof="ABEXEM")
+
+    assert len(collection["computation_runs"]) == 0
+    assert len(collection["adsorption_singlepoint"]) == 1
+    assert len(collection["heat_capacity"]) == 1
+    assert len(collection["isotherm_H2"]) == 1
+    assert len(collection["mofchecker"]) == 1
+    assert len(collection["zeopp_metrics"]) == 1
+
+
 # ── Output KPIs ───────────────────────────────────────────────────────────────
 
 @resp_lib.activate

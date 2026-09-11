@@ -966,6 +966,16 @@ class PrismaAPIv2:
             return result
         return []
 
+    def _payload_to_records(self, payload: pd.DataFrame | list[dict] | dict) -> list[dict]:
+        """Normalise write payloads to list[dict] while preserving all fields."""
+        if isinstance(payload, pd.DataFrame):
+            return payload.to_dict(orient="records")
+        if isinstance(payload, dict):
+            return [payload]
+        if isinstance(payload, list):
+            return payload
+        raise TypeError("payload must be a DataFrame, dict, or list[dict]")
+
     def _properties_for(self, object_id: int, limit: int = 2000) -> list[dict]:
         """Return all Property records linked to *object_id* via GenericForeignKey.
 
@@ -1694,6 +1704,378 @@ class PrismaAPIv2:
     def get_carbon_zeopp_experimental_item(self, item_id: int) -> dict:
         """GET /api/v2/carbon-zeopp-experimental/{item_id}/"""
         return self._get(f"/carbon-zeopp-experimental/{item_id}/")
+
+    # ── AutoPrism tables ─────────────────────────────────────────────────────
+
+    def get_computation_runs(
+        self,
+        workflow_id: str | None = None,
+        step: str | None = None,
+        status: str | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> pd.DataFrame:
+        """
+        GET /api/v2/computation-runs/
+
+        Args:
+            workflow_id: Workflow identifier filter.
+            step: Step filter.
+            status: Status filter.
+        """
+        params = _compact(
+            workflow_id=workflow_id,
+            step=step,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+        return self._to_df(self._get("/computation-runs/", params))
+
+    def get_computation_run(self, run_id: int) -> dict:
+        """GET /api/v2/computation-runs/{run_id}/"""
+        return self._get(f"/computation-runs/{run_id}/")
+
+    def upsert_computation_runs(self, payload: pd.DataFrame | list[dict] | dict) -> dict:
+        """
+        PUT /api/v2/computation-runs/
+
+        Accepts one object or many objects and forwards all provided fields.
+        """
+        return self._put("/computation-runs/", self._payload_to_records(payload))
+
+    def get_adsorption_singlepoint(
+        self,
+        structure: str | None = None,
+        md5: str | None = None,
+        mixture_id: str | None = None,
+        component: str | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> pd.DataFrame:
+        """
+        GET /api/v2/adsorption-singlepoint/
+
+        Args:
+            structure: Structure name filter.
+            md5: Exact md5 hash filter.
+            mixture_id: Mixture identifier filter.
+            component: Component filter.
+        """
+        params = _compact(
+            structure=structure,
+            md5=md5,
+            mixture_id=mixture_id,
+            component=component,
+            limit=limit,
+            offset=offset,
+        )
+        return self._to_df(self._get("/adsorption-singlepoint/", params))
+
+    def get_adsorption_singlepoint_item(self, row_id: int) -> dict:
+        """GET /api/v2/adsorption-singlepoint/{row_id}/"""
+        return self._get(f"/adsorption-singlepoint/{row_id}/")
+
+    def upsert_adsorption_singlepoint(self, payload: pd.DataFrame | list[dict] | dict) -> dict:
+        """
+        PUT /api/v2/adsorption-singlepoint/
+
+        Accepts one object or many objects and forwards all provided fields.
+        """
+        return self._put("/adsorption-singlepoint/", self._payload_to_records(payload))
+
+    def get_heat_capacity(
+        self,
+        structure: str | None = None,
+        temperature_K: float | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> pd.DataFrame:
+        """
+        GET /api/v2/heat-capacity/
+
+        Args:
+            structure: Structure name filter.
+            temperature_K: Temperature filter [K].
+        """
+        params = _compact(
+            structure=structure,
+            temperature_K=temperature_K,
+            limit=limit,
+            offset=offset,
+        )
+        return self._to_df(self._get("/heat-capacity/", params))
+
+    def get_heat_capacity_item(self, row_id: int) -> dict:
+        """GET /api/v2/heat-capacity/{row_id}/"""
+        return self._get(f"/heat-capacity/{row_id}/")
+
+    def upsert_heat_capacity(self, payload: pd.DataFrame | list[dict] | dict) -> dict:
+        """
+        PUT /api/v2/heat-capacity/
+
+        Accepts one object or many objects and forwards all provided fields.
+        """
+        return self._put("/heat-capacity/", self._payload_to_records(payload))
+
+    def get_isotherm_h2(
+        self,
+        structure: str | None = None,
+        isotherm_id: str | None = None,
+        component: str | None = None,
+        temperature_K: float | None = None,
+        pressure_bar: float | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> pd.DataFrame:
+        """
+        GET /api/v2/isotherm-h2/
+
+        Args:
+            structure: Structure name filter.
+            isotherm_id: Isotherm identifier filter.
+            component: Component filter.
+            temperature_K: Temperature filter [K].
+            pressure_bar: Pressure filter [bar].
+        """
+        params = _compact(
+            structure=structure,
+            isotherm_id=isotherm_id,
+            component=component,
+            temperature_K=temperature_K,
+            pressure_bar=pressure_bar,
+            limit=limit,
+            offset=offset,
+        )
+        return self._to_df(self._get("/isotherm-h2/", params))
+
+    def get_isotherm_h2_item(self, row_id: int) -> dict:
+        """GET /api/v2/isotherm-h2/{row_id}/"""
+        return self._get(f"/isotherm-h2/{row_id}/")
+
+    def upsert_isotherm_h2(self, payload: pd.DataFrame | list[dict] | dict) -> dict:
+        """
+        PUT /api/v2/isotherm-h2/
+
+        Accepts one object or many objects and forwards all provided fields.
+        """
+        return self._put("/isotherm-h2/", self._payload_to_records(payload))
+
+    def get_mofchecker(
+        self,
+        structure: str | None = None,
+        md5: str | None = None,
+        is_mof: bool | None = None,
+        MOFQ: str | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> pd.DataFrame:
+        """
+        GET /api/v2/mofchecker/
+
+        Args:
+            structure: Structure name filter.
+            md5: Exact md5 hash filter.
+            is_mof: Boolean mofchecker flag.
+            MOFQ: MOFQ classifier filter.
+        """
+        params = _compact(
+            structure=structure,
+            md5=md5,
+            is_mof=None if is_mof is None else str(is_mof).lower(),
+            MOFQ=MOFQ,
+            limit=limit,
+            offset=offset,
+        )
+        return self._to_df(self._get("/mofchecker/", params))
+
+    def get_mofchecker_item(self, row_id: int) -> dict:
+        """GET /api/v2/mofchecker/{row_id}/"""
+        return self._get(f"/mofchecker/{row_id}/")
+
+    def upsert_mofchecker(self, payload: pd.DataFrame | list[dict] | dict) -> dict:
+        """
+        PUT /api/v2/mofchecker/
+
+        Accepts one object or many objects and forwards all provided fields.
+        """
+        return self._put("/mofchecker/", self._payload_to_records(payload))
+
+    def get_zeopp_metrics(
+        self,
+        mof: str | None = None,
+        md5: str | None = None,
+        probe: str | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> pd.DataFrame:
+        """
+        GET /api/v2/zeopp-metrics/
+
+        Args:
+            mof: MOF name filter.
+            md5: Exact md5 hash filter.
+            probe: Probe name filter.
+        """
+        params = _compact(mof=mof, md5=md5, probe=probe, limit=limit, offset=offset)
+        return self._to_df(self._get("/zeopp-metrics/", params))
+
+    def get_zeopp_metrics_item(self, row_id: int) -> dict:
+        """GET /api/v2/zeopp-metrics/{row_id}/"""
+        return self._get(f"/zeopp-metrics/{row_id}/")
+
+    def upsert_zeopp_metrics(self, payload: pd.DataFrame | list[dict] | dict) -> dict:
+        """
+        PUT /api/v2/zeopp-metrics/
+
+        Accepts one object or many objects and forwards all provided fields.
+        """
+        return self._put("/zeopp-metrics/", self._payload_to_records(payload))
+
+    def get_autoprism_collection(
+        self,
+        workflow_id: str | None = None,
+        step: str | None = None,
+        status: str | None = None,
+        structure: str | None = None,
+        mof: str | None = None,
+        md5: str | None = None,
+        mixture_id: str | None = None,
+        component: str | None = None,
+        isotherm_id: str | None = None,
+        temperature_K: float | None = None,
+        pressure_bar: float | None = None,
+        probe: str | None = None,
+        is_mof: bool | None = None,
+        MOFQ: str | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> dict[str, pd.DataFrame | list[dict]]:
+        """
+        Gather AutoPrism table records in one call flow.
+
+        Returns a dict with keys:
+            computation_runs,
+            adsorption_singlepoint, heat_capacity, isotherm_H2,
+            mofchecker, zeopp_metrics
+
+        Notes:
+                        - ``workflow_id``, ``step`` and ``status`` filter computation runs.
+            - ``structure`` is used for adsorption_singlepoint, heat_capacity,
+              isotherm_H2 and mofchecker.
+            - ``mof`` is used for zeopp_metrics.
+            - If ``structure`` is omitted and ``mof`` is provided, ``mof`` is
+              also used as the structure filter for convenience.
+
+        Empty payload handling:
+            - If any sub-call returns ``None`` or an unexpected scalar payload,
+              this method normalises it to an empty table representation
+              (``pd.DataFrame()`` in dataframe mode, ``[]`` in json mode).
+        """
+        structure_filter = structure or mof
+
+        def _empty_table() -> pd.DataFrame | list[dict]:
+            return [] if self._return_format == "json" else pd.DataFrame()
+
+        def _normalise_table_payload(value: Any) -> pd.DataFrame | list[dict]:
+            if value is None:
+                return _empty_table()
+            if isinstance(value, (pd.DataFrame, list)):
+                return value
+            if isinstance(value, dict):
+                return self._to_df(value)
+            return _empty_table()
+
+        def _record_count(value: Any) -> int:
+            try:
+                return len(value)
+            except TypeError:
+                return 0
+
+        def _safe_fetch(section: str, fetcher, **kwargs) -> pd.DataFrame | list[dict]:
+            try:
+                return _normalise_table_payload(fetcher(**kwargs))
+            except requests.HTTPError as exc:
+                warnings.warn(
+                    f"AutoPrism section '{section}' failed ({exc}); returning empty table.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                return _empty_table()
+            except requests.RequestException as exc:
+                warnings.warn(
+                    f"AutoPrism section '{section}' request error ({exc}); returning empty table.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                return _empty_table()
+
+        collection = {
+            "computation_runs": _safe_fetch(
+                "computation_runs",
+                self.get_computation_runs,
+                workflow_id=workflow_id,
+                step=step,
+                status=status,
+                limit=limit,
+                offset=offset,
+            ),
+            "adsorption_singlepoint": _safe_fetch(
+                "adsorption_singlepoint",
+                self.get_adsorption_singlepoint,
+                structure=structure_filter,
+                md5=md5,
+                mixture_id=mixture_id,
+                component=component,
+                limit=limit,
+                offset=offset,
+            ),
+            "heat_capacity": _safe_fetch(
+                "heat_capacity",
+                self.get_heat_capacity,
+                structure=structure_filter,
+                temperature_K=temperature_K,
+                limit=limit,
+                offset=offset,
+            ),
+            "isotherm_H2": _safe_fetch(
+                "isotherm_H2",
+                self.get_isotherm_h2,
+                structure=structure_filter,
+                isotherm_id=isotherm_id,
+                component=component,
+                temperature_K=temperature_K,
+                pressure_bar=pressure_bar,
+                limit=limit,
+                offset=offset,
+            ),
+            "mofchecker": _safe_fetch(
+                "mofchecker",
+                self.get_mofchecker,
+                structure=structure_filter,
+                md5=md5,
+                is_mof=is_mof,
+                MOFQ=MOFQ,
+                limit=limit,
+                offset=offset,
+            ),
+            "zeopp_metrics": _safe_fetch(
+                "zeopp_metrics",
+                self.get_zeopp_metrics,
+                mof=mof,
+                md5=md5,
+                probe=probe,
+                limit=limit,
+                offset=offset,
+            ),
+        }
+
+        label = structure_filter or mof or "all"
+        print(f"AutoPrism collection for '{label}':")
+        for key, val in collection.items():
+            print(f"  {key:22s}: {_record_count(val)} records")
+
+        return collection
 
     # ── TEA / LCA data ────────────────────────────────────────────────────────
 

@@ -94,6 +94,21 @@ Endpoints that support PUT return:
 - GET /api/v2/carbon-zeopp-experimental/
 - GET /api/v2/carbon-zeopp-experimental/{zeopp_id}/
 
+## AutoPrism Tables
+
+- GET, PUT /api/v2/computation-runs/
+- GET /api/v2/computation-runs/{run_id}/
+- GET, PUT /api/v2/adsorption-singlepoint/
+- GET /api/v2/adsorption-singlepoint/{row_id}/
+- GET, PUT /api/v2/heat-capacity/
+- GET /api/v2/heat-capacity/{row_id}/
+- GET, PUT /api/v2/isotherm-h2/
+- GET /api/v2/isotherm-h2/{row_id}/
+- GET, PUT /api/v2/mofchecker/
+- GET /api/v2/mofchecker/{row_id}/
+- GET, PUT /api/v2/zeopp-metrics/
+- GET /api/v2/zeopp-metrics/{row_id}/
+
 ## TEA and LCA
 
 - GET, PUT /api/v2/output-kpis/
@@ -200,6 +215,39 @@ Below are the key filters exposed in api_v2.py docstrings and implementation.
 - GET /api/v2/carbon-zeopp-experimental/
   - mof, round, limit, offset
 
+### AutoPrism Tables
+
+- GET /api/v2/computation-runs/
+  - workflow_id, step, status, limit, offset
+- PUT /api/v2/computation-runs/
+  - accepts object or list
+  - upsert lookup key: (id)
+- GET /api/v2/adsorption-singlepoint/
+  - structure, md5, mixture_id, component, limit, offset
+- PUT /api/v2/adsorption-singlepoint/
+  - accepts object or list
+  - upsert lookup key: (structure, md5, mixture_id, component, temperature_K, pressure_bar)
+- GET /api/v2/heat-capacity/
+  - structure, temperature_K, limit, offset
+- PUT /api/v2/heat-capacity/
+  - accepts object or list
+  - upsert lookup key: (structure, temperature_K)
+- GET /api/v2/isotherm-h2/
+  - structure, isotherm_id, component, temperature_K, pressure_bar, limit, offset
+- PUT /api/v2/isotherm-h2/
+  - accepts object or list
+  - upsert lookup key: (structure, md5, isotherm_id, component, temperature_K, pressure_bar)
+- GET /api/v2/mofchecker/
+  - structure, md5, is_mof, MOFQ, limit, offset
+- PUT /api/v2/mofchecker/
+  - accepts object or list
+  - upsert lookup key: (structure, md5)
+- GET /api/v2/zeopp-metrics/
+  - mof, md5, probe, limit, offset
+- PUT /api/v2/zeopp-metrics/
+  - accepts object or list
+  - upsert lookup key: (mof, md5, probe)
+
 ### TEA and LCA
 
 - GET /api/v2/output-kpis/
@@ -285,3 +333,5 @@ The screening analysis bundle endpoint also embeds linked Scope rows under:
 ## Change Log
 
 - 2026-09-09: Added standalone Scope endpoints to the v2 route inventory.
+- 2026-09-09: Added AutoPrism table endpoints (adsorption-singlepoint, heat-capacity, isotherm-h2, mofchecker, zeopp-metrics).
+- 2026-09-09: Added authenticated PUT upsert support for AutoPrism table list endpoints.
