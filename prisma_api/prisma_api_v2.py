@@ -1965,9 +1965,25 @@ class PrismaAPIv2:
         """
         PUT /api/v2/isotherm-h2/
 
-        Accepts one object or many objects and forwards all provided fields.
+        Accepts one object or many objects.
+        Automatically normalises ``meta_provenance`` using local repo metadata.
         """
-        return self._put("/isotherm-h2/", self._payload_to_records(payload))
+        if isinstance(payload, dict) and isinstance(payload.get("isotherm_H2s"), list):
+            records = self._payload_to_records(payload["isotherm_H2s"])
+        else:
+            records = self._payload_to_records(payload)
+
+        meta = self._autoprism_meta_provenance()
+        enriched = [
+            {
+                **record,
+                "meta_provenance": meta,
+            }
+            if isinstance(record, dict)
+            else record
+            for record in records
+        ]
+        return self._put("/isotherm-h2/", enriched)
 
     def get_mofchecker(
         self,
@@ -2064,7 +2080,7 @@ class PrismaAPIv2:
 
         Returns a dict with keys:
             computation_runs,
-            adsorption_singlepoints, heat_capacities, isotherm_h2,
+            adsorption_singlepoints, heat_capacities, isotherm_H2s,
             mofchecker, zeopp_metrics
             meta_provenance
 
@@ -2156,7 +2172,7 @@ class PrismaAPIv2:
                 limit=limit,
                 offset=offset,
             ),
-            "isotherm_h2": _safe_fetch(
+            "isotherm_H2s": _safe_fetch(
                 "isotherm_H2",
                 self.get_isotherm_h2,
                 structure=structure_filter,
@@ -2200,7 +2216,7 @@ class PrismaAPIv2:
             "computation_runs",
             "adsorption_singlepoints",
             "heat_capacities",
-            "isotherm_h2",
+            "isotherm_H2s",
             "mofchecker",
             "zeopp_metrics",
         ):

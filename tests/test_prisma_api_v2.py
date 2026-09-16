@@ -1628,7 +1628,7 @@ def test_get_autoprism_collection_allows_empty_payloads(api, monkeypatch):
         "computation_runs",
         "adsorption_singlepoints",
         "heat_capacities",
-        "isotherm_h2",
+        "isotherm_H2s",
         "mofchecker",
         "zeopp_metrics",
         "meta_provenance",
@@ -1636,7 +1636,7 @@ def test_get_autoprism_collection_allows_empty_payloads(api, monkeypatch):
     assert len(collection["computation_runs"]) == 0
     assert len(collection["adsorption_singlepoints"]) == 0
     assert len(collection["heat_capacities"]) == 0
-    assert len(collection["isotherm_h2"]) == 0
+    assert len(collection["isotherm_H2s"]) == 0
     assert len(collection["mofchecker"]) == 0
     assert len(collection["zeopp_metrics"]) == 0
 
@@ -1659,7 +1659,7 @@ def test_get_autoprism_collection_tolerates_endpoint_http_error(api, monkeypatch
     assert len(collection["computation_runs"]) == 0
     assert len(collection["adsorption_singlepoints"]) == 1
     assert len(collection["heat_capacities"]) == 1
-    assert len(collection["isotherm_h2"]) == 1
+    assert len(collection["isotherm_H2s"]) == 1
     assert len(collection["mofchecker"]) == 1
     assert len(collection["zeopp_metrics"]) == 1
 
