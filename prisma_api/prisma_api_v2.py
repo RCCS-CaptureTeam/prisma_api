@@ -24,6 +24,7 @@ from urllib.parse import urlencode
 import warnings
 import json
 import re
+import subprocess
 from datetime import datetime
 
 
@@ -976,6 +977,76 @@ class PrismaAPIv2:
             return payload
         raise TypeError("payload must be a DataFrame, dict, or list[dict]")
 
+    def _autoprism_meta_provenance(self) -> dict[str, str | None]:
+        """Build meta_provenance from local repository and pyproject metadata."""
+
+        def _git(args: list[str]) -> str | None:
+            try:
+                cp = subprocess.run(
+                    ["git", *args],
+                    cwd=Path(__file__).resolve().parents[1],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+            except OSError:
+                return None
+            if cp.returncode != 0:
+                return None
+            value = cp.stdout.strip()
+            return value or None
+
+        repo_root = _git(["rev-parse", "--show-toplevel"])
+        repo_name = Path(repo_root).name if repo_root else Path(__file__).resolve().parents[1].name
+        branch = _git(["rev-parse", "--abbrev-ref", "HEAD"])
+        source_repo = (
+            repo_name
+            if branch in (None, "main")
+            else f"{repo_name} (branch: {branch})"
+        )
+
+        pyproject_version: str | None = None
+        pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        if pyproject_path.exists():
+            text = pyproject_path.read_text(encoding="utf-8")
+            try:
+                import tomllib  # Python 3.11+
+
+                data = tomllib.loads(text)
+                project = data.get("project", {}) if isinstance(data, dict) else {}
+                value = project.get("version") if isinstance(project, dict) else None
+                pyproject_version = str(value) if value else None
+            except Exception:
+                # Fallback for environments where tomllib is unavailable.
+                m = re.search(r"(?ms)^\[project\].*?^version\s*=\s*\"([^\"]+)\"", text)
+                pyproject_version = m.group(1).strip() if m else None
+
+        return {
+            "source_repo": source_repo,
+            "source_repo_semantic_version": pyproject_version,
+            "source_repo_tag": _git(["describe", "--tags", "--abbrev=0"]),
+            "source_commit_hash": _git(["rev-parse", "HEAD"]),
+        }
+
+    def _autoprism_source_repo_url(self) -> str | None:
+        """Return the repository remote URL used for source provenance, if available."""
+        try:
+            cp = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=Path(__file__).resolve().parents[1],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return None
+
+        if cp.returncode != 0:
+            return None
+
+        value = cp.stdout.strip()
+        return value or None
+
     def _properties_for(self, object_id: int, limit: int = 2000) -> list[dict]:
         """Return all Property records linked to *object_id* via GenericForeignKey.
 
@@ -1780,9 +1851,23 @@ class PrismaAPIv2:
         """
         PUT /api/v2/adsorption-singlepoint/
 
-        Accepts one object or many objects and forwards all provided fields.
+        Accepts one object or many objects.
+        Automatically normalises ``meta_provenance`` using local repo metadata.
         """
-        return self._put("/adsorption-singlepoint/", self._payload_to_records(payload))
+        records = self._payload_to_records(payload)
+        meta = self._autoprism_meta_provenance()
+        source_repo_url = self._autoprism_source_repo_url()
+        enriched = [
+            {
+                **record,
+                "meta_provenance": meta,
+                "source_repo_url": source_repo_url,
+            }
+            if isinstance(record, dict)
+            else record
+            for record in records
+        ]
+        return self._put("/adsorption-singlepoint/", enriched)
 
     def get_heat_capacity(
         self,
