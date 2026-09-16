@@ -1854,14 +1854,18 @@ class PrismaAPIv2:
         Accepts one object or many objects.
         Automatically normalises ``meta_provenance`` using local repo metadata.
         """
-        records = self._payload_to_records(payload)
-        meta = self._autoprism_meta_provenance()
-        source_repo_url = self._autoprism_source_repo_url()
+        if isinstance(payload, dict) and isinstance(payload.get("adsorption_singlepoints"), list):
+            records = self._payload_to_records(payload["adsorption_singlepoints"])
+        else:
+            records = self._payload_to_records(payload)
+        meta = {
+            **self._autoprism_meta_provenance(),
+            "source_repo_url": self._autoprism_source_repo_url(),
+        }
         enriched = [
             {
                 **record,
                 "meta_provenance": meta,
-                "source_repo_url": source_repo_url,
             }
             if isinstance(record, dict)
             else record
@@ -1899,9 +1903,28 @@ class PrismaAPIv2:
         """
         PUT /api/v2/heat-capacity/
 
-        Accepts one object or many objects and forwards all provided fields.
+        Accepts one object or many objects.
+        Automatically normalises ``meta_provenance`` using local repo metadata.
         """
-        return self._put("/heat-capacity/", self._payload_to_records(payload))
+        if isinstance(payload, dict) and isinstance(payload.get("heat_capacities"), list):
+            records = self._payload_to_records(payload["heat_capacities"])
+        else:
+            records = self._payload_to_records(payload)
+
+        meta = {
+            **self._autoprism_meta_provenance(),
+            "source_repo_url": self._autoprism_source_repo_url(),
+        }
+        enriched = [
+            {
+                **record,
+                "meta_provenance": meta,
+            }
+            if isinstance(record, dict)
+            else record
+            for record in records
+        ]
+        return self._put("/heat-capacity/", enriched)
 
     def get_isotherm_h2(
         self,
@@ -2035,14 +2058,15 @@ class PrismaAPIv2:
         MOFQ: str | None = None,
         limit: int = 500,
         offset: int = 0,
-    ) -> dict[str, pd.DataFrame | list[dict]]:
+    ) -> dict[str, list[dict] | dict[str, str | None]]:
         """
         Gather AutoPrism table records in one call flow.
 
         Returns a dict with keys:
             computation_runs,
-            adsorption_singlepoint, heat_capacity, isotherm_H2,
+            adsorption_singlepoints, heat_capacities, isotherm_h2,
             mofchecker, zeopp_metrics
+            meta_provenance
 
         Notes:
                         - ``workflow_id``, ``step`` and ``status`` filter computation runs.
@@ -2077,6 +2101,15 @@ class PrismaAPIv2:
             except TypeError:
                 return 0
 
+        def _as_record_list(value: Any) -> list[dict]:
+            records = self._as_records(value)
+            return [r for r in records if isinstance(r, dict)]
+
+        meta = {
+            **self._autoprism_meta_provenance(),
+            "source_repo_url": self._autoprism_source_repo_url(),
+        }
+
         def _safe_fetch(section: str, fetcher, **kwargs) -> pd.DataFrame | list[dict]:
             try:
                 return _normalise_table_payload(fetcher(**kwargs))
@@ -2105,7 +2138,7 @@ class PrismaAPIv2:
                 limit=limit,
                 offset=offset,
             ),
-            "adsorption_singlepoint": _safe_fetch(
+            "adsorption_singlepoints": _safe_fetch(
                 "adsorption_singlepoint",
                 self.get_adsorption_singlepoint,
                 structure=structure_filter,
@@ -2115,7 +2148,7 @@ class PrismaAPIv2:
                 limit=limit,
                 offset=offset,
             ),
-            "heat_capacity": _safe_fetch(
+            "heat_capacities": _safe_fetch(
                 "heat_capacity",
                 self.get_heat_capacity,
                 structure=structure_filter,
@@ -2123,7 +2156,7 @@ class PrismaAPIv2:
                 limit=limit,
                 offset=offset,
             ),
-            "isotherm_H2": _safe_fetch(
+            "isotherm_h2": _safe_fetch(
                 "isotherm_H2",
                 self.get_isotherm_h2,
                 structure=structure_filter,
@@ -2155,10 +2188,23 @@ class PrismaAPIv2:
             ),
         }
 
+        collection = {
+            key: _as_record_list(value)
+            for key, value in collection.items()
+        }
+        collection["meta_provenance"] = meta
+
         label = structure_filter or mof or "all"
         print(f"AutoPrism collection for '{label}':")
-        for key, val in collection.items():
-            print(f"  {key:22s}: {_record_count(val)} records")
+        for key in (
+            "computation_runs",
+            "adsorption_singlepoints",
+            "heat_capacities",
+            "isotherm_h2",
+            "mofchecker",
+            "zeopp_metrics",
+        ):
+            print(f"  {key:22s}: {_record_count(collection.get(key, []))} records")
 
         return collection
 
