@@ -2068,9 +2068,25 @@ class PrismaAPIv2:
         """
         PUT /api/v2/zeopp-metrics/
 
-        Accepts one object or many objects and forwards all provided fields.
+        Accepts one object or many objects.
+        Automatically normalises ``meta_provenance`` using local repo metadata.
         """
-        return self._put("/zeopp-metrics/", self._payload_to_records(payload))
+        if isinstance(payload, dict) and isinstance(payload.get("zeopp_metrics"), list):
+            records = self._payload_to_records(payload["zeopp_metrics"])
+        else:
+            records = self._payload_to_records(payload)
+
+        meta = self._autoprism_meta_provenance()
+        enriched = [
+            {
+                **record,
+                "meta_provenance": meta,
+            }
+            if isinstance(record, dict)
+            else record
+            for record in records
+        ]
+        return self._put("/zeopp-metrics/", enriched)
 
     def get_autoprism_collection(
         self,

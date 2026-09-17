@@ -1598,6 +1598,10 @@ def test_upsert_autoprism_tables_accept_dataframes_and_pass_all_fields(api, monk
         **mofchecker_df.to_dict(orient="records")[0],
         "meta_provenance": fake_meta,
     }]
+    zeopp_expected = [{
+        **zeopp_df.to_dict(orient="records")[0],
+        "meta_provenance": fake_meta,
+    }]
 
     resp_lib.add(
         resp_lib.PUT,
@@ -1630,7 +1634,7 @@ def test_upsert_autoprism_tables_accept_dataframes_and_pass_all_fields(api, monk
     resp_lib.add(
         resp_lib.PUT,
         f"{PROD_BASE}/zeopp-metrics/",
-        match=[matchers.json_params_matcher(zeopp_df.to_dict(orient="records"))],
+        match=[matchers.json_params_matcher(zeopp_expected)],
         json={"created": 1, "updated": 0},
         status=200,
     )
@@ -1640,6 +1644,59 @@ def test_upsert_autoprism_tables_accept_dataframes_and_pass_all_fields(api, monk
     assert api.upsert_isotherm_h2(isotherm_h2_df)["created"] == 1
     assert api.upsert_mofchecker(mofchecker_df)["created"] == 1
     assert api.upsert_zeopp_metrics(zeopp_df)["created"] == 1
+
+
+@resp_lib.activate
+def test_upsert_zeopp_metrics_accepts_wrapped_payload_and_overwrites_meta(api, monkeypatch):
+    fake_meta = {
+        "source_repo": "AutoPrism",
+        "source_repo_semantic_version": "0.1.0",
+        "source_repo_tag": "0.1.0",
+        "source_commit_hash": "724b0306f6b21f953fba21e424cdda230525862f",
+    }
+    monkeypatch.setattr(api, "_autoprism_meta_provenance", lambda: fake_meta)
+
+    payload = {
+        "zeopp_metrics": [
+            {
+                "mof": "UiO-66",
+                "md5": "aaaaaaaa",
+                "probe": "N2",
+                "Di": 6.4,
+                "meta_provenance": {
+                    "source_repo": "stale",
+                    "source_repo_semantic_version": "stale",
+                    "source_repo_tag": "stale",
+                    "source_commit_hash": "stale",
+                },
+            }
+        ],
+        "meta_provenance": {
+            "source_repo": "top-level-stale",
+            "source_repo_semantic_version": "top-level-stale",
+            "source_repo_tag": "top-level-stale",
+            "source_commit_hash": "top-level-stale",
+        },
+    }
+
+    expected = [{
+        "mof": "UiO-66",
+        "md5": "aaaaaaaa",
+        "probe": "N2",
+        "Di": 6.4,
+        "meta_provenance": fake_meta,
+    }]
+
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/zeopp-metrics/",
+        match=[matchers.json_params_matcher(expected)],
+        json={"created": 1, "updated": 0},
+        status=200,
+    )
+
+    result = api.upsert_zeopp_metrics(payload)
+    assert result["created"] == 1
 
 
 def test_get_autoprism_collection_allows_empty_payloads(api, monkeypatch):
@@ -1710,6 +1767,35 @@ def test_get_autoprism_collection_includes_mofchecker_payload_shape(api, monkeyp
     assert "meta_provenance" in collection
     assert isinstance(collection["mofchecker"], list)
     assert len(collection["mofchecker"]) == 1
+
+    meta = collection["meta_provenance"]
+    assert set(meta.keys()) >= {
+        "source_repo",
+        "source_repo_url",
+        "source_repo_semantic_version",
+        "source_repo_tag",
+        "source_commit_hash",
+    }
+
+
+def test_get_autoprism_collection_includes_zeopp_payload_shape(api, monkeypatch):
+    monkeypatch.setattr(api, "get_computation_runs", lambda **kwargs: [])
+    monkeypatch.setattr(api, "get_adsorption_singlepoint", lambda **kwargs: [])
+    monkeypatch.setattr(api, "get_heat_capacity", lambda **kwargs: [])
+    monkeypatch.setattr(api, "get_isotherm_h2", lambda **kwargs: [])
+    monkeypatch.setattr(api, "get_mofchecker", lambda **kwargs: [])
+    monkeypatch.setattr(
+        api,
+        "get_zeopp_metrics",
+        lambda **kwargs: [{"id": 5, "mof": "UiO-66", "probe": "N2"}],
+    )
+
+    collection = api.get_autoprism_collection(mof="UiO-66")
+
+    assert "zeopp_metrics" in collection
+    assert "meta_provenance" in collection
+    assert isinstance(collection["zeopp_metrics"], list)
+    assert len(collection["zeopp_metrics"]) == 1
 
     meta = collection["meta_provenance"]
     assert set(meta.keys()) >= {
