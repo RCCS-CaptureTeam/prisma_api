@@ -1699,6 +1699,58 @@ def test_upsert_zeopp_metrics_accepts_wrapped_payload_and_overwrites_meta(api, m
     assert result["created"] == 1
 
 
+def test_upsert_autoprism_collection_dispatches_sections(api, monkeypatch):
+    monkeypatch.setattr(api, "upsert_computation_runs", lambda payload: {"created": 1, "updated": 0})
+    monkeypatch.setattr(api, "upsert_adsorption_singlepoint", lambda payload: {"created": 2, "updated": 0})
+    monkeypatch.setattr(api, "upsert_heat_capacity", lambda payload: {"created": 0, "updated": 3})
+    monkeypatch.setattr(api, "upsert_isotherm_h2", lambda payload: {"created": 4, "updated": 1})
+    monkeypatch.setattr(api, "upsert_mofchecker", lambda payload: {"created": 5, "updated": 0})
+    monkeypatch.setattr(api, "upsert_zeopp_metrics", lambda payload: {"created": 6, "updated": 2})
+
+    payload = {
+        "computation_runs": [{"id": "run-1"}],
+        "adsorption_singlepoints": [{"id": 1}],
+        "heat_capacities": [{"id": 2}],
+        "isotherm_H2s": [{"id": 3}],
+        "mofchecker": [{"id": 4}],
+        "zeopp_metrics": [{"id": 5}],
+        "meta_provenance": {"source_repo": "ignored"},
+    }
+
+    result = api.upsert_autoprism_collection(payload)
+
+    assert result["overall_status"] == "ok"
+    assert result["totals"]["created"] == 18
+    assert result["totals"]["updated"] == 6
+    assert result["totals"]["failed_sections"] == 0
+    assert result["sections"]["zeopp_metrics"]["status"] == "ok"
+    assert result["sections"]["mofchecker"]["status"] == "ok"
+
+
+def test_upsert_autoprism_collection_reports_skips_and_errors(api, monkeypatch):
+    monkeypatch.setattr(api, "upsert_computation_runs", lambda payload: {"created": 1, "updated": 0})
+
+    def _raise_error(payload):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(api, "upsert_zeopp_metrics", _raise_error)
+
+    payload = {
+        "computation_runs": [{"id": "run-1"}],
+        "zeopp_metrics": [{"id": 5}],
+    }
+
+    result = api.upsert_autoprism_collection(payload)
+
+    assert result["overall_status"] == "partial_failure"
+    assert result["totals"]["created"] == 1
+    assert result["totals"]["updated"] == 0
+    assert result["totals"]["failed_sections"] == 1
+    assert result["sections"]["computation_runs"]["status"] == "ok"
+    assert result["sections"]["adsorption_singlepoints"]["status"] == "skipped"
+    assert result["sections"]["zeopp_metrics"]["status"] == "error"
+
+
 def test_get_autoprism_collection_allows_empty_payloads(api, monkeypatch):
     monkeypatch.setattr(api, "get_computation_runs", lambda **kwargs: None)
     monkeypatch.setattr(api, "get_adsorption_singlepoint", lambda **kwargs: None)

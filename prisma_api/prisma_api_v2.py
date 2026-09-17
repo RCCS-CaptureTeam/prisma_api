@@ -2088,6 +2088,81 @@ class PrismaAPIv2:
         ]
         return self._put("/zeopp-metrics/", enriched)
 
+    def upsert_autoprism_collection(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        Upsert multiple AutoPrism sections from a single combined payload.
+
+        Expected payload shape mirrors the AutoPrism collection mock payload, with
+        optional top-level keys:
+            computation_runs, adsorption_singlepoints, heat_capacities,
+            isotherm_H2s, mofchecker, zeopp_metrics, meta_provenance
+
+        Notes:
+            - Top-level ``meta_provenance`` is ignored.
+            - Each section is passed to its dedicated upsert wrapper so section-
+              specific provenance normalization rules remain in one place.
+
+        Returns:
+            dict with keys:
+                sections: per-section status details
+                totals: aggregate created/updated counters
+                overall_status: "ok" if no section failed, else "partial_failure"
+        """
+        if not isinstance(payload, dict):
+            raise TypeError("payload must be a dict matching the AutoPrism collection shape")
+
+        section_handlers: list[tuple[str, str, Any]] = [
+            ("computation_runs", "upsert_computation_runs", payload.get("computation_runs")),
+            ("adsorption_singlepoints", "upsert_adsorption_singlepoint", payload.get("adsorption_singlepoints")),
+            ("heat_capacities", "upsert_heat_capacity", payload.get("heat_capacities")),
+            ("isotherm_H2s", "upsert_isotherm_h2", payload.get("isotherm_H2s")),
+            ("mofchecker", "upsert_mofchecker", payload.get("mofchecker")),
+            ("zeopp_metrics", "upsert_zeopp_metrics", payload.get("zeopp_metrics")),
+        ]
+
+        sections: dict[str, dict[str, Any]] = {}
+        total_created = 0
+        total_updated = 0
+        failed = 0
+
+        for section_name, method_name, section_payload in section_handlers:
+            if section_payload is None:
+                sections[section_name] = {
+                    "status": "skipped",
+                    "reason": "missing section in payload",
+                }
+                continue
+
+            try:
+                method = getattr(self, method_name)
+                result = method(section_payload)
+                created = int(result.get("created", 0)) if isinstance(result, dict) else 0
+                updated = int(result.get("updated", 0)) if isinstance(result, dict) else 0
+                total_created += created
+                total_updated += updated
+                sections[section_name] = {
+                    "status": "ok",
+                    "created": created,
+                    "updated": updated,
+                    "result": result,
+                }
+            except Exception as exc:
+                failed += 1
+                sections[section_name] = {
+                    "status": "error",
+                    "error": str(exc),
+                }
+
+        return {
+            "sections": sections,
+            "totals": {
+                "created": total_created,
+                "updated": total_updated,
+                "failed_sections": failed,
+            },
+            "overall_status": "ok" if failed == 0 else "partial_failure",
+        }
+
     def get_autoprism_collection(
         self,
         workflow_id: str | None = None,
