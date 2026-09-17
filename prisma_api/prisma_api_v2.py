@@ -2021,9 +2021,25 @@ class PrismaAPIv2:
         """
         PUT /api/v2/mofchecker/
 
-        Accepts one object or many objects and forwards all provided fields.
+        Accepts one object or many objects.
+        Automatically normalises ``meta_provenance`` using local repo metadata.
         """
-        return self._put("/mofchecker/", self._payload_to_records(payload))
+        if isinstance(payload, dict) and isinstance(payload.get("mofchecker"), list):
+            records = self._payload_to_records(payload["mofchecker"])
+        else:
+            records = self._payload_to_records(payload)
+
+        meta = self._autoprism_meta_provenance()
+        enriched = [
+            {
+                **record,
+                "meta_provenance": meta,
+            }
+            if isinstance(record, dict)
+            else record
+            for record in records
+        ]
+        return self._put("/mofchecker/", enriched)
 
     def get_zeopp_metrics(
         self,

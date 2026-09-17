@@ -1402,16 +1402,17 @@ def test_get_autoprism_collection_returns_all_records(api):
 
     assert set(bundle.keys()) == {
         "computation_runs",
-        "adsorption_singlepoint",
-        "heat_capacity",
-        "isotherm_H2",
+        "adsorption_singlepoints",
+        "heat_capacities",
+        "isotherm_H2s",
         "mofchecker",
         "zeopp_metrics",
+        "meta_provenance",
     }
     assert len(bundle["computation_runs"]) == 1
-    assert len(bundle["adsorption_singlepoint"]) == 1
-    assert len(bundle["heat_capacity"]) == 1
-    assert len(bundle["isotherm_H2"]) == 1
+    assert len(bundle["adsorption_singlepoints"]) == 1
+    assert len(bundle["heat_capacities"]) == 1
+    assert len(bundle["isotherm_H2s"]) == 1
     assert len(bundle["mofchecker"]) == 1
     assert len(bundle["zeopp_metrics"]) == 1
 
@@ -1537,7 +1538,17 @@ def test_autoprism_detail_endpoints(api):
 
 
 @resp_lib.activate
-def test_upsert_autoprism_tables_accept_dataframes_and_pass_all_fields(api):
+def test_upsert_autoprism_tables_accept_dataframes_and_pass_all_fields(api, monkeypatch):
+    fake_meta = {
+        "source_repo": "AutoPrism",
+        "source_repo_semantic_version": "0.1.0",
+        "source_repo_tag": "0.1.0",
+        "source_commit_hash": "724b0306f6b21f953fba21e424cdda230525862f",
+    }
+    fake_repo_url = "https://github.com/AutoPrism/AutoPrism"
+    monkeypatch.setattr(api, "_autoprism_meta_provenance", lambda: fake_meta)
+    monkeypatch.setattr(api, "_autoprism_source_repo_url", lambda: fake_repo_url)
+
     adsorption_df = pd.DataFrame([
         {
             "structure": "ABEXEM",
@@ -1571,31 +1582,48 @@ def test_upsert_autoprism_tables_accept_dataframes_and_pass_all_fields(api):
         {"mof": "ABEXEM", "md5": "a1", "probe": "N2", "pld": 3.4, "new_extra_field": "pass-through"}
     ])
 
+    adsorption_expected = [{
+        **adsorption_df.to_dict(orient="records")[0],
+        "meta_provenance": {**fake_meta, "source_repo_url": fake_repo_url},
+    }]
+    heat_capacity_expected = [{
+        **heat_capacity_df.to_dict(orient="records")[0],
+        "meta_provenance": {**fake_meta, "source_repo_url": fake_repo_url},
+    }]
+    isotherm_h2_expected = [{
+        **isotherm_h2_df.to_dict(orient="records")[0],
+        "meta_provenance": fake_meta,
+    }]
+    mofchecker_expected = [{
+        **mofchecker_df.to_dict(orient="records")[0],
+        "meta_provenance": fake_meta,
+    }]
+
     resp_lib.add(
         resp_lib.PUT,
         f"{PROD_BASE}/adsorption-singlepoint/",
-        match=[matchers.json_params_matcher(adsorption_df.to_dict(orient="records"))],
+        match=[matchers.json_params_matcher(adsorption_expected)],
         json={"created": 1, "updated": 0},
         status=200,
     )
     resp_lib.add(
         resp_lib.PUT,
         f"{PROD_BASE}/heat-capacity/",
-        match=[matchers.json_params_matcher(heat_capacity_df.to_dict(orient="records"))],
+        match=[matchers.json_params_matcher(heat_capacity_expected)],
         json={"created": 1, "updated": 0},
         status=200,
     )
     resp_lib.add(
         resp_lib.PUT,
         f"{PROD_BASE}/isotherm-h2/",
-        match=[matchers.json_params_matcher(isotherm_h2_df.to_dict(orient="records"))],
+        match=[matchers.json_params_matcher(isotherm_h2_expected)],
         json={"created": 1, "updated": 0},
         status=200,
     )
     resp_lib.add(
         resp_lib.PUT,
         f"{PROD_BASE}/mofchecker/",
-        match=[matchers.json_params_matcher(mofchecker_df.to_dict(orient="records"))],
+        match=[matchers.json_params_matcher(mofchecker_expected)],
         json={"created": 1, "updated": 0},
         status=200,
     )
@@ -1662,6 +1690,35 @@ def test_get_autoprism_collection_tolerates_endpoint_http_error(api, monkeypatch
     assert len(collection["isotherm_H2s"]) == 1
     assert len(collection["mofchecker"]) == 1
     assert len(collection["zeopp_metrics"]) == 1
+
+
+def test_get_autoprism_collection_includes_mofchecker_payload_shape(api, monkeypatch):
+    monkeypatch.setattr(api, "get_computation_runs", lambda **kwargs: [])
+    monkeypatch.setattr(api, "get_adsorption_singlepoint", lambda **kwargs: [])
+    monkeypatch.setattr(api, "get_heat_capacity", lambda **kwargs: [])
+    monkeypatch.setattr(api, "get_isotherm_h2", lambda **kwargs: [])
+    monkeypatch.setattr(api, "get_zeopp_metrics", lambda **kwargs: [])
+    monkeypatch.setattr(
+        api,
+        "get_mofchecker",
+        lambda **kwargs: [{"id": 4, "structure": {"name": "ABEXEM"}, "is_mof": True}],
+    )
+
+    collection = api.get_autoprism_collection(mof="ABEXEM")
+
+    assert "mofchecker" in collection
+    assert "meta_provenance" in collection
+    assert isinstance(collection["mofchecker"], list)
+    assert len(collection["mofchecker"]) == 1
+
+    meta = collection["meta_provenance"]
+    assert set(meta.keys()) >= {
+        "source_repo",
+        "source_repo_url",
+        "source_repo_semantic_version",
+        "source_repo_tag",
+        "source_commit_hash",
+    }
 
 
 # ── Output KPIs ───────────────────────────────────────────────────────────────
