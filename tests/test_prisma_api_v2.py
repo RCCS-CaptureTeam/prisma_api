@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import pytest
+import requests
 import responses as resp_lib
 from responses import matchers
 from datetime import datetime
@@ -19,7 +20,7 @@ from numbers import Integral
 
 import pandas as pd
 
-from prisma_api.prisma_api_v2 import PrismaAPIv2, _BASE_PROD
+from prisma_api.prisma_api_v2 import PrismaAPIv2, _BASE_PROD, _BUNDLE_SECTIONS
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -2433,3 +2434,231 @@ def test_upsert_flowsheets_blank_screening_analysis_name_warns_and_omits_query_p
     with pytest.warns(UserWarning, match="list_case_studies"):
         result = api.upsert_flowsheets(payload, screening_analysis_name="   ", on_exists="overwrite")
     assert result["updated"] == 1
+
+
+# ── Material bundles (server-side bundle endpoints) ───────────────────────────
+
+_BUNDLE_FIXTURE = "reference_data/prisma_cloud/example_payloads/material_bundle_Zeolite_13X.json"
+
+
+def _load_bundle_fixture() -> dict:
+    with open(_BUNDLE_FIXTURE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _bundle_envelope(results: list, missing: list | None = None) -> dict:
+    return {"_schema": "prisma_v2.material.bundle.v1",
+            "count": len(results),
+            "missing": missing or [],
+            "sections": list(_BUNDLE_SECTIONS),
+            "results": results}
+
+
+@resp_lib.activate
+@pytest.mark.skipif(
+    os.getenv("CI", "").lower() == "true",
+    reason="Offline development fixture test is disabled in CI",
+)
+def test_get_material_bundles_single_name_returns_bundle_fixture(api):
+    fixture = _load_bundle_fixture()
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 json=_bundle_envelope([fixture]), status=200,
+                 match=[matchers.query_param_matcher(
+                     {"names": "Zeolite_13X", "match": "exact"})])
+    result = api.get_material_bundles("Zeolite_13X")
+    assert result == fixture
+    assert result["material"]["id"] == 84368
+    assert result["sections"] == list(_BUNDLE_SECTIONS)
+    # mof_h2 is a single object or None, never a list
+    assert not isinstance(result["mof_h2"], list)
+
+
+@resp_lib.activate
+def test_get_material_bundles_single_id_uses_detail_route(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/84368/bundle/",
+                 json={"_schema": "prisma_v2.material.bundle.v1",
+                       "material": {"id": 84368, "name": "Zeolite_13X"},
+                       "sections": list(_BUNDLE_SECTIONS),
+                       "counts": {"cifs": 2}},
+                 status=200)
+    result = api.get_material_bundles(84368)
+    assert result["material"]["name"] == "Zeolite_13X"
+    assert result["counts"]["cifs"] == 2
+
+
+@resp_lib.activate
+def test_get_material_bundles_list_returns_envelope_with_missing(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 json=_bundle_envelope(
+                     [{"material": {"id": 84368, "name": "Zeolite_13X"}}],
+                     missing=["NoSuchMaterial"]),
+                 status=200)
+    result = api.get_material_bundles(["Zeolite_13X", "NoSuchMaterial"])
+    assert result["count"] == 1
+    assert result["missing"] == ["NoSuchMaterial"]
+    assert result["sections"] == list(_BUNDLE_SECTIONS)
+    assert result["results"][0]["material"]["name"] == "Zeolite_13X"
+
+
+@resp_lib.activate
+def test_get_material_bundles_sends_section_filters(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 json=_bundle_envelope([{"material": {"id": 1, "name": "M"}}]),
+                 status=200,
+                 match=[matchers.query_param_matcher(
+                     {"names": "M", "match": "contains",
+                      "sections": "cifs,isotherms", "exclude": "water_kpis",
+                      "include_cif_content": "true"})])
+    api.get_material_bundles(["M"], sections=["cifs", "isotherms"],
+                             exclude="water_kpis", include_cif_content=True,
+                             match="contains")
+
+
+@resp_lib.activate
+def test_get_material_bundles_never_sends_format_param(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 json=_bundle_envelope([{"material": {"id": 1, "name": "M"}}]),
+                 status=200)
+    api.get_material_bundles(["M"])
+    assert "format=" not in resp_lib.calls[0].request.url
+
+
+@resp_lib.activate
+def test_get_material_bundles_batches_over_the_cap(api):
+    names = [f"M{i}" for i in range(250)]
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 json=_bundle_envelope(
+                     [{"material": {"name": n}} for n in names[:200]]), status=200)
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 json=_bundle_envelope(
+                     [{"material": {"name": n}} for n in names[200:]],
+                     missing=["M249"]), status=200)
+    result = api.get_material_bundles(names)
+    assert len(resp_lib.calls) == 2
+    assert result["count"] == 250
+    assert result["missing"] == ["M249"]
+
+
+@resp_lib.activate
+def test_get_material_bundles_bulk_404_folds_into_missing(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 json={"detail": "No materials matched."}, status=404)
+    result = api.get_material_bundles(["NoSuchMaterial"])
+    assert result["count"] == 0
+    assert result["missing"] == ["NoSuchMaterial"]
+
+
+@resp_lib.activate
+def test_get_material_bundles_single_name_no_match_raises(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 json=_bundle_envelope([], missing=["NoSuchMaterial"]), status=200)
+    with pytest.raises(ValueError, match="No material matched"):
+        api.get_material_bundles("NoSuchMaterial")
+
+
+@resp_lib.activate
+def test_get_material_bundles_single_name_multiple_matches_raises(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 json=_bundle_envelope([{"material": {"name": "Zeolite_13X"}},
+                                        {"material": {"name": "Zeolite_5A"}}]),
+                 status=200)
+    with pytest.raises(ValueError, match="matched 2 materials"):
+        api.get_material_bundles("Zeolite", match="contains")
+
+
+@resp_lib.activate
+def test_get_material_bundles_http_error_is_passed_through(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 json={"detail": "Invalid API key."}, status=403)
+    with pytest.raises(requests.HTTPError):
+        api.get_material_bundles(["Zeolite_13X"])
+
+
+@resp_lib.activate
+def test_get_material_bundles_uses_post_body_when_requested(api):
+    resp_lib.add(resp_lib.POST, f"{PROD_BASE}/materials/bundle/",
+                 json=_bundle_envelope([{"material": {"name": "Zeolite_13X"}}]),
+                 status=200,
+                 match=[matchers.json_params_matcher(
+                     {"names": ["Zeolite_13X"], "match": "exact"})])
+    result = api.get_material_bundles(["Zeolite_13X"], use_post=True)
+    assert result["count"] == 1
+
+
+@resp_lib.activate
+def test_get_material_bundles_zip_writes_file(api, tmp_path):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 body=b"PK\x03\x04zipbytes", status=200,
+                 content_type="application/zip",
+                 headers={"Content-Disposition": 'attachment; filename="bundles.zip"'},
+                 match=[matchers.query_param_matcher(
+                     {"names": "Zeolite_13X", "match": "exact", "output": "zip"})])
+    path = api.get_material_bundles(["Zeolite_13X"], output="zip", save_path=tmp_path)
+    assert path == tmp_path / "bundles.zip"
+    assert path.read_bytes() == b"PK\x03\x04zipbytes"
+
+
+@resp_lib.activate
+def test_get_material_bundles_zip_explicit_filename(api, tmp_path):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 body=b"PK\x03\x04", status=200, content_type="application/zip")
+    target = tmp_path / "nested" / "my_bundles.zip"
+    path = api.get_material_bundles(["Zeolite_13X"], output="zip", save_path=target)
+    assert path == target and path.exists()
+
+
+def test_get_material_bundles_zip_over_cap_raises(api):
+    with pytest.raises(ValueError, match="capped at 200"):
+        api.get_material_bundles([f"M{i}" for i in range(201)], output="zip")
+
+
+def test_get_material_bundles_requires_names_or_ids(api):
+    with pytest.raises(ValueError, match="at least one material"):
+        api.get_material_bundles()
+
+
+def test_get_material_bundles_rejects_unknown_section(api):
+    with pytest.raises(ValueError, match="Unknown section name"):
+        api.get_material_bundles("Zeolite_13X", sections=["cifs", "not_a_section"])
+
+
+def test_get_material_bundles_rejects_bad_match_and_output(api):
+    with pytest.raises(ValueError, match="match must be"):
+        api.get_material_bundles("Zeolite_13X", match="fuzzy")
+    with pytest.raises(ValueError, match="output must be"):
+        api.get_material_bundles("Zeolite_13X", output="csv")
+
+
+def test_get_material_bundles_rejects_non_integer_id(api):
+    with pytest.raises(ValueError, match="must be integers"):
+        api.get_material_bundles(ids=["not-an-id"])
+
+
+@resp_lib.activate
+def test_get_material_bundles_post_body_uses_real_booleans(api):
+    resp_lib.add(resp_lib.POST, f"{PROD_BASE}/materials/bundle/",
+                 json=_bundle_envelope([{"material": {"name": "Zeolite_13X"}}]),
+                 status=200,
+                 match=[matchers.json_params_matcher(
+                     {"include_cif_content": True,
+                      "names": ["Zeolite_13X"], "match": "exact"})])
+    api.get_material_bundles(["Zeolite_13X"], include_cif_content=True, use_post=True)
+
+
+@resp_lib.activate
+def test_get_material_bundles_id_list_uses_bulk_route(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 json=_bundle_envelope([{"material": {"id": 84368, "name": "Zeolite_13X"}}]),
+                 status=200,
+                 match=[matchers.query_param_matcher({"ids": "84368"})])
+    result = api.get_material_bundles(ids=[84368])
+    assert result["results"][0]["material"]["id"] == 84368
+
+
+@resp_lib.activate
+def test_get_material_bundles_zip_by_id(api, tmp_path):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
+                 body=b"PK\x03\x04", status=200, content_type="application/zip",
+                 match=[matchers.query_param_matcher({"ids": "84368", "output": "zip"})])
+    path = api.get_material_bundles(ids=[84368], output="zip", save_path=tmp_path)
+    assert path == tmp_path / "material_bundles.zip"

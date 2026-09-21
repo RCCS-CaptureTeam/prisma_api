@@ -146,7 +146,42 @@ full = v2.get_material_bundle('ABEXEM')
 full = v2.get_material_bundle('ABEXEM', include_cif=True, include_cif_text=True)
 ```
 
-### 4.6 Check a material exists
+### 4.6 Server-side bundles for one or many materials
+
+`get_material_bundles` calls the bundle endpoints, which return every
+per-material section in a single request — no client-side fan-out.
+
+```python
+# One material → the bundle dict itself
+b = v2.get_material_bundles('Zeolite_13X')
+b['sections']          # which of the 12 sections this response carries
+b['counts']            # rows per section
+b['material']          # material detail
+pd.DataFrame(b['isotherms'])
+
+b = v2.get_material_bundles(84368)      # by material id
+
+# Many materials → an envelope
+env = v2.get_material_bundles(['Zeolite_13X', 'ABEXEM'])
+env['count'], env['missing'], env['results']
+
+# Trim the payload
+v2.get_material_bundles('Zeolite_13X', sections=['cifs', 'isotherms'])
+v2.get_material_bundles('Zeolite_13X', exclude='water_kpis')
+v2.get_material_bundles('Zeolite_13X', include_cif_content=True)   # raw CIF text
+
+# Substring matching, and a zip download (one JSON per material + manifest)
+v2.get_material_bundles(['Zeolite'], match='contains')
+v2.get_material_bundles(['Zeolite_13X'], output='zip', save_path='bundles.zip')
+```
+
+Every section is a list except `mof_h2`, which is a single object or `None`.
+Read the response's `sections` key rather than assuming all twelve are present.
+`missing` lists names that matched nothing — a partial success, not an error.
+Requests over 200 materials are batched automatically (the server caps a single
+request at 200); `output='zip'` is one request, so it is capped at 200.
+
+### 4.7 Check a material exists
 
 ```python
 v2.preflight_material_check('ABEXEM')   # → True / False

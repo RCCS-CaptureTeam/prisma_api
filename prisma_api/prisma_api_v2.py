@@ -31,6 +31,17 @@ from datetime import datetime
 _BASE_PROD = "https://prisma-platform.org/api/v2"
 _DEFAULT_BUNDLE = object()
 
+# Material bundle sections, in the order the API emits them. Every section is a
+# list except ``mof_h2``, which is a single object or None.
+_BUNDLE_SECTIONS = (
+    "cifs", "isotherms", "water_kpis", "carbon_zeopp",
+    "carbon_zeopp_experimental", "adsorption_singlepoint", "heat_capacity",
+    "isotherm_h2", "mofchecker", "zeopp_metrics", "mof_h2", "h2_results",
+)
+# Server-side hard cap; over this the bundle endpoint returns 400 rather
+# than truncating.
+_BUNDLE_MAX_MATERIALS = 200
+
 
 class PrismaAPIv2:
     """
@@ -70,25 +81,49 @@ class PrismaAPIv2:
             "Content-Type": "application/json",
         }
 
-    def _get(self, path: str, params: dict | None = None) -> Any:
-        """GET request to the v2 API."""
-        url = (
+    def _url(self, path: str) -> str:
+        """Absolute URL for a v2 path, honouring dev mode."""
+        return (
             f"http://localhost:{self._dev_host_port}/api/v2{path}"
             if self._dev
             else f"{_BASE_PROD}{path}"
         )
-        resp = requests.get(url, params=params, headers=self._headers(), timeout=60)
+
+    def _get(self, path: str, params: dict | None = None) -> Any:
+        """GET request to the v2 API."""
+        resp = requests.get(self._url(path), params=params,
+                            headers=self._headers(), timeout=60)
         resp.raise_for_status()
         return resp.json()
 
+    def _post(self, path: str, data: dict | list, timeout: int = 120) -> Any:
+        """POST request to the v2 API."""
+        resp = requests.post(self._url(path), json=data,
+                             headers=self._headers(), timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _request_bytes(self, path: str, params: dict, use_post: bool = False,
+                       timeout: int = 300) -> requests.Response:
+        """
+        Fetch a binary response (e.g. ``output=zip``) without decoding it.
+
+        Returns the raw ``requests.Response`` so callers keep ``Content-Type``
+        and ``Content-Disposition``.
+        """
+        if use_post:
+            resp = requests.post(self._url(path), json=params,
+                                 headers=self._headers(), timeout=timeout)
+        else:
+            resp = requests.get(self._url(path), params=params,
+                                headers=self._headers(), timeout=timeout)
+        resp.raise_for_status()
+        return resp
+
     def _put(self, path: str, data: list) -> dict:
         """PUT (upsert) request."""
-        url = (
-            f"http://localhost:{self._dev_host_port}/api/v2{path}"
-            if self._dev
-            else f"{_BASE_PROD}{path}"
-        )
-        resp = requests.put(url, json=data, headers=self._headers(), timeout=120)
+        resp = requests.put(self._url(path), json=data,
+                            headers=self._headers(), timeout=120)
         resp.raise_for_status()
         return resp.json()
 
@@ -938,6 +973,224 @@ class PrismaAPIv2:
         else:
             result["cif"] = None
         return result
+
+    def get_material_bundles(
+        self,
+        names: str | list[str] | None = None,
+        ids: int | list[int] | None = None,
+        sections: str | list[str] | None = None,
+        exclude: str | list[str] | None = None,
+        include_cif_content: bool = False,
+        match: str = "exact",
+        output: str = "json",
+        save_path: str | Path | None = None,
+        use_post: bool = False,
+        timeout: int = 300,
+    ) -> dict | Path:
+        """
+        Fetch complete material bundles — every per-material section in one call.
+
+        Wraps the server-side bundle endpoints, which return all twelve science
+        sections for a material without the client fanning out across
+        ``/isotherms/``, ``/water-kpis/``, ``/cifs/`` and the rest:
+
+        * ``GET /api/v2/materials/{material_id}/bundle/`` — one material
+        * ``GET /api/v2/materials/bundle/``               — many materials
+
+        Args:
+            names:   Material name, or list of names. A plain string returns
+                     that material's bundle; a list returns the bulk envelope.
+            ids:     Material id, or list of ids. A plain ``int`` returns that
+                     material's bundle via the single-material route.
+            sections: Section names to include (list or comma-separated string).
+                     Default: all twelve.
+            exclude: Section names to drop (list or comma-separated string).
+            include_cif_content: Embed raw CIF text in ``cifs[].content``.
+            match:   ``'exact'`` (default) or ``'contains'`` — applies to ``names``.
+            output:  ``'json'`` (default) or ``'zip'``. ``'zip'`` downloads one
+                     ``<name>.json`` per material plus a ``manifest.json``.
+            save_path: Destination for ``output='zip'`` — a file path, or a
+                     directory in which the server-supplied filename is used.
+                     Defaults to the current working directory.
+            use_post: Send the request as a POST with a JSON body instead of a
+                     query string. Useful when a long name list would overflow
+                     the URL.
+            timeout: Request timeout in seconds (default 300, for large zips).
+
+        Returns:
+            * ``names`` given as a string (or ``ids`` as a plain int) —
+              the single bundle dict::
+
+                  {"_schema": "prisma_v2.material.bundle.v1",
+                   "sections": [...], "material": {...},
+                   "cifs": [...], "isotherms": [...], ..., "counts": {...}}
+
+              Every section is a list except ``mof_h2``, which is a single
+              object or ``None``. A section with no data is ``[]``; a section
+              dropped via ``sections``/``exclude`` is absent entirely — read
+              the response's ``sections`` key rather than assuming all twelve.
+
+            * ``names``/``ids`` given as lists — the bulk envelope::
+
+                  {"_schema": ..., "count": 2, "missing": ["NoSuchMaterial"],
+                   "sections": [...], "results": [ {...}, {...} ]}
+
+              ``missing`` is a partial-success signal, not an error: names and
+              ids that matched nothing are listed there and the call still
+              succeeds.
+
+            * ``output='zip'`` — the ``Path`` the archive was written to.
+
+        Raises:
+            ValueError: on an unknown section name, an invalid ``match`` /
+                ``output`` value, a non-integer id, no names or ids given, a
+                zip request over the 200-material cap, or a single-material
+                request that matched nothing (or, with ``match='contains'``,
+                more than one material).
+            requests.HTTPError: passed through from the API — 403 for a bad
+                API key, 400 for a request the server rejects.
+
+        Notes:
+            Requests over 200 materials are split into batches of 200 (the
+            server's hard cap, which it answers with a 400 rather than
+            truncating) and the envelopes merged. ``output='zip'`` is a single
+            request, so it is capped at 200.
+
+        Examples:
+            >>> api.v2.get_material_bundles('Zeolite_13X')['counts']
+            {'cifs': 2, 'isotherms': 4, 'water_kpis': 7, ...}
+            >>> bundle = api.v2.get_material_bundles(84368)   # by id
+            >>> envelope = api.v2.get_material_bundles(['Zeolite_13X', 'ABEXEM'])
+            >>> pd.DataFrame(envelope['results'][0]['isotherms'])
+            >>> api.v2.get_material_bundles(['Zeolite_13X'], output='zip',
+            ...                             save_path='bundles.zip')
+        """
+        if output not in ("json", "zip"):
+            raise ValueError("output must be 'json' or 'zip'")
+        if match not in ("exact", "contains"):
+            raise ValueError("match must be 'exact' or 'contains'")
+
+        # A bare int in `names` is accepted as an id, so `get_material_bundles(84368)`
+        # does the obvious thing.
+        if ids is None and isinstance(names, int) and not isinstance(names, bool):
+            names, ids = None, names
+
+        single_name = isinstance(names, str)
+        single_id = isinstance(ids, int) and not isinstance(ids, bool)
+        name_list = _as_material_names(names)
+        id_list = _as_material_ids(ids)
+        if not name_list and not id_list:
+            raise ValueError(
+                "Provide at least one material name (str or list[str]) or id."
+            )
+
+        # Section filters and the CIF switch are shared by both routes. Note the
+        # download switch is `output=zip`, never `format=zip` — DRF reserves
+        # `?format=` for content negotiation and 404s on an unknown value before
+        # the view runs, so no `format` key is ever sent.
+        base_params = _compact(
+            sections=_join_sections(sections, "sections"),
+            exclude=_join_sections(exclude, "exclude"),
+            include_cif_content="true" if include_cif_content else None,
+        )
+
+        if output == "zip":
+            total = len(name_list) + len(id_list)
+            if total > _BUNDLE_MAX_MATERIALS:
+                raise ValueError(
+                    f"{total} materials requested; a single bundle request is "
+                    f"capped at {_BUNDLE_MAX_MATERIALS}. Download the archive in "
+                    "batches of 200 or fewer."
+                )
+            params = {**base_params, "output": "zip"}
+            if name_list:
+                params["names"], params["match"] = name_list, match
+            if id_list:
+                params["ids"] = id_list
+            response = self._request_bytes(
+                "/materials/bundle/",
+                _bundle_post_body(params) if use_post else params,
+                use_post=use_post,
+                timeout=timeout,
+            )
+            return self._save_bundle_zip(response, save_path)
+
+        # Single id and nothing else — the dedicated per-material route.
+        if single_id and not name_list:
+            return self._get(f"/materials/{id_list[0]}/bundle/", base_params or None)
+
+        requested = [("ids", v) for v in id_list] + [("names", v) for v in name_list]
+        results: list[dict] = []
+        missing: list = []
+        schema: str | None = None
+        sections_returned: list | None = None
+
+        for start in range(0, len(requested), _BUNDLE_MAX_MATERIALS):
+            batch = requested[start:start + _BUNDLE_MAX_MATERIALS]
+            batch_ids = [v for kind, v in batch if kind == "ids"]
+            batch_names = [v for kind, v in batch if kind == "names"]
+            params = dict(base_params)
+            if batch_ids:
+                params["ids"] = batch_ids
+            if batch_names:
+                params["names"], params["match"] = batch_names, match
+
+            try:
+                if use_post:
+                    payload = self._post("/materials/bundle/",
+                                         _bundle_post_body(params))
+                else:
+                    payload = self._get("/materials/bundle/", params)
+            except requests.HTTPError as exc:
+                # 404 on the bulk route means nothing in this batch matched —
+                # the same signal as `missing`, so fold it in rather than
+                # failing a request where other batches did match.
+                if exc.response is None or exc.response.status_code != 404:
+                    raise
+                payload = {"missing": batch_names + [str(v) for v in batch_ids]}
+
+            results.extend(payload.get("results") or [])
+            missing.extend(payload.get("missing") or [])
+            schema = schema or payload.get("_schema")
+            if sections_returned is None:
+                sections_returned = payload.get("sections")
+
+        if single_name:
+            if not results:
+                raise ValueError(f"No material matched '{names}'.")
+            if len(results) > 1:
+                matched = [r.get("material", {}).get("name") for r in results]
+                raise ValueError(
+                    f"'{names}' matched {len(results)} materials: {matched}. "
+                    "Use match='exact', or pass a list to fetch them all."
+                )
+            return results[0]
+
+        server = self._base_url().rsplit("/api/v2", 1)[0]
+        print(f"{len(results)} material bundle(s) loaded from {server}")
+        if missing:
+            print(f"  no match for: {missing}")
+        return {
+            "_schema": schema,
+            "count": len(results),
+            "missing": missing,
+            "sections": sections_returned,
+            "results": results,
+        }
+
+    def _save_bundle_zip(self, response: requests.Response,
+                         save_path: str | Path | None) -> Path:
+        """Write an ``output=zip`` bundle response to disk and return its path."""
+        filename = _filename_from_disposition(
+            response.headers.get("Content-Disposition")
+        ) or "material_bundles.zip"
+        path = Path(save_path) if save_path is not None else Path.cwd() / filename
+        if path.is_dir():
+            path = path / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(response.content)
+        print(f"{len(response.content):,} bytes written to {path}")
+        return path
 
     def preflight_material_check(self, name: str) -> bool:
         """
@@ -2777,3 +3030,62 @@ class PrismaAPIv2:
 def _compact(**kwargs) -> dict:
     """Return kwargs dict with None values removed."""
     return {k: v for k, v in kwargs.items() if v is not None}
+
+
+def _as_material_names(value: str | list[str] | None) -> list[str]:
+    """Normalise a name argument to a list of non-empty names."""
+    if value is None:
+        return []
+    items = [value] if isinstance(value, str) else list(value)
+    names = [str(v).strip() for v in items if str(v).strip()]
+    return names
+
+
+def _as_material_ids(value: int | list[int] | None) -> list[int]:
+    """Normalise an id argument to a list of ints."""
+    if value is None:
+        return []
+    items = [value] if isinstance(value, (int, str)) else list(value)
+    ids: list[int] = []
+    for item in items:
+        try:
+            ids.append(int(item))
+        except (TypeError, ValueError):
+            raise ValueError(f"Material ids must be integers; got {item!r}.") from None
+    return ids
+
+
+def _join_sections(value: str | list[str] | None, param: str) -> str | None:
+    """Validate section names and join them into a comma-separated query value."""
+    if value is None:
+        return None
+    items = value.split(",") if isinstance(value, str) else list(value)
+    names = [str(v).strip() for v in items if str(v).strip()]
+    unknown = [n for n in names if n not in _BUNDLE_SECTIONS]
+    if unknown:
+        raise ValueError(
+            f"Unknown section name(s) in '{param}': {unknown}. "
+            f"Valid sections: {list(_BUNDLE_SECTIONS)}"
+        )
+    return ",".join(names) or None
+
+
+def _bundle_post_body(params: dict) -> dict:
+    """
+    Convert bundle query params into a JSON body.
+
+    Query strings carry ``include_cif_content`` as ``'true'``/``'false'``; a
+    JSON body should carry a real boolean.
+    """
+    body = dict(params)
+    if "include_cif_content" in body:
+        body["include_cif_content"] = str(body["include_cif_content"]).lower() == "true"
+    return body
+
+
+def _filename_from_disposition(disposition: str | None) -> str | None:
+    """Pull the filename out of a Content-Disposition header, if present."""
+    if not disposition:
+        return None
+    match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', disposition)
+    return match.group(1).strip() if match else None
