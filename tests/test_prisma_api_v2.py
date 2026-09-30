@@ -2441,6 +2441,10 @@ def test_upsert_flowsheets_blank_screening_analysis_name_warns_and_omits_query_p
 # ── Material bundles (server-side bundle endpoints) ───────────────────────────
 
 _BUNDLE_FIXTURE = "reference_data/prisma_cloud/example_payloads/material_bundle_Zeolite_13X.json"
+_SKIP_NO_BUNDLE_FIXTURE = pytest.mark.skipif(
+    not os.path.exists(_BUNDLE_FIXTURE),
+    reason=f"Local fixture {_BUNDLE_FIXTURE} not available",
+)
 
 
 def _load_bundle_fixture() -> dict:
@@ -2461,6 +2465,7 @@ def _bundle_envelope(results: list, missing: list | None = None) -> dict:
     os.getenv("CI", "").lower() == "true",
     reason="Offline development fixture test is disabled in CI",
 )
+@_SKIP_NO_BUNDLE_FIXTURE
 def test_get_material_bundles_single_name_returns_bundle_fixture(api):
     fixture = _load_bundle_fixture()
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/bundle/",
@@ -2669,6 +2674,10 @@ def test_get_material_bundles_zip_by_id(api, tmp_path):
 # ── Material bundle upsert ────────────────────────────────────────────────────
 
 _CIF_FIXTURE = "reference_data/prisma_cloud/example_payloads/Zeolite_13X.cif"
+_SKIP_NO_CIF_FIXTURE = pytest.mark.skipif(
+    not os.path.exists(_CIF_FIXTURE),
+    reason=f"Local fixture {_CIF_FIXTURE} not available",
+)
 _UPSERT_URL = f"{PROD_BASE}/materials/bundle/upsert/"
 
 
@@ -2743,6 +2752,7 @@ def _multipart_fields(request) -> dict[str, bytes]:
     os.getenv("CI", "").lower() == "true",
     reason="Offline development fixture test is disabled in CI",
 )
+@_SKIP_NO_BUNDLE_FIXTURE
 def test_upsert_material_bundles_round_trips_read_fixture(api):
     fixture = _load_bundle_fixture()
     resp_lib.add(resp_lib.PUT, _UPSERT_URL,
@@ -2780,6 +2790,7 @@ def test_upsert_material_bundles_create_materials_false(api):
     os.getenv("CI", "").lower() == "true",
     reason="Offline development fixture test is disabled in CI",
 )
+@_SKIP_NO_BUNDLE_FIXTURE
 def test_upsert_material_bundles_strip_ids_for_another_database(api):
     fixture = _load_bundle_fixture()
     resp_lib.add(resp_lib.PUT, _UPSERT_URL,
@@ -3036,6 +3047,7 @@ def test_upsert_material_bundles_rejects_non_list_cifs(api, cif_file):
     os.getenv("CI", "").lower() == "true",
     reason="Offline development fixture test is disabled in CI",
 )
+@_SKIP_NO_CIF_FIXTURE
 def test_parse_cif_metadata_reproduces_stored_row():
     """The client derives exactly what the stored cifs row carries."""
     with open(_CIF_FIXTURE, "r", encoding="utf-8") as f:
