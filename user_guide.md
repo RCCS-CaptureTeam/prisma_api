@@ -181,7 +181,82 @@ Read the response's `sections` key rather than assuming all twelve are present.
 Requests over 200 materials are batched automatically (the server caps a single
 request at 200); `output='zip'` is one request, so it is capped at 200.
 
-### 4.7 Check a material exists
+### 4.7 Writing a bundle back
+
+`upsert_material_bundles` is the write counterpart of `get_material_bundles`:
+it takes the same document the read endpoint returns, so a bundle can be read,
+edited and posted back. Every row matches on its `id`, so only the edited value
+changes. Computed keys (`_schema`, `sections`, `counts`, `cif_url`, `mof`, …)
+are ignored by the server and can be left in place.
+
+```python
+b = v2.get_material_bundles('Zeolite_13X')
+b['isotherms'][0]['T_ref_K'] = 298.15
+v2.upsert_material_bundles(b)
+# → {'materials': 1, 'created': {}, 'updated': {'isotherms': 1}, 'results': [...]}
+
+# Several materials in one call
+v2.upsert_material_bundles([bundle_a, bundle_b])
+```
+
+Sending a bundle to a *different* database than it was read from: its ids and
+tag ids mean nothing there, so strip them and pass tag names.
+
+```python
+v2.upsert_material_bundles(
+    b, strip_ids=True, tag_names={2: 'MOFevaluator', 1: 'PrISMa V1'})
+```
+
+CIF files travel with the payload, either as multipart parts or inline:
+
+```python
+v2.upsert_material_bundles(b, cif_files='Zeolite_13X.cif')                # upload
+v2.upsert_material_bundles(b, cif_files='Zeolite_13X.cif', inline_cifs=True)
+v2.upsert_material_bundles([b1, b2], cif_files={'Zeolite_13X': 'Zeolite_13X.cif'})
+```
+
+Each file attaches to the `cifs` row whose `filename` it matches, or is appended
+as a new row. A CIF the database does not already have needs its file — a
+metadata-only row is rejected.
+
+Each row's structural metadata — formulae, cell lengths, angles, volume,
+symmetry and space group — is derived from the CIF text itself, so the row
+describes the file being sent:
+
+```python
+# default: derived values overwrite the row, the file being the source of truth
+v2.upsert_material_bundles(b, cif_files='Zeolite_13X.cif')
+
+# keep values already on the row, fill only what is missing or None
+v2.upsert_material_bundles(b, cif_files='Zeolite_13X.cif',
+                           derive_cif_metadata='fill')
+
+# send the metadata exactly as given
+v2.upsert_material_bundles(b, cif_files='Zeolite_13X.cif',
+                           derive_cif_metadata=False)
+```
+
+Derivation also applies to rows that already carry `content` (a bundle read with
+`include_cif_content=True`). Formulae are counted from the atom-site loop and
+listed alphabetically with explicit counts (`Al86 Na86 O384 Si106`); fields the
+file does not carry are left alone, and `material` is never touched.
+
+Notes:
+
+- Writable sections: `material`, `cifs`, `isotherms`, `water_kpis`,
+  `carbon_zeopp`, `carbon_zeopp_experimental`, `zeopp_metrics`, `mof_h2`,
+  `h2_results`. `adsorption_singlepoint`, `heat_capacity`, `isotherm_h2` and
+  `mofchecker` are read-only here — use their own `upsert_*` methods. Empty is
+  fine; populated raises.
+- `create_materials=False` makes an unknown material name an error instead of
+  creating it.
+- Nothing is ever deleted: re-posting a payload with a row removed leaves that
+  row in place.
+- A 207 (partial success) returns the body with an `errors` list and raises a
+  `UserWarning`. Each bundle is its own transaction, so retry only the failed
+  indices — re-sending everything re-applies the bundles that succeeded.
+
+### 4.8 Check a material exists
 
 ```python
 v2.preflight_material_check('ABEXEM')   # → True / False

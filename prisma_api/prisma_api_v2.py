@@ -22,7 +22,9 @@ from typing import Any
 from pathlib import Path
 from urllib.parse import urlencode
 import warnings
+import copy
 import json
+from collections import Counter
 import re
 import subprocess
 from datetime import datetime
@@ -41,6 +43,21 @@ _BUNDLE_SECTIONS = (
 # Server-side hard cap; over this the bundle endpoint returns 400 rather
 # than truncating.
 _BUNDLE_MAX_MATERIALS = 200
+# Sections the bundle upsert endpoint writes. The rest are read-only there and
+# have their own dedicated PUT endpoints; an empty one is a no-op, a populated
+# one is an error.
+_BUNDLE_WRITABLE_SECTIONS = (
+    "cifs", "isotherms", "water_kpis", "carbon_zeopp",
+    "carbon_zeopp_experimental", "zeopp_metrics", "mof_h2", "h2_results",
+)
+_BUNDLE_READONLY_SECTIONS = {
+    "adsorption_singlepoint": "upsert_adsorption_singlepoint",
+    "heat_capacity": "upsert_heat_capacity",
+    "isotherm_h2": "upsert_isotherm_h2",
+    "mofchecker": "upsert_mofchecker",
+}
+# Read-bundle keys with no write meaning — dropped silently by the endpoint.
+_BUNDLE_IGNORED_KEYS = ("_schema", "sections", "counts")
 
 
 class PrismaAPIv2:
@@ -117,6 +134,23 @@ class PrismaAPIv2:
         else:
             resp = requests.get(self._url(path), params=params,
                                 headers=self._headers(), timeout=timeout)
+        resp.raise_for_status()
+        return resp
+
+    def _send(self, method: str, path: str, params: dict | None = None,
+              json_body: Any = None, files: dict | None = None,
+              timeout: int = 120) -> requests.Response:
+        """
+        Issue a request and return the raw response.
+
+        Used where the caller needs the status code (207 partial success) or
+        sends multipart form data — for which the JSON ``Content-Type`` header
+        must be omitted so requests can set the multipart boundary.
+        """
+        headers = {"X-API-Key": self._key} if files else self._headers()
+        resp = requests.request(method.upper(), self._url(path), params=params,
+                                json=json_body, files=files, headers=headers,
+                                timeout=timeout)
         resp.raise_for_status()
         return resp
 
@@ -1191,6 +1225,254 @@ class PrismaAPIv2:
         path.write_bytes(response.content)
         print(f"{len(response.content):,} bytes written to {path}")
         return path
+
+    def upsert_material_bundles(
+        self,
+        bundles: dict | list[dict],
+        cif_files: str | Path | list | dict | None = None,
+        create_materials: bool = True,
+        strip_ids: bool = False,
+        inline_cifs: bool = False,
+        derive_cif_metadata: bool | str = True,
+        tag_names: dict[int, str] | None = None,
+        method: str | None = None,
+        timeout: int = 300,
+    ) -> dict:
+        """
+        Write complete material bundles back to the database.
+
+        ``PUT|POST /api/v2/materials/bundle/upsert/`` — the write counterpart of
+        :meth:`get_material_bundles`. It takes the *same document the read
+        endpoint returns*, so a bundle can be read, edited and posted back
+        unchanged: every row matches on its ``id`` and only the edited value
+        moves. Computed fields (``_schema``, ``sections``, ``counts``,
+        ``cif_url``, ``file_url``, ``mof``, …) are ignored by the server and
+        can be left in place.
+
+        Args:
+            bundles: One bundle dict, or a list of them. Each is the read-bundle
+                     shape: ``{"material": {...}, "cifs": [...],
+                     "isotherms": [...], ...}``.
+            cif_files: CIF file(s) to send alongside the payload. Either a path
+                     (or list of paths) when upserting a single bundle, or a
+                     ``{material name: path | [paths]}`` mapping. Each file is
+                     attached to the ``cifs`` row whose ``filename`` it matches,
+                     or appended as a new row.
+            create_materials: Create a material the database does not have
+                     (default ``True``). ``False`` makes an unknown name an error.
+            strip_ids: Drop ``material.id`` and every per-row ``id`` so rows fall
+                     back to their natural keys. Use when sending a bundle to a
+                     *different* database than it was read from, where those ids
+                     mean nothing. Keep it ``False`` for a round trip within one
+                     database: a material can have several CIF rows sharing a
+                     file name, and those are distinguishable only by ``id``.
+            inline_cifs: Send CIF structures as ``cifs[].content`` in the JSON
+                     body instead of as multipart file parts.
+            derive_cif_metadata: Fill each ``cifs`` row's structural metadata —
+                     formulae, cell lengths, angles, volume, symmetry and space
+                     group — from the CIF text itself, so the row describes the
+                     file being sent rather than whatever it carried before.
+                     ``True`` (default) derives from every attached file and
+                     from any row that already carries ``content``, overwriting
+                     the row's own values; ``'fill'`` only fills keys that are
+                     missing or ``None``; ``False`` sends the metadata as given.
+                     Fields the file does not carry are left alone, and
+                     ``material`` is never touched.
+            tag_names: ``{tag id: tag name}`` map used to translate integer
+                     ``water_kpis[].tags``. Tag ids are local to one database;
+                     with ``strip_ids=True`` any untranslated integer tag raises
+                     rather than failing upstream with ``Unknown tag id``.
+            method:  ``'put'`` or ``'post'``. Defaults to ``'post'`` when files
+                     are attached, ``'put'`` otherwise.
+            timeout: Request timeout in seconds (default 300).
+
+        Returns:
+            The server's upsert report::
+
+                {"_schema": "prisma_v2.material.bundle.upsert.v1",
+                 "materials": 1,
+                 "created": {},
+                 "updated": {"cifs": 1, "isotherms": 2, ...},
+                 "results": [{"material": {"id": 84368, "name": "Zeolite_13X",
+                                           "created": false},
+                              "created": {}, "updated": {...}}]}
+
+            A 207 response (partial success) returns the same body with an
+            ``errors: [{index, material, error}]`` list and raises a
+            ``UserWarning``. Each bundle is applied in its own transaction, so a
+            failed bundle changed nothing. Retry only the failed indices —
+            re-sending the whole payload re-applies the bundles that succeeded.
+
+        Raises:
+            ValueError: on an unknown section name, a populated read-only
+                section (``adsorption_singlepoint``, ``heat_capacity``,
+                ``isotherm_h2``, ``mofchecker`` — each has its own upsert
+                method), a bundle with no ``material``, a CIF row carrying both
+                ``content`` and ``file``, an unmatched ``cif_files`` key, or an
+                untranslated integer tag under ``strip_ids``.
+            FileNotFoundError: a path in ``cif_files`` that does not exist.
+            requests.HTTPError: passed through from the API — 403 for a bad API
+                key, 400 for a body the server rejects.
+
+        Notes:
+            Nothing is ever deleted. Re-posting a payload with a row removed
+            leaves that row in place.
+
+        Examples:
+            >>> bundle = api.v2.get_material_bundles('Zeolite_13X')
+            >>> bundle['isotherms'][0]['T_ref_K'] = 298.15
+            >>> api.v2.upsert_material_bundles(bundle)['updated']
+            {'isotherms': 1}
+
+            >>> # Same payload into a different database, with its CIF file
+            >>> api.v2.upsert_material_bundles(
+            ...     bundle, cif_files='Zeolite_13X.cif', strip_ids=True,
+            ...     tag_names={2: 'MOFevaluator', 1: 'PrISMa V1'})
+
+            >>> # Keep hand-edited row metadata, filling only what is missing
+            >>> api.v2.upsert_material_bundles(
+            ...     bundle, cif_files='Zeolite_13X.cif', derive_cif_metadata='fill')
+
+            >>> # Several materials at once
+            >>> api.v2.upsert_material_bundles(
+            ...     [b1, b2], cif_files={'Zeolite_13X': 'Zeolite_13X.cif'})
+        """
+        if method is not None and method.lower() not in ("put", "post"):
+            raise ValueError("method must be 'put' or 'post'")
+        if derive_cif_metadata not in (True, False, "fill"):
+            raise ValueError("derive_cif_metadata must be True, False or 'fill'")
+
+        single = isinstance(bundles, dict)
+        if single:
+            raw_bundles = [bundles]
+        elif isinstance(bundles, list):
+            raw_bundles = bundles
+        else:
+            raise TypeError("bundles must be a bundle dict or a list of bundle dicts")
+        if not raw_bundles:
+            raise ValueError("No bundles given.")
+
+        prepared = [
+            _prepare_bundle(b, index, strip_ids=strip_ids, tag_names=tag_names)
+            for index, b in enumerate(raw_bundles)
+        ]
+        files, derived = self._attach_bundle_cifs(
+            prepared, cif_files, inline_cifs, derive_cif_metadata,
+        )
+        if derive_cif_metadata:
+            # Rows that arrived with their structure inline (a bundle read with
+            # include_cif_content=true) describe a CIF too.
+            for bundle in prepared:
+                for row in bundle.get("cifs") or []:
+                    if (isinstance(row, dict) and id(row) not in derived
+                            and isinstance(row.get("content"), str)):
+                        _apply_cif_metadata(row, row["content"], derive_cif_metadata)
+
+        body: Any = prepared[0] if single else prepared
+        params = {"create_materials": "true" if create_materials else "false"}
+        verb = method.lower() if method else ("post" if files else "put")
+
+        if files:
+            # Multipart: the JSON document travels in a 'bundle' form field and
+            # each CIF as its own named part, referenced by `cifs[].file`.
+            parts: dict[str, tuple] = {
+                "bundle": (None, json.dumps(body), "application/json"),
+                **files,
+            }
+            response = self._send(verb, "/materials/bundle/upsert/",
+                                  params=params, files=parts, timeout=timeout)
+        else:
+            response = self._send(verb, "/materials/bundle/upsert/",
+                                  params=params, json_body=body, timeout=timeout)
+
+        payload = response.json()
+        if response.status_code == 207:
+            errors = payload.get("errors") or []
+            warnings.warn(
+                f"Partial success (207): {len(errors)} of {len(prepared)} bundle(s) "
+                f"failed at index/indices {[e.get('index') for e in errors]} — "
+                f"{[e.get('error') for e in errors]}. Each bundle is its own "
+                "transaction, so the failed ones changed nothing. Retry only those "
+                "indices; re-sending the whole payload re-applies the rest.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return payload
+
+    def _attach_bundle_cifs(self, bundles: list[dict],
+                            cif_files: str | Path | list | dict | None,
+                            inline_cifs: bool,
+                            derive_cif_metadata: bool | str = False,
+                            ) -> tuple[dict[str, tuple], set[int]]:
+        """
+        Attach local CIF files to prepared bundles.
+
+        Mutates each bundle's ``cifs`` section in place — inline as ``content``,
+        or as a ``file`` part name, with metadata derived from the file when
+        asked. Returns the multipart parts to send (empty when ``inline_cifs``
+        is set or no files were given) and the ids of the rows already derived.
+        """
+        if cif_files is None:
+            return {}, set()
+
+        by_index: dict[int, list[Path]] = {}
+        if isinstance(cif_files, dict):
+            names = {
+                (b.get("material") or {}).get("name"): i
+                for i, b in enumerate(bundles)
+            }
+            for name, paths in cif_files.items():
+                if name not in names:
+                    raise ValueError(
+                        f"cif_files key '{name}' matches no bundle; "
+                        f"bundle material names: {[n for n in names if n]}"
+                    )
+                by_index.setdefault(names[name], []).extend(_as_paths(paths))
+        else:
+            if len(bundles) != 1:
+                raise ValueError(
+                    "Pass cif_files as a {material name: path} mapping when "
+                    "upserting more than one bundle."
+                )
+            by_index[0] = _as_paths(cif_files)
+
+        parts: dict[str, tuple] = {}
+        derived: set[int] = set()
+        for index, paths in by_index.items():
+            bundle = bundles[index]
+            rows = bundle.setdefault("cifs", [])
+            if not isinstance(rows, list):
+                raise ValueError(f"bundles[{index}]['cifs'] must be a list")
+
+            for position, path in enumerate(paths):
+                if not path.is_file():
+                    raise FileNotFoundError(f"CIF file not found: {path}")
+
+                row = _match_cif_row(rows, path)
+                if row is None:
+                    # No metadata row for this file — add one. The first CIF a
+                    # material gets is its primary structure.
+                    row = {"primary": not any(r.get("primary") for r in rows)}
+                    rows.append(row)
+
+                data = path.read_bytes()
+                if inline_cifs:
+                    row["content"] = data.decode("utf-8")
+                    row.pop("file", None)
+                    row.setdefault("filename", f"cifs/{path.name}")
+                else:
+                    # `content` and `file` are mutually exclusive on a row.
+                    part_name = f"cif_{index}_{position}"
+                    row["file"] = part_name
+                    row.pop("content", None)
+                    parts[part_name] = (path.name, data, "chemical/x-cif")
+
+                if derive_cif_metadata:
+                    _apply_cif_metadata(row, data.decode("utf-8", errors="replace"),
+                                        derive_cif_metadata)
+                    derived.add(id(row))
+
+        return parts, derived
 
     def preflight_material_check(self, name: str) -> bool:
         """
@@ -3068,6 +3350,259 @@ def _join_sections(value: str | list[str] | None, param: str) -> str | None:
             f"Valid sections: {list(_BUNDLE_SECTIONS)}"
         )
     return ",".join(names) or None
+
+
+def _prepare_bundle(bundle: Any, index: int, strip_ids: bool = False,
+                    tag_names: dict[int, str] | None = None) -> dict:
+    """
+    Validate one bundle for upsert and return a copy safe to send.
+
+    Rejects unknown section names and populated read-only sections locally,
+    rather than letting the server reject the whole bundle, and optionally
+    strips the ids and translates the tag ids that are local to one database.
+    """
+    if not isinstance(bundle, dict):
+        raise TypeError(f"bundles[{index}] must be a dict, got {type(bundle).__name__}")
+
+    known = {"material", *_BUNDLE_WRITABLE_SECTIONS, *_BUNDLE_READONLY_SECTIONS,
+             *_BUNDLE_IGNORED_KEYS}
+    unknown = [k for k in bundle if k not in known]
+    if unknown:
+        raise ValueError(
+            f"Unknown key(s) in bundles[{index}]: {unknown}. "
+            f"Writable sections: {list(_BUNDLE_WRITABLE_SECTIONS)}"
+        )
+
+    for section, endpoint in _BUNDLE_READONLY_SECTIONS.items():
+        if bundle.get(section):
+            raise ValueError(
+                f"bundles[{index}]['{section}'] is read-only on the bundle "
+                f"endpoint — write it with api.v2.{endpoint}(). An empty "
+                "section is fine and passes through as a no-op."
+            )
+
+    prepared = copy.deepcopy(bundle)
+    material = prepared.get("material")
+    if not isinstance(material, dict) or not (material.get("id") or material.get("name")):
+        raise ValueError(
+            f"bundles[{index}] needs a 'material' with an 'id' or a 'name'."
+        )
+
+    if strip_ids:
+        # Row ids are local to the database the bundle was read from; without
+        # them each row falls back to its natural key, which is what makes the
+        # same payload safe to apply anywhere.
+        material.pop("id", None)
+        if not material.get("name"):
+            raise ValueError(
+                f"bundles[{index}]['material'] needs a 'name' once ids are stripped."
+            )
+        for section in _BUNDLE_WRITABLE_SECTIONS:
+            value = prepared.get(section)
+            if isinstance(value, list):
+                for row in value:
+                    if isinstance(row, dict):
+                        row.pop("id", None)
+            elif isinstance(value, dict):
+                value.pop("id", None)
+
+    for row in prepared.get("water_kpis") or []:
+        if isinstance(row, dict) and isinstance(row.get("tags"), list):
+            row["tags"] = _translate_tags(row["tags"], tag_names, index, strip_ids)
+
+    return prepared
+
+
+def _translate_tags(tags: list, tag_names: dict[int, str] | None, index: int,
+                    strip_ids: bool) -> list:
+    """Map integer tag ids to names where possible; ids are database-local."""
+    translated = []
+    untranslated = []
+    for tag in tags:
+        if isinstance(tag, int) and not isinstance(tag, bool):
+            name = (tag_names or {}).get(tag)
+            if name is None:
+                untranslated.append(tag)
+                translated.append(tag)
+            else:
+                translated.append(name)
+        else:
+            translated.append(tag)
+    if untranslated and strip_ids:
+        raise ValueError(
+            f"bundles[{index}]['water_kpis'] carries tag ids {untranslated}, which "
+            "are local to the database the bundle was read from and will fail with "
+            "'Unknown tag id'. Replace them with tag names, or pass "
+            "tag_names={id: name}."
+        )
+    return translated
+
+
+def _as_paths(value: str | Path | list) -> list[Path]:
+    """Normalise a path argument to a list of Paths."""
+    if isinstance(value, (str, Path)):
+        return [Path(value)]
+    return [Path(v) for v in value]
+
+
+def _match_cif_row(rows: list, path: Path) -> dict | None:
+    """Find the cifs row that names this file, if the bundle already carries one."""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        filename = row.get("filename") or row.get("file_url")
+        if isinstance(filename, str) and Path(filename).name == path.name:
+            if row.get("content") and row.get("file"):
+                raise ValueError(
+                    f"CIF row for '{path.name}' carries both 'content' and 'file'; "
+                    "they are mutually exclusive."
+                )
+            return row
+    return None
+
+
+# CIF tags that map onto stored ``cifs`` row columns, with the type to coerce to.
+_CIF_METADATA_TAGS: dict[str, tuple[str, str]] = {
+    "_chemical_formula_sum": ("chemical_formula_sum", "str"),
+    "_chemical_formula_structural": ("chemical_formula_structural", "str"),
+    "_chemical_name_common": ("chemical_name_common", "str"),
+    "_cell_formula_units_Z": ("cell_formula_units_Z", "int"),
+    "_cell_volume": ("cell_volume", "float"),
+    "_cell_length_a": ("cell_length_a", "float"),
+    "_cell_length_b": ("cell_length_b", "float"),
+    "_cell_length_c": ("cell_length_c", "float"),
+    "_cell_angle_alpha": ("cell_angle_alpha", "float"),
+    "_cell_angle_beta": ("cell_angle_beta", "float"),
+    "_cell_angle_gamma": ("cell_angle_gamma", "float"),
+    "_symmetry_cell_setting": ("symmetry_cell_setting", "str"),
+    "_symmetry_space_group_name": ("symmetry_space_group_name", "str"),
+    "_symmetry_space_group_name_H-M": ("symmetry_space_group_name_H_M", "str"),
+    "_symmetry_space_group_name_Hall": ("symmetry_space_group_name_Hall", "str"),
+    "_symmetry_Int_Tables_number": ("symmetry_Int_Tables_number", "int"),
+    "_space_group_name_H-M_alt": ("space_group_name_H_M_alt", "str"),
+    "_space_group_name_Hall": ("space_group_name_Hall", "str"),
+    "_space_group_IT_number": ("space_group_IT_number", "int"),
+}
+# A file carrying only the legacy ``_symmetry_*`` names still fills the modern
+# space group name columns — matching how stored rows are populated. The IT
+# number is deliberately not aliased: stored rows leave it unset.
+_CIF_SPACE_GROUP_ALIASES = {
+    "symmetry_space_group_name_H_M": "space_group_name_H_M_alt",
+    "symmetry_space_group_name_Hall": "space_group_name_Hall",
+}
+
+
+def _parse_cif_metadata(text: str) -> dict[str, Any]:
+    """
+    Derive stored ``cifs`` row metadata from CIF text.
+
+    Reads the tags in ``_CIF_METADATA_TAGS`` and counts the atom-site loop to
+    build the chemical formulae. Elements are listed alphabetically with an
+    explicit count, which is how the stored rows read
+    (``Al86 Na86 O384 Si106``). Tags the file does not carry are simply absent
+    from the result.
+    """
+    fields: dict[str, str] = {}
+    symbols: Counter = Counter()
+    lines = text.splitlines()
+    index, total = 0, len(lines)
+
+    while index < total:
+        line = lines[index].strip()
+        index += 1
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(";"):
+            # Multi-line text block — skip to its closing semicolon.
+            while index < total and not lines[index].strip().startswith(";"):
+                index += 1
+            index += 1
+            continue
+        if line == "loop_":
+            columns: list[str] = []
+            while index < total and lines[index].strip().startswith("_"):
+                columns.append(lines[index].strip().split()[0])
+                index += 1
+            rows: list[str] = []
+            while index < total:
+                row = lines[index].strip()
+                if not row or row == "loop_" or row.startswith(("_", "#", "data_")):
+                    break
+                rows.append(row)
+                index += 1
+            # The type symbol column is authoritative; site labels such as
+            # 'O2Al' name the site, not the element, so they are a fallback.
+            key = next((c for c in ("_atom_site_type_symbol", "_atom_site_label")
+                        if c in columns), None)
+            if key is not None:
+                column = columns.index(key)
+                for row in rows:
+                    cells = row.split()
+                    if len(cells) > column:
+                        symbol = _element_symbol(cells[column])
+                        if symbol:
+                            symbols[symbol] += 1
+            continue
+        if line.startswith("_"):
+            tag, _, value = line.partition(" ")
+            if value.strip():
+                fields[tag] = value
+
+    metadata: dict[str, Any] = {}
+    for tag, (column, kind) in _CIF_METADATA_TAGS.items():
+        value = _cif_value(fields.get(tag))
+        if value is None:
+            continue
+        if kind in ("float", "int"):
+            number = re.sub(r"\(\d+\)$", "", value)   # drop an uncertainty, e.g. 25.077(3)
+            try:
+                value = float(number) if kind == "float" else int(float(number))
+            except ValueError:
+                continue
+        metadata[column] = value
+
+    for source, alias in _CIF_SPACE_GROUP_ALIASES.items():
+        if source in metadata and alias not in metadata:
+            metadata[alias] = metadata[source]
+
+    if symbols:
+        descriptive = " ".join(f"{el}{count}" for el, count in sorted(symbols.items()))
+        metadata["chemical_formula_descriptive"] = descriptive
+        metadata["chemical_formula"] = descriptive.replace(" ", "")
+        metadata.setdefault("chemical_formula_sum", descriptive.replace(" ", ""))
+
+    return metadata
+
+
+def _apply_cif_metadata(row: dict, text: str, mode: bool | str) -> dict:
+    """Write derived CIF metadata onto a ``cifs`` row; ``'fill'`` keeps set values."""
+    metadata = _parse_cif_metadata(text)
+    for column, value in metadata.items():
+        if mode == "fill" and row.get(column) is not None:
+            continue
+        row[column] = value
+    return row
+
+
+def _element_symbol(token: str) -> str | None:
+    """Element symbol from an atom-site type symbol or label ('O2-' → 'O')."""
+    match = re.match(r"[A-Za-z]{1,2}", token)
+    if not match:
+        return None
+    symbol = match.group(0)
+    if len(symbol) == 2 and not symbol[1].islower():
+        symbol = symbol[0]
+    return symbol[0].upper() + symbol[1:].lower()
+
+
+def _cif_value(raw: str | None) -> str | None:
+    """Unquote a CIF value, treating '?' and '.' as absent."""
+    if raw is None:
+        return None
+    value = raw.strip()
+    if len(value) >= 2 and value[0] in "'\"" and value[-1] == value[0]:
+        value = value[1:-1].strip()
+    return value or None if value not in ("?", ".") else None
 
 
 def _bundle_post_body(params: dict) -> dict:

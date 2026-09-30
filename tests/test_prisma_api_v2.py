@@ -19,8 +19,10 @@ from datetime import datetime
 from numbers import Integral
 
 import pandas as pd
+from pathlib import Path
 
-from prisma_api.prisma_api_v2 import PrismaAPIv2, _BASE_PROD, _BUNDLE_SECTIONS
+from prisma_api.prisma_api_v2 import (PrismaAPIv2, _BASE_PROD, _BUNDLE_SECTIONS,
+                                      _parse_cif_metadata)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -2662,3 +2664,499 @@ def test_get_material_bundles_zip_by_id(api, tmp_path):
                  match=[matchers.query_param_matcher({"ids": "84368", "output": "zip"})])
     path = api.get_material_bundles(ids=[84368], output="zip", save_path=tmp_path)
     assert path == tmp_path / "material_bundles.zip"
+
+
+# ── Material bundle upsert ────────────────────────────────────────────────────
+
+_CIF_FIXTURE = "reference_data/prisma_cloud/example_payloads/Zeolite_13X.cif"
+_UPSERT_URL = f"{PROD_BASE}/materials/bundle/upsert/"
+
+
+_SAMPLE_CIF = """data_Zeolite_13X
+
+_cell_length_a    25.077
+_cell_length_b    25.077
+_cell_length_c    25.077
+_cell_angle_alpha 90
+_cell_angle_beta  90
+_cell_angle_gamma 90
+_cell_volume      15769.8
+
+_symmetry_cell_setting          cubic
+_symmetry_space_group_name_Hall 'P 1'
+_symmetry_space_group_name_H-M  'P 1'
+_symmetry_Int_Tables_number     1
+
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+O1Al     O      0.001400     0.747600     0.891300
+O2Al     O      0.108700     0.498600     0.752400
+Si       Si     0.124300     0.535300     0.804500
+Al       Al     0.036000     0.625400     0.805300
+Na       Na     0.200000     0.200000     0.200000
+"""
+
+
+@pytest.fixture
+def cif_file(tmp_path) -> Path:
+    """A small on-disk CIF, so CIF tests do not depend on reference_data."""
+    path = tmp_path / "Zeolite_13X.cif"
+    path.write_text(_SAMPLE_CIF, encoding="utf-8")
+    return path
+
+
+def _upsert_report(updated: dict | None = None, created: dict | None = None) -> dict:
+    return {"_schema": "prisma_v2.material.bundle.upsert.v1",
+            "materials": 1,
+            "created": created or {},
+            "updated": updated or {},
+            "results": [{"material": {"id": 84368, "name": "Zeolite_13X",
+                                      "created": False},
+                         "created": created or {}, "updated": updated or {}}]}
+
+
+def _minimal_bundle(name: str = "Zeolite_13X") -> dict:
+    return {"material": {"name": name},
+            "isotherms": [{"molecule": "CO2", "T_ref_K": 283.15, "sim_or_exp": "sim"}]}
+
+
+def _multipart_fields(request) -> dict[str, bytes]:
+    """Split a multipart request body into {part name: raw value}."""
+    body = request.body if isinstance(request.body, bytes) else request.body.encode()
+    boundary = request.headers["Content-Type"].split("boundary=")[1].encode()
+    fields = {}
+    for chunk in body.split(b"--" + boundary):
+        if b'name="' not in chunk:
+            continue
+        head, _, value = chunk.partition(b"\r\n\r\n")
+        name = head.split(b'name="')[1].split(b'"')[0].decode()
+        fields[name] = value[:-2] if value.endswith(b"\r\n") else value
+    return fields
+
+
+@resp_lib.activate
+@pytest.mark.skipif(
+    os.getenv("CI", "").lower() == "true",
+    reason="Offline development fixture test is disabled in CI",
+)
+def test_upsert_material_bundles_round_trips_read_fixture(api):
+    fixture = _load_bundle_fixture()
+    resp_lib.add(resp_lib.PUT, _UPSERT_URL,
+                 json=_upsert_report(updated={"cifs": 1, "isotherms": 2,
+                                              "water_kpis": 2, "carbon_zeopp": 1,
+                                              "carbon_zeopp_experimental": 1}),
+                 status=200,
+                 match=[matchers.query_param_matcher({"create_materials": "true"})])
+    result = api.upsert_material_bundles(fixture)
+    # The read document is forwarded unchanged — computed keys and all.
+    sent = json.loads(resp_lib.calls[0].request.body)
+    assert sent == fixture
+    assert result["updated"]["isotherms"] == 2
+    assert result["created"] == {}
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_list_sends_list_body(api):
+    resp_lib.add(resp_lib.PUT, _UPSERT_URL, json=_upsert_report(), status=200)
+    api.upsert_material_bundles([_minimal_bundle("A"), _minimal_bundle("B")])
+    sent = json.loads(resp_lib.calls[0].request.body)
+    assert isinstance(sent, list) and len(sent) == 2
+    assert [b["material"]["name"] for b in sent] == ["A", "B"]
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_create_materials_false(api):
+    resp_lib.add(resp_lib.PUT, _UPSERT_URL, json=_upsert_report(), status=200,
+                 match=[matchers.query_param_matcher({"create_materials": "false"})])
+    api.upsert_material_bundles(_minimal_bundle(), create_materials=False)
+
+
+@resp_lib.activate
+@pytest.mark.skipif(
+    os.getenv("CI", "").lower() == "true",
+    reason="Offline development fixture test is disabled in CI",
+)
+def test_upsert_material_bundles_strip_ids_for_another_database(api):
+    fixture = _load_bundle_fixture()
+    resp_lib.add(resp_lib.PUT, _UPSERT_URL,
+                 json=_upsert_report(created={"isotherms": 2}), status=200)
+    api.upsert_material_bundles(
+        fixture, strip_ids=True,
+        tag_names={2: "MOFevaluator", 1: "PrISMa V1"})
+    sent = json.loads(resp_lib.calls[0].request.body)
+    assert "id" not in sent["material"]
+    assert sent["material"]["name"] == "Zeolite_13X"
+    for section in ("cifs", "isotherms", "water_kpis", "carbon_zeopp"):
+        assert all("id" not in row for row in sent[section])
+    # Tag ids are database-local and must travel as names
+    assert sent["water_kpis"][0]["tags"] == ["MOFevaluator", "PrISMa V1"]
+    # The caller's document is untouched
+    assert fixture["material"]["id"] == 84368
+    assert fixture["water_kpis"][0]["tags"] == [2, 1]
+
+
+def test_upsert_material_bundles_strip_ids_rejects_untranslated_tags(api):
+    bundle = {"material": {"name": "Zeolite_13X"},
+              "water_kpis": [{"molecule": "H2O", "tags": [2, 1]}]}
+    with pytest.raises(ValueError, match="tag ids"):
+        api.upsert_material_bundles(bundle, strip_ids=True)
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_keeps_tag_names_untouched(api):
+    resp_lib.add(resp_lib.PUT, _UPSERT_URL, json=_upsert_report(), status=200)
+    bundle = {"material": {"name": "Z"},
+              "water_kpis": [{"molecule": "H2O", "tags": ["MOFevaluator"]}]}
+    api.upsert_material_bundles(bundle, strip_ids=True)
+    sent = json.loads(resp_lib.calls[0].request.body)
+    assert sent["water_kpis"][0]["tags"] == ["MOFevaluator"]
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_uploads_cif_as_multipart(api, cif_file):
+    resp_lib.add(resp_lib.POST, _UPSERT_URL,
+                 json=_upsert_report(updated={"cifs": 1}), status=200)
+    bundle = {"material": {"name": "Zeolite_13X"},
+              "cifs": [{"id": 18710, "filename": "cifs/Zeolite_13X.cif",
+                        "primary": True}]}
+    api.upsert_material_bundles(bundle, cif_files=cif_file)
+
+    request = resp_lib.calls[0].request
+    assert request.method == "POST"
+    assert request.headers["Content-Type"].startswith("multipart/form-data")
+    fields = _multipart_fields(request)
+    sent = json.loads(fields["bundle"])
+    row = sent["cifs"][0]
+    # The existing metadata row is matched by file name and points at the part
+    assert len(sent["cifs"]) == 1
+    assert row["file"] == "cif_0_0"
+    assert row["id"] == 18710
+    assert "content" not in row
+    with open(cif_file, "rb") as f:
+        assert fields["cif_0_0"] == f.read()
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_cif_without_matching_row_is_appended(api, cif_file):
+    resp_lib.add(resp_lib.POST, _UPSERT_URL, json=_upsert_report(), status=200)
+    api.upsert_material_bundles({"material": {"name": "Zeolite_13X"}},
+                                cif_files=cif_file)
+    sent = json.loads(_multipart_fields(resp_lib.calls[0].request)["bundle"])
+    row = sent["cifs"][0]
+    assert len(sent["cifs"]) == 1
+    assert row["primary"] is True and row["file"] == "cif_0_0"
+    # the appended row describes the file it carries
+    assert row["chemical_formula"] == "Al1Na1O2Si1"
+    assert row["cell_length_a"] == 25.077
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_inline_cif_content(api, cif_file):
+    resp_lib.add(resp_lib.PUT, _UPSERT_URL, json=_upsert_report(), status=200)
+    api.upsert_material_bundles({"material": {"name": "Zeolite_13X"}},
+                                cif_files=cif_file, inline_cifs=True)
+    request = resp_lib.calls[0].request
+    assert request.headers["Content-Type"] == "application/json"
+    row = json.loads(request.body)["cifs"][0]
+    with open(cif_file, "r", encoding="utf-8") as f:
+        assert row["content"] == f.read()
+    assert row["filename"] == "cifs/Zeolite_13X.cif"
+    assert "file" not in row
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_cif_mapping_by_material_name(api, cif_file):
+    resp_lib.add(resp_lib.POST, _UPSERT_URL, json=_upsert_report(), status=200)
+    api.upsert_material_bundles(
+        [_minimal_bundle("Other"), _minimal_bundle("Zeolite_13X")],
+        cif_files={"Zeolite_13X": cif_file})
+    fields = _multipart_fields(resp_lib.calls[0].request)
+    sent = json.loads(fields["bundle"])
+    assert "cifs" not in sent[0]
+    assert sent[1]["cifs"][0]["file"] == "cif_1_0"
+    assert "cif_1_0" in fields
+
+
+def test_upsert_material_bundles_cif_mapping_unknown_name(api, cif_file):
+    with pytest.raises(ValueError, match="matches no bundle"):
+        api.upsert_material_bundles(_minimal_bundle("Zeolite_13X"),
+                                    cif_files={"Nope": cif_file})
+
+
+def test_upsert_material_bundles_cif_path_needs_mapping_for_many_bundles(api, cif_file):
+    with pytest.raises(ValueError, match="mapping"):
+        api.upsert_material_bundles([_minimal_bundle("A"), _minimal_bundle("B")],
+                                    cif_files=cif_file)
+
+
+def test_upsert_material_bundles_missing_cif_file(api):
+    with pytest.raises(FileNotFoundError):
+        api.upsert_material_bundles(_minimal_bundle(), cif_files="no_such.cif")
+
+
+def test_upsert_material_bundles_rejects_populated_readonly_section(api):
+    bundle = {**_minimal_bundle(), "mofchecker": [{"structure": "Zeolite_13X"}]}
+    with pytest.raises(ValueError, match="upsert_mofchecker"):
+        api.upsert_material_bundles(bundle)
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_allows_empty_readonly_section(api):
+    resp_lib.add(resp_lib.PUT, _UPSERT_URL, json=_upsert_report(), status=200)
+    api.upsert_material_bundles({**_minimal_bundle(), "mofchecker": [],
+                                 "heat_capacity": []})
+    assert json.loads(resp_lib.calls[0].request.body)["mofchecker"] == []
+
+
+def test_upsert_material_bundles_rejects_unknown_section(api):
+    with pytest.raises(ValueError, match="Unknown key"):
+        api.upsert_material_bundles({**_minimal_bundle(), "isoterms": []})
+
+
+def test_upsert_material_bundles_requires_material(api):
+    with pytest.raises(ValueError, match="needs a 'material'"):
+        api.upsert_material_bundles({"isotherms": []})
+    with pytest.raises(ValueError, match="needs a 'material'"):
+        api.upsert_material_bundles({"material": {"formula": "Al86"}})
+
+
+def test_upsert_material_bundles_rejects_bad_input(api):
+    with pytest.raises(TypeError, match="bundle dict"):
+        api.upsert_material_bundles("Zeolite_13X")
+    with pytest.raises(ValueError, match="No bundles"):
+        api.upsert_material_bundles([])
+    with pytest.raises(ValueError, match="method must be"):
+        api.upsert_material_bundles(_minimal_bundle(), method="patch")
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_warns_on_partial_success(api):
+    body = {"_schema": "prisma_v2.material.bundle.upsert.v1",
+            "materials": 2,
+            "created": {"isotherms": 1}, "updated": {},
+            "results": [{"material": {"id": 1, "name": "A", "created": True},
+                         "created": {"isotherms": 1}, "updated": {}}],
+            "errors": [{"index": 1, "material": "B",
+                        "error": "Unknown Molecule 'X'"}]}
+    resp_lib.add(resp_lib.PUT, _UPSERT_URL, json=body, status=207)
+    with pytest.warns(UserWarning, match="Retry only those indices"):
+        result = api.upsert_material_bundles([_minimal_bundle("A"),
+                                              _minimal_bundle("B")])
+    assert result["errors"][0]["index"] == 1
+    assert result["results"][0]["material"]["name"] == "A"
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_http_error_is_passed_through(api):
+    resp_lib.add(resp_lib.PUT, _UPSERT_URL,
+                 json={"detail": "Invalid API key."}, status=403)
+    with pytest.raises(requests.HTTPError):
+        api.upsert_material_bundles(_minimal_bundle())
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_method_override(api):
+    resp_lib.add(resp_lib.POST, _UPSERT_URL, json=_upsert_report(), status=200)
+    api.upsert_material_bundles(_minimal_bundle(), method="post")
+    assert resp_lib.calls[0].request.method == "POST"
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_sends_api_key_with_multipart(api, cif_file):
+    resp_lib.add(resp_lib.POST, _UPSERT_URL, json=_upsert_report(), status=200)
+    api.upsert_material_bundles(_minimal_bundle(), cif_files=cif_file)
+    assert resp_lib.calls[0].request.headers["X-API-Key"] == "test-api-key"
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_uses_dev_mode_base_url(dev_api):
+    resp_lib.add(resp_lib.PUT, f"{dev_api._base_url()}/materials/bundle/upsert/",
+                 json=_upsert_report(), status=200)
+    assert dev_api.upsert_material_bundles(_minimal_bundle())["materials"] == 1
+
+
+def test_upsert_material_bundles_rejects_non_dict_bundle_in_list(api):
+    with pytest.raises(TypeError, match=r"bundles\[1\] must be a dict"):
+        api.upsert_material_bundles([_minimal_bundle(), "Zeolite_13X"])
+
+
+def test_upsert_material_bundles_strip_ids_needs_a_name(api):
+    with pytest.raises(ValueError, match="needs a 'name' once ids are stripped"):
+        api.upsert_material_bundles({"material": {"id": 84368}}, strip_ids=True)
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_strip_ids_covers_mof_h2_object(api):
+    resp_lib.add(resp_lib.PUT, _UPSERT_URL, json=_upsert_report(), status=200)
+    bundle = {"material": {"name": "Z"},
+              "mof_h2": {"id": 99, "mof": "Z", "capacity": 1.2},
+              "h2_results": [{"id": 7, "case_study_h2": "base"}]}
+    api.upsert_material_bundles(bundle, strip_ids=True)
+    sent = json.loads(resp_lib.calls[0].request.body)
+    assert sent["mof_h2"] == {"mof": "Z", "capacity": 1.2}
+    assert sent["h2_results"] == [{"case_study_h2": "base"}]
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_accepts_several_cif_paths(api, tmp_path, cif_file):
+    second = tmp_path / "Zeolite_13X_alt.cif"
+    second.write_text("data_Zeolite_13X_alt\n", encoding="utf-8")
+    resp_lib.add(resp_lib.POST, _UPSERT_URL, json=_upsert_report(), status=200)
+    api.upsert_material_bundles({"material": {"name": "Zeolite_13X"}},
+                                cif_files=[cif_file, second])
+    fields = _multipart_fields(resp_lib.calls[0].request)
+    rows = json.loads(fields["bundle"])["cifs"]
+    assert [r["file"] for r in rows] == ["cif_0_0", "cif_0_1"]
+    # Only the first CIF a material gets is marked primary
+    assert [r["primary"] for r in rows] == [True, False]
+    assert fields["cif_0_1"] == b"data_Zeolite_13X_alt\n"
+
+
+def test_upsert_material_bundles_rejects_cif_row_with_content_and_file(api, cif_file):
+    bundle = {"material": {"name": "Zeolite_13X"},
+              "cifs": [{"filename": "cifs/Zeolite_13X.cif",
+                        "content": "data_Zeolite_13X", "file": "part"}]}
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        api.upsert_material_bundles(bundle, cif_files=cif_file)
+
+
+def test_upsert_material_bundles_rejects_non_list_cifs(api, cif_file):
+    with pytest.raises(ValueError, match=r"\['cifs'\] must be a list"):
+        api.upsert_material_bundles({"material": {"name": "Z"}, "cifs": {}},
+                                    cif_files=cif_file)
+
+
+# ── CIF metadata derivation ───────────────────────────────────────────────────
+
+@pytest.mark.skipif(
+    os.getenv("CI", "").lower() == "true",
+    reason="Offline development fixture test is disabled in CI",
+)
+def test_parse_cif_metadata_reproduces_stored_row():
+    """The client derives exactly what the stored cifs row carries."""
+    with open(_CIF_FIXTURE, "r", encoding="utf-8") as f:
+        derived = _parse_cif_metadata(f.read())
+    stored = _load_bundle_fixture()["cifs"][0]
+    for column, value in derived.items():
+        assert stored[column] == value, f"{column}: {value!r} != {stored[column]!r}"
+    # Everything structural is covered; only identity/provenance is left to the server
+    assert {k for k, v in stored.items() if v not in (None, "", [])} - set(derived) == {
+        "id", "mof", "tags", "primary", "filename", "file_url", "uploaded_at"}
+
+
+def test_parse_cif_metadata_fields(cif_file):
+    derived = _parse_cif_metadata(cif_file.read_text(encoding="utf-8"))
+    assert derived == {
+        "cell_length_a": 25.077, "cell_length_b": 25.077, "cell_length_c": 25.077,
+        "cell_angle_alpha": 90.0, "cell_angle_beta": 90.0, "cell_angle_gamma": 90.0,
+        "cell_volume": 15769.8,
+        "symmetry_cell_setting": "cubic",
+        "symmetry_space_group_name_Hall": "P 1",
+        "symmetry_space_group_name_H_M": "P 1",
+        "symmetry_Int_Tables_number": 1,
+        # legacy _symmetry_* names also fill the modern space group columns
+        "space_group_name_Hall": "P 1",
+        "space_group_name_H_M_alt": "P 1",
+        # counted from the atom loop, alphabetically, with explicit counts
+        "chemical_formula_descriptive": "Al1 Na1 O2 Si1",
+        "chemical_formula": "Al1Na1O2Si1",
+        "chemical_formula_sum": "Al1Na1O2Si1",
+    }
+
+
+def test_parse_cif_metadata_uses_type_symbol_not_site_label():
+    # 'O2Al' is a site label for an oxygen, not an aluminium
+    text = ("loop_\n_atom_site_label\n_atom_site_type_symbol\n"
+            "O2Al O\nO1Si O\nAL1 Al\n")
+    assert _parse_cif_metadata(text)["chemical_formula"] == "Al1O2"
+
+
+def test_parse_cif_metadata_handles_quirks():
+    text = ("data_x\n"
+            "_cell_length_a 25.077(3)\n"        # uncertainty
+            "_cell_volume ?\n"                  # unknown
+            "_chemical_name_common .\n"         # inapplicable
+            "_chemical_formula_sum 'Al2 O3'\n"  # explicit tag wins
+            "_symmetry_Int_Tables_number 1\n"
+            "loop_\n_atom_site_type_symbol\nO2-\nO2-\nAl3+\n")
+    derived = _parse_cif_metadata(text)
+    assert derived["cell_length_a"] == 25.077
+    assert "cell_volume" not in derived and "chemical_name_common" not in derived
+    assert derived["chemical_formula_sum"] == "Al2 O3"
+    assert derived["chemical_formula"] == "Al1O2"   # still counted from the loop
+
+
+def test_parse_cif_metadata_ignores_text_blocks():
+    text = ("data_x\n_audit_note\n;\n_cell_length_a 99\n;\n_cell_length_a 25.077\n")
+    assert _parse_cif_metadata(text)["cell_length_a"] == 25.077
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_derives_metadata_over_stale_row(api, cif_file):
+    resp_lib.add(resp_lib.POST, _UPSERT_URL, json=_upsert_report(), status=200)
+    bundle = {"material": {"name": "Zeolite_13X"},
+              "cifs": [{"id": 18710, "filename": "cifs/Zeolite_13X.cif",
+                        "chemical_formula": "Stale99", "cell_length_a": 1.0,
+                        "tags": ["MOFevaluator"]}]}
+    api.upsert_material_bundles(bundle, cif_files=cif_file)
+    row = json.loads(_multipart_fields(resp_lib.calls[0].request)["bundle"])["cifs"][0]
+    assert row["chemical_formula"] == "Al1Na1O2Si1"
+    assert row["cell_length_a"] == 25.077
+    # identity and curated fields are untouched
+    assert row["id"] == 18710 and row["tags"] == ["MOFevaluator"]
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_derive_fill_keeps_set_values(api, cif_file):
+    resp_lib.add(resp_lib.POST, _UPSERT_URL, json=_upsert_report(), status=200)
+    bundle = {"material": {"name": "Zeolite_13X"},
+              "cifs": [{"filename": "cifs/Zeolite_13X.cif",
+                        "chemical_formula": "KeepMe", "cell_volume": None}]}
+    api.upsert_material_bundles(bundle, cif_files=cif_file,
+                                derive_cif_metadata="fill")
+    row = json.loads(_multipart_fields(resp_lib.calls[0].request)["bundle"])["cifs"][0]
+    assert row["chemical_formula"] == "KeepMe"      # already set, left alone
+    assert row["cell_volume"] == 15769.8            # was None, filled
+    assert row["cell_length_a"] == 25.077           # absent, filled
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_derive_disabled(api, cif_file):
+    resp_lib.add(resp_lib.POST, _UPSERT_URL, json=_upsert_report(), status=200)
+    bundle = {"material": {"name": "Zeolite_13X"},
+              "cifs": [{"filename": "cifs/Zeolite_13X.cif", "chemical_formula": "Stale99"}]}
+    api.upsert_material_bundles(bundle, cif_files=cif_file, derive_cif_metadata=False)
+    row = json.loads(_multipart_fields(resp_lib.calls[0].request)["bundle"])["cifs"][0]
+    assert row == {"filename": "cifs/Zeolite_13X.cif", "chemical_formula": "Stale99",
+                   "file": "cif_0_0"}
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_derives_from_inline_content(api):
+    """A bundle read with include_cif_content=true carries its own structure."""
+    resp_lib.add(resp_lib.PUT, _UPSERT_URL, json=_upsert_report(), status=200)
+    bundle = {"material": {"name": "Zeolite_13X"},
+              "cifs": [{"filename": "cifs/Zeolite_13X.cif", "content": _SAMPLE_CIF}]}
+    api.upsert_material_bundles(bundle)
+    row = json.loads(resp_lib.calls[0].request.body)["cifs"][0]
+    assert row["chemical_formula"] == "Al1Na1O2Si1"
+    assert row["symmetry_cell_setting"] == "cubic"
+
+
+@resp_lib.activate
+def test_upsert_material_bundles_inline_cifs_derive_once(api, cif_file):
+    resp_lib.add(resp_lib.PUT, _UPSERT_URL, json=_upsert_report(), status=200)
+    api.upsert_material_bundles({"material": {"name": "Zeolite_13X"}},
+                                cif_files=cif_file, inline_cifs=True)
+    row = json.loads(resp_lib.calls[0].request.body)["cifs"][0]
+    assert row["content"] == _SAMPLE_CIF
+    assert row["chemical_formula"] == "Al1Na1O2Si1"
+
+
+def test_upsert_material_bundles_rejects_bad_derive_mode(api):
+    with pytest.raises(ValueError, match="derive_cif_metadata must be"):
+        api.upsert_material_bundles(_minimal_bundle(), derive_cif_metadata="yes")

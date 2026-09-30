@@ -180,6 +180,7 @@ All methods below are available on `api.v2`.
 - `get_material_property_bundle(mof, sim_or_exp=None, good_structure=None, limit=500, offset=0, query=None)`
 - `get_material_bundle(mof, sim_or_exp=None, good_structure=None, limit=500, offset=0, query=None, include_cif=False, include_cif_text=False, cif_timeout=60)`
 - `get_material_bundles(names=None, ids=None, sections=None, exclude=None, include_cif_content=False, match='exact', output='json', save_path=None, use_post=False, timeout=300)` — server-side bundle endpoints; accepts one name or a list of names
+- `upsert_material_bundles(bundles, cif_files=None, create_materials=True, strip_ids=False, inline_cifs=False, derive_cif_metadata=True, tag_names=None, method=None, timeout=300)` — write counterpart of `get_material_bundles`; takes the same document the read endpoint returns, with optional CIF upload
 - `preflight_material_check(name)`
 
 ### Case bundles and pack builders
