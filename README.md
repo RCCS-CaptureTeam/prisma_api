@@ -161,6 +161,7 @@ Module-level helpers exported from the package:
 - `prisma_api.update_dev_mode`
 - `prisma_api.update_dev_host_port`
 - `prisma_api.locate_config`
+- `prisma_api.PrismaUpsertError`, `prisma_api.PrismaRowErrorWarning`, `prisma_api.PrismaUnknownFieldsWarning`, `prisma_api.PrismaNewStructureWarning`
 
 ## v2 wrapper list
 
@@ -245,6 +246,24 @@ All methods below are available on `api.v2`.
 - `get_carbon_zeopp_item(item_id)`
 - `get_carbon_zeopp_experimental(mof=None, limit=500, offset=0)`
 - `get_carbon_zeopp_experimental_item(item_id)`
+
+### AutoPrism tables
+
+- `get_computation_runs(workflow_id=None, step=None, status=None, limit=500, offset=0)` / `get_computation_run(run_id)`
+- `upsert_computation_runs(payload, timeout=None, raise_on_error=False)`
+- `get_adsorption_singlepoint(...)` / `get_adsorption_singlepoint_item(row_id)` / `upsert_adsorption_singlepoint(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
+- `get_heat_capacity(...)` / `get_heat_capacity_item(row_id)` / `upsert_heat_capacity(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
+- `get_isotherm_h2(...)` / `get_isotherm_h2_item(row_id)` / `upsert_isotherm_h2(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)` — H2 only
+- `get_adsorption_isotherm(structure=None, isotherm_id=None, component=None, temperature_K=None, pressure_bar=None, limit=500, offset=0, md5=None)` / `get_adsorption_isotherm_item(row_id)` / `upsert_adsorption_isotherm(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)` — every gas except H2; needs prisma_cloud **>= 0.6.16** (older servers return 404)
+- `get_mofchecker(...)` / `get_mofchecker_item(row_id)` / `upsert_mofchecker(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
+- `get_zeopp_metrics(...)` / `get_zeopp_metrics_item(row_id)` / `upsert_zeopp_metrics(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
+- `get_autoprism_collection(...)` / `upsert_autoprism_collection(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
+
+Rejected rows (HTTP 207, or 400 when nothing is stored) raise
+`PrismaUpsertError` with `raise_on_error=True`, else emit
+`PrismaRowErrorWarning`. Ignored payload fields and newly created MOF records
+emit `PrismaUnknownFieldsWarning` / `PrismaNewStructureWarning`. See
+[API_REFERENCE_V2.md](API_REFERENCE_V2.md#autoprism-tables).
 
 ### TEA, LCA, cases, and scenarios
 
@@ -353,7 +372,8 @@ pytest tests/ -v --cov=prisma_api --cov-report=term-missing
 
 ## Additional documentation
 
-- [API_REFERENCE.md](API_REFERENCE.md)
+- [API_REFERENCE_V1.md](API_REFERENCE_V1.md)
+- [API_REFERENCE_V2.md](API_REFERENCE_V2.md)
 - [DEVELOPMENT_SUMMARY.md](DEVELOPMENT_SUMMARY.md)
 - [User Guide.md](User%20Guide.md)
 
@@ -361,4 +381,5 @@ pytest tests/ -v --cov=prisma_api --cov-report=term-missing
 
 - Production v2 base URL: `https://prisma-platform.org/api/v2`
 - Authentication header: `X-API-Key`
-- Local development routing is controlled through config and `api.update_dev_mode(True)`
+- Local development routing is selected with `prisma_api.init(local_dev=True)`; the default targets production
+- 0.4.4: the `adsorption-isotherm` endpoints and the 400/notice handling need prisma_cloud >= 0.6.16

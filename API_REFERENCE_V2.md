@@ -517,12 +517,23 @@ api.v2.get_carbon_zeopp_experimental_item(1)
 
 ### AutoPrism Tables
 
+> `adsorption-isotherm`, the HTTP 400 "no rows stored" response, match-by-value
+> for `mixture`/`config`, and the `unknown_fields` / `new_structures` notices
+> need prisma_cloud **>= 0.6.16**. Older servers return 404 for
+> `adsorption-isotherm`.
+
 AutoPrism table upserts share one signature:
 
 ```python
 api.v2.upsert_<table>(payload, meta_provenance=None, repo_dir=None, timeout=None,
                       raise_on_error=False, check_ids=True)
 ```
+
+`payload` may be a `dict`, `list[dict]`, `pd.DataFrame`, or the collection
+form `{"<collection key>": [...]}`. All fields are forwarded unchanged except
+`meta_provenance`.
+
+#### Provenance
 
 Every row's `meta_provenance` is replaced with:
 
@@ -545,41 +556,87 @@ api.v2.upsert_zeopp_metrics(rows, meta_provenance={
 })
 ```
 
-**Nested objects and `id`s.** The server creates or updates these nested
-objects *by their `id`*, and rejects a row whose nested object has none:
+#### Lookup keys
 
-| Nested object | Keyed by |
+The server keeps **one row per configuration**: an upsert updates the stored
+row with the same lookup key, otherwise it creates a new one. A new `config`,
+zeo++ `scale` or CIF `md5` therefore adds a row rather than replacing the
+earlier result.
+
+| Method | Lookup key | Send to avoid overwrites/ambiguity |
+|---|---|---|
+| `upsert_adsorption_singlepoint` | structure, md5, mixture, config, component, temperature_K, pressure_bar | `config` / `config_hash` |
+| `upsert_heat_capacity` | structure, md5, temperature_K | `md5` |
+| `upsert_isotherm_h2` | structure, md5, isotherm_id, component, temperature_K, pressure_bar | — |
+| `upsert_adsorption_isotherm` | structure, md5, isotherm_id, config, component, temperature_K, pressure_bar | `config` |
+| `upsert_mofchecker` | structure, md5 | — |
+| `upsert_zeopp_metrics` | mof, md5, probe, scale | `scale` |
+
+If a row leaves out a key field and more than one stored row matches, the
+server rejects that row as ambiguous; it appears in `errors`.
+
+#### Nested objects
+
+| Nested object | Identified by |
 |---|---|
 | `run` | `id` (required) |
 | `run.workflow` | `id` (required) |
 | `result` | `id` (required) |
-| `mixture` | `id` (required) |
-| `config` | `id` (required) |
-| `structure` | `id`, or `name` |
+| `mixture` | `id`, or `mixture_id` (nested, or flat on the row) |
+| `config` | `id`, or `config_hash` (nested, or flat on the row) |
+| `structure` | MOF pk (`id`), or exact `name` |
 
-Derive these `id`s from the content so repeat uploads update the same records
-instead of creating new ones, e.g.:
+- `mixture` / `config` without an `id` are matched by value, or created with
+  an id derived from the value, so every client converges on the same record.
+- For `run`, `run.workflow` and `result`, derive the `id` from the content so
+  repeat uploads update the same records:
 
-```python
-import uuid
-NS = uuid.uuid5(uuid.NAMESPACE_URL, "https://github.com/<org>/<repo>/runs")
-row["mixture"] = {"id": str(uuid.uuid5(NS, f"mixture:{mixture_id}")), "mixture_id": mixture_id}
-row["config"] = {"id": str(uuid.uuid5(NS, f"config:{config_hash}")), "config_hash": config_hash}
-```
+  ```python
+  import uuid
+  NS = uuid.uuid5(uuid.NAMESPACE_URL, "https://github.com/<org>/<repo>/runs")
+  row["run"] = {"id": str(uuid.uuid5(NS, f"{step}:{key}")),
+                "workflow": {"id": str(uuid.uuid5(NS, f"workflow:{step}"))}}
+  ```
+
+- `structure` names match exactly (`LAGNAK` and `LAGNAK_clean` are different
+  MOFs). An unknown name **creates a MOF** (see `new_structures` below). Only
+  `id` and `name` are read from `structure`; other keys (e.g. `source`) are
+  not stored.
 
 With `check_ids=True` (default) the client raises `ValueError` before sending
-if any of the required `id`s is missing. Only `id` and `name` are read from
-`structure`; other keys there (e.g. `source`) are not stored.
+if a row breaks these rules. Pass `check_ids=False` to skip the check.
 
-**Rejected rows (HTTP 207).** If the server rejects some or all rows it still
-answers with HTTP 207 and `{"created": n, "updated": m, "errors": [{"item": ..., "errors": {...}}]}`.
-The upsert then emits a `prisma_api.PrismaRowErrorWarning` and returns that
-body, or raises `prisma_api.PrismaUpsertError` (with `.result` set to the
-body) when `raise_on_error=True`. `upsert_computation_runs` behaves the same.
-Always check `result.get("errors")` if you neither raise nor watch warnings.
+#### Responses, rejected rows and warnings
+
+Response body: `created`, `updated`, and when non-empty `errors`
+(`[{"item": ..., "errors": {...}}]`), `unknown_fields` and `new_structures`.
+
+| Status | Meaning | Client behaviour |
+|---|---|---|
+| 200 | All rows stored | Returns the body |
+| 207 | Some rows rejected | Returns the body; `PrismaRowErrorWarning` |
+| 400 with `errors` | **No rows stored** | Returns the body; `PrismaRowErrorWarning` saying "no rows stored" |
+| 400 without `errors`, other 4xx/5xx | Request failed | Raises `requests.HTTPError` |
+
+With `raise_on_error=True`, rejected rows raise `prisma_api.PrismaUpsertError`
+instead (a `RuntimeError`; `.result` holds the body). `upsert_computation_runs`
+behaves the same. Other v2 upserts (flowsheets, TEA/LCA tables, material
+bundles) keep raising `requests.HTTPError` on any 400; the body is on
+`exc.response`.
+
+Server notices are warnings only, never errors (`raise_on_error` does not
+apply):
+
+- `prisma_api.PrismaUnknownFieldsWarning` — `unknown_fields`
+  (`{field: row_count}`) lists payload keys the server did not store, i.e.
+  schema drift. `meta_provenance` is never listed.
+- `prisma_api.PrismaNewStructureWarning` — `new_structures` lists MOF names
+  this request created because the `structure` name matched no existing MOF.
 
 Example payloads (generated from a real AutoPrism export):
 `reference_data/autoprism/01/mock_payload_*.json`.
+
+---
 
 #### `api.v2.get_computation_runs(workflow_id=None, step=None, status=None, limit=500, offset=0)` / `api.v2.get_computation_run(run_id)`
 
@@ -594,7 +651,7 @@ api.v2.get_computation_run(7)
 
 PUT wrapper for `/api/v2/computation-runs/`. `payload` may be a `dict`,
 `list[dict]`, or `pd.DataFrame`. All provided fields are forwarded unchanged,
-including newly introduced server fields.
+including newly introduced server fields. Rejected rows are handled as above.
 
 ```python
 api.v2.upsert_computation_runs({
@@ -614,10 +671,8 @@ api.v2.get_adsorption_singlepoint(structure='ABEXEM', component='CO2')
 ```
 
 `api.v2.get_adsorption_singlepoint_item(row_id)` returns one row by id.
-
-`api.v2.upsert_adsorption_singlepoint(payload, meta_provenance=None, ...)` upserts one-or-many rows via
-`dict`, `list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged
-except `meta_provenance` (see above).
+`api.v2.upsert_adsorption_singlepoint(payload, ...)` — collection key
+`adsorption_singlepoints`.
 
 ---
 
@@ -628,24 +683,38 @@ api.v2.get_heat_capacity(structure='ABEXEM', temperature_K=298.0)
 ```
 
 `api.v2.get_heat_capacity_item(row_id)` returns one row by id.
-
-`api.v2.upsert_heat_capacity(payload, meta_provenance=None, ...)` upserts one-or-many rows via `dict`,
-`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged
-except `meta_provenance` (see above).
+`api.v2.upsert_heat_capacity(payload, ...)` — collection key
+`heat_capacities`.
 
 ---
 
 #### `api.v2.get_isotherm_h2(structure=None, isotherm_id=None, component=None, temperature_K=None, pressure_bar=None, limit=500, offset=0)`
+
+H2 isotherms only; other gases are in `adsorption_isotherm`.
 
 ```python
 api.v2.get_isotherm_h2(structure='ABEXEM', component='H2')
 ```
 
 `api.v2.get_isotherm_h2_item(row_id)` returns one row by id.
+`api.v2.upsert_isotherm_h2(payload, ...)` — collection key `isotherm_H2s`.
 
-`api.v2.upsert_isotherm_h2(payload, meta_provenance=None, ...)` upserts one-or-many rows via `dict`,
-`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged
-except `meta_provenance` (see above).
+---
+
+#### `api.v2.get_adsorption_isotherm(structure=None, isotherm_id=None, component=None, temperature_K=None, pressure_bar=None, limit=500, offset=0, md5=None)`
+
+Isotherms for **every gas except H2** (prisma_cloud >= 0.6.16). Same row shape
+as isotherm-h2, with the gas in `component`, which is required on upload. The
+`component` filter is an exact match, so `'H2'` won't return `'H2O'`.
+
+```python
+api.v2.get_adsorption_isotherm(structure='ABEXEM', component='CO2')
+```
+
+`api.v2.get_adsorption_isotherm_item(row_id)` returns one row by id.
+`api.v2.upsert_adsorption_isotherm(payload, ...)` — collection key
+`adsorption_isotherms`. The server rejects `component == "H2"` rows here; send
+them to `upsert_isotherm_h2`.
 
 ---
 
@@ -656,10 +725,12 @@ api.v2.get_mofchecker(structure='ABEXEM', is_mof=True)
 ```
 
 `api.v2.get_mofchecker_item(row_id)` returns one row by id.
-
-`api.v2.upsert_mofchecker(payload, meta_provenance=None, ...)` upserts one-or-many rows via `dict`,
-`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged
-except `meta_provenance` (see above).
+`api.v2.upsert_mofchecker(payload, ...)` — collection key `mofchecker`. The
+server stores the formal-charge columns `positive_charge_from_linkers`,
+`negative_charge_from_linkers`, `linker_formal_charge`,
+`implied_metal_oxidation_sum`, `implied_metal_oxidation_per_metal`,
+`formal_charge_plausible`, `formal_charge_reason`, `has_high_charges`,
+`cif_net_atom_site_charge` and `cif_charge_neutral`.
 
 ---
 
@@ -670,10 +741,8 @@ api.v2.get_zeopp_metrics(mof='ABEXEM', probe='N2')
 ```
 
 `api.v2.get_zeopp_metrics_item(row_id)` returns one row by id.
-
-`api.v2.upsert_zeopp_metrics(payload, meta_provenance=None, ...)` upserts one-or-many rows via `dict`,
-`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged
-except `meta_provenance` (see above).
+`api.v2.upsert_zeopp_metrics(payload, ...)` — collection key
+`zeopp_metrics`.
 
 ---
 
@@ -682,14 +751,19 @@ except `meta_provenance` (see above).
 Fetches AutoPrism records in one call and returns a dict with:
 
 - `computation_runs`
-- `adsorption_singlepoint`
-- `heat_capacity`
-- `isotherm_H2`
+- `adsorption_singlepoints`
+- `heat_capacities`
+- `isotherm_H2s`
+- `adsorption_isotherms`
 - `mofchecker`
 - `zeopp_metrics`
+- `meta_provenance`
 
-If `structure` is omitted and `mof` is provided, `mof` is also used as the
-structure filter for non-ZeoPP AutoPrism endpoints.
+`structure` filters adsorption_singlepoint, heat_capacity, isotherm_h2,
+adsorption_isotherm and mofchecker; `mof` filters zeopp_metrics. If
+`structure` is omitted and `mof` is provided, `mof` is used for both. A section
+whose request fails is returned empty with a `UserWarning` (e.g.
+`adsorption_isotherms` against a server older than 0.6.16).
 
 ```python
 bundle = api.v2.get_autoprism_collection(
@@ -699,7 +773,7 @@ bundle = api.v2.get_autoprism_collection(
     probe='N2',
 )
 
-bundle['mofchecker']
+bundle['adsorption_isotherms']
 bundle['zeopp_metrics']
 ```
 
@@ -709,16 +783,21 @@ bundle['zeopp_metrics']
 
 Upserts every section present in a combined AutoPrism payload
 (`computation_runs`, `adsorption_singlepoints`, `heat_capacities`,
-`isotherm_H2s`, `mofchecker`, `zeopp_metrics`). Provenance for the five
-AutoPrism tables comes from, in order: the `meta_provenance` argument, the
-payload's top-level `meta_provenance`, then git in `repo_dir` / the current
-directory.
+`isotherm_H2s`, `adsorption_isotherms`, `mofchecker`, `zeopp_metrics`).
+
+An `isotherms` key may hold isotherm rows for mixed gases: rows with
+`component == "H2"` are added to `isotherm_H2s`, the rest to
+`adsorption_isotherms`.
+
+Provenance for the AutoPrism tables comes from, in order: the
+`meta_provenance` argument, the payload's top-level `meta_provenance`, then
+git in `repo_dir` / the current directory.
 
 A section fails if its request raises or if the server rejects any of its
-rows (HTTP 207 `errors`). A failed section has `status: "error"` (nothing
-written) or `"partial"` (some rows written), plus `rejected` (count) and
-`errors` (the first few row errors). `totals["rejected"]` counts rejected rows
-across sections.
+rows (HTTP 207, or 400 when no row is stored). A failed section has
+`status: "error"` (nothing written) or `"partial"` (some rows written), plus
+`rejected` (count) and `errors` (the first few row errors).
+`totals["rejected"]` counts rejected rows across sections.
 
 Failures **do not raise by default**: `overall_status` is `"partial_failure"`
 and one `PrismaRowErrorWarning` summarises any rejected rows. Pass
@@ -726,9 +805,15 @@ and one `PrismaRowErrorWarning` summarises any rejected rows. Pass
 `RuntimeError`) once all sections have been attempted; its `.result` holds the
 summary. `check_ids` is passed to every table upsert.
 
+Server notices are collected rather than warned per table: each section's
+summary carries its `unknown_fields` / `new_structures`,
+`totals["new_structures"]` is the sorted union of names, and one combined
+`PrismaUnknownFieldsWarning` / `PrismaNewStructureWarning` is emitted per kind.
+
 ```python
 result = api.v2.upsert_autoprism_collection(payload, raise_on_error=True)
-result['totals']   # {'created': ..., 'updated': ..., 'rejected': 0, 'failed_sections': 0}
+result['totals']
+# {'created': ..., 'updated': ..., 'rejected': 0, 'failed_sections': 0, 'new_structures': []}
 ```
 
 ---

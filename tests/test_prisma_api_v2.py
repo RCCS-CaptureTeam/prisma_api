@@ -1358,6 +1358,21 @@ def test_get_autoprism_collection_returns_all_records(api):
     )
     resp_lib.add(
         resp_lib.GET,
+        f"{PROD_BASE}/adsorption-isotherm/",
+        match=[matchers.query_param_matcher({
+            "structure": "ABEXEM",
+            "isotherm_id": "iso-1",
+            "component": "CO2",
+            "temperature_K": "298.0",
+            "pressure_bar": "1.0",
+            "limit": "50",
+            "offset": "0",
+        })],
+        json=_envelope([{"id": 6, "structure": "ABEXEM", "component": "CO2"}]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
         f"{PROD_BASE}/mofchecker/",
         match=[matchers.query_param_matcher({
             "structure": "ABEXEM",
@@ -1408,6 +1423,7 @@ def test_get_autoprism_collection_returns_all_records(api):
         "adsorption_singlepoints",
         "heat_capacities",
         "isotherm_H2s",
+        "adsorption_isotherms",
         "mofchecker",
         "zeopp_metrics",
         "meta_provenance",
@@ -1416,6 +1432,7 @@ def test_get_autoprism_collection_returns_all_records(api):
     assert len(bundle["adsorption_singlepoints"]) == 1
     assert len(bundle["heat_capacities"]) == 1
     assert len(bundle["isotherm_H2s"]) == 1
+    assert len(bundle["adsorption_isotherms"]) == 1
     assert len(bundle["mofchecker"]) == 1
     assert len(bundle["zeopp_metrics"]) == 1
 
@@ -1446,6 +1463,13 @@ def test_get_autoprism_collection_uses_mof_as_structure_fallback(api):
     resp_lib.add(
         resp_lib.GET,
         f"{PROD_BASE}/isotherm-h2/",
+        match=[matchers.query_param_matcher({"structure": "HKUST", "limit": "500", "offset": "0"})],
+        json=_envelope([]),
+        status=200,
+    )
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/adsorption-isotherm/",
         match=[matchers.query_param_matcher({"structure": "HKUST", "limit": "500", "offset": "0"})],
         json=_envelope([]),
         status=200,
@@ -1526,6 +1550,7 @@ def test_autoprism_detail_endpoints(api):
         ("/adsorption-singlepoint/1/", "get_adsorption_singlepoint_item", {"id": 1, "structure": "ABEXEM"}),
         ("/heat-capacity/2/", "get_heat_capacity_item", {"id": 2, "structure": "ABEXEM"}),
         ("/isotherm-h2/3/", "get_isotherm_h2_item", {"id": 3, "structure": "ABEXEM"}),
+        ("/adsorption-isotherm/6/", "get_adsorption_isotherm_item", {"id": 6, "structure": "ABEXEM"}),
         ("/mofchecker/4/", "get_mofchecker_item", {"id": 4, "structure": "ABEXEM"}),
         ("/zeopp-metrics/5/", "get_zeopp_metrics_item", {"id": 5, "mof": "ABEXEM"}),
     ]
@@ -1536,6 +1561,7 @@ def test_autoprism_detail_endpoints(api):
     assert api.get_adsorption_singlepoint_item(1)["id"] == 1
     assert api.get_heat_capacity_item(2)["id"] == 2
     assert api.get_isotherm_h2_item(3)["id"] == 3
+    assert api.get_adsorption_isotherm_item(6)["id"] == 6
     assert api.get_mofchecker_item(4)["id"] == 4
     assert api.get_zeopp_metrics_item(5)["id"] == 5
 
@@ -1716,6 +1742,7 @@ def test_upsert_autoprism_collection_dispatches_sections(api, monkeypatch):
     monkeypatch.setattr(api, "upsert_adsorption_singlepoint", _fake("adsorption", {"created": 2, "updated": 0}))
     monkeypatch.setattr(api, "upsert_heat_capacity", _fake("heat", {"created": 0, "updated": 3}))
     monkeypatch.setattr(api, "upsert_isotherm_h2", _fake("h2", {"created": 4, "updated": 1}))
+    monkeypatch.setattr(api, "upsert_adsorption_isotherm", _fake("iso", {"created": 7, "updated": 0}))
     monkeypatch.setattr(api, "upsert_mofchecker", _fake("mofchecker", {"created": 5, "updated": 0}))
     monkeypatch.setattr(api, "upsert_zeopp_metrics", _fake("zeopp", {"created": 6, "updated": 2}))
 
@@ -1725,6 +1752,7 @@ def test_upsert_autoprism_collection_dispatches_sections(api, monkeypatch):
         "adsorption_singlepoints": [{"id": 1}],
         "heat_capacities": [{"id": 2}],
         "isotherm_H2s": [{"id": 3}],
+        "adsorption_isotherms": [{"id": 6}],
         "mofchecker": [{"id": 4}],
         "zeopp_metrics": [{"id": 5}],
         "meta_provenance": top_level_meta,
@@ -1733,13 +1761,14 @@ def test_upsert_autoprism_collection_dispatches_sections(api, monkeypatch):
     result = api.upsert_autoprism_collection(payload)
 
     assert result["overall_status"] == "ok"
-    assert result["totals"]["created"] == 18
+    assert result["totals"]["created"] == 25
     assert result["totals"]["updated"] == 6
     assert result["totals"]["failed_sections"] == 0
     assert result["sections"]["zeopp_metrics"]["status"] == "ok"
     assert result["sections"]["mofchecker"]["status"] == "ok"
+    assert result["sections"]["adsorption_isotherms"]["status"] == "ok"
     # Top-level meta_provenance is passed down to every AutoPrism table.
-    for name in ("adsorption", "heat", "h2", "mofchecker", "zeopp"):
+    for name in ("adsorption", "heat", "h2", "iso", "mofchecker", "zeopp"):
         assert calls[name]["meta_provenance"] == top_level_meta
     assert "meta_provenance" not in calls["computation_runs"]
 
@@ -1895,6 +1924,7 @@ def test_get_autoprism_collection_allows_empty_payloads(api, monkeypatch):
     monkeypatch.setattr(api, "get_adsorption_singlepoint", lambda **kwargs: None)
     monkeypatch.setattr(api, "get_heat_capacity", lambda **kwargs: {"results": []})
     monkeypatch.setattr(api, "get_isotherm_h2", lambda **kwargs: 0)
+    monkeypatch.setattr(api, "get_adsorption_isotherm", lambda **kwargs: None)
     monkeypatch.setattr(api, "get_mofchecker", lambda **kwargs: [])
     monkeypatch.setattr(api, "get_zeopp_metrics", lambda **kwargs: pd.DataFrame())
 
@@ -1905,6 +1935,7 @@ def test_get_autoprism_collection_allows_empty_payloads(api, monkeypatch):
         "adsorption_singlepoints",
         "heat_capacities",
         "isotherm_H2s",
+        "adsorption_isotherms",
         "mofchecker",
         "zeopp_metrics",
         "meta_provenance",
@@ -1913,6 +1944,7 @@ def test_get_autoprism_collection_allows_empty_payloads(api, monkeypatch):
     assert len(collection["adsorption_singlepoints"]) == 0
     assert len(collection["heat_capacities"]) == 0
     assert len(collection["isotherm_H2s"]) == 0
+    assert len(collection["adsorption_isotherms"]) == 0
     assert len(collection["mofchecker"]) == 0
     assert len(collection["zeopp_metrics"]) == 0
 
@@ -1927,6 +1959,7 @@ def test_get_autoprism_collection_tolerates_endpoint_http_error(api, monkeypatch
     monkeypatch.setattr(api, "get_adsorption_singlepoint", lambda **kwargs: [{"id": 1}])
     monkeypatch.setattr(api, "get_heat_capacity", lambda **kwargs: [{"id": 2}])
     monkeypatch.setattr(api, "get_isotherm_h2", lambda **kwargs: [{"id": 3}])
+    monkeypatch.setattr(api, "get_adsorption_isotherm", _raise_http_error)
     monkeypatch.setattr(api, "get_mofchecker", lambda **kwargs: [{"id": 4}])
     monkeypatch.setattr(api, "get_zeopp_metrics", lambda **kwargs: [{"id": 5}])
 
@@ -1936,6 +1969,7 @@ def test_get_autoprism_collection_tolerates_endpoint_http_error(api, monkeypatch
     assert len(collection["adsorption_singlepoints"]) == 1
     assert len(collection["heat_capacities"]) == 1
     assert len(collection["isotherm_H2s"]) == 1
+    assert len(collection["adsorption_isotherms"]) == 0
     assert len(collection["mofchecker"]) == 1
     assert len(collection["zeopp_metrics"]) == 1
 
@@ -1945,6 +1979,7 @@ def test_get_autoprism_collection_includes_mofchecker_payload_shape(api, monkeyp
     monkeypatch.setattr(api, "get_adsorption_singlepoint", lambda **kwargs: [])
     monkeypatch.setattr(api, "get_heat_capacity", lambda **kwargs: [])
     monkeypatch.setattr(api, "get_isotherm_h2", lambda **kwargs: [])
+    monkeypatch.setattr(api, "get_adsorption_isotherm", lambda **kwargs: [])
     monkeypatch.setattr(api, "get_zeopp_metrics", lambda **kwargs: [])
     monkeypatch.setattr(
         api,
@@ -1974,6 +2009,7 @@ def test_get_autoprism_collection_includes_zeopp_payload_shape(api, monkeypatch)
     monkeypatch.setattr(api, "get_adsorption_singlepoint", lambda **kwargs: [])
     monkeypatch.setattr(api, "get_heat_capacity", lambda **kwargs: [])
     monkeypatch.setattr(api, "get_isotherm_h2", lambda **kwargs: [])
+    monkeypatch.setattr(api, "get_adsorption_isotherm", lambda **kwargs: [])
     monkeypatch.setattr(api, "get_mofchecker", lambda **kwargs: [])
     monkeypatch.setattr(
         api,
@@ -3377,21 +3413,22 @@ def test_collection_marks_207_sections_failed(no_git_meta):
     assert len(row_warnings) == 1  # one summary, not one per section
 
     assert result["overall_status"] == "partial_failure"
-    assert result["totals"] == {"created": 3, "updated": 0, "rejected": 3, "failed_sections": 2}
+    assert result["totals"] == {"created": 3, "updated": 0, "rejected": 3, "failed_sections": 2,
+                                "new_structures": []}
     assert result["sections"]["adsorption_singlepoints"]["status"] == "error"
     assert result["sections"]["adsorption_singlepoints"]["rejected"] == 1
     assert result["sections"]["heat_capacities"]["status"] == "partial"
     assert len(result["sections"]["heat_capacities"]["errors"]) == 2
     assert result["sections"]["zeopp_metrics"]["status"] == "ok"
 
-    with pytest.raises(PrismaUpsertError, match="adsorption_singlepoints: 1 row") as info:
+    with pytest.raises(PrismaUpsertError, match="adsorption_singlepoints: no rows stored; 1 row") as info:
         api.upsert_autoprism_collection(payload, raise_on_error=True)
     assert info.value.result["totals"]["rejected"] == 3
 
 
 @pytest.mark.parametrize("row, missing", [
-    ({"mixture": {"mixture_id": "m1"}}, "mixture"),
-    ({"config": {"config_hash": "abc"}}, "config"),
+    ({"mixture": {}}, "mixture"),
+    ({"config": {"config_hash": ""}}, "config"),
     ({"result": {}}, "result"),
     ({"run": {"step": "x", "workflow": {"id": "w"}}}, "run"),
     ({"run": {"id": "r", "workflow": {}}}, "run.workflow"),
@@ -3420,3 +3457,177 @@ def test_autoprism_mock_payloads_pass_id_check():
     payload = json.loads((_MOCK_DIR / "mock_payload_all_autoprism.json").read_text())
     for section in ("adsorption_singlepoints", "heat_capacities", "isotherm_H2s", "mofchecker", "zeopp_metrics"):
         _check_nested_ids(payload.get(section, []), section)
+
+
+# ── prisma_cloud 0.6.16: 400 bodies, match-by-value, adsorption_isotherm, notices ──
+
+_NO_ROWS_BODY = {
+    "created": 0,
+    "updated": 0,
+    "errors": [{"item": {"md5": "a1"}, "errors": {"structure": ["ambiguous"]}}],
+}
+
+
+@resp_lib.activate
+def test_put_returns_400_upsert_body(api):
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/heat-capacity/", json=_NO_ROWS_BODY, status=400)
+    assert api._put("/heat-capacity/", [{}], upsert_body_on_400=True) == _NO_ROWS_BODY
+
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/mofchecker/", json={"detail": "bad"}, status=400)
+    with pytest.raises(requests.HTTPError):
+        api._put("/mofchecker/", [{}], upsert_body_on_400=True)
+
+
+@resp_lib.activate
+def test_put_400_raises_for_callers_that_do_not_report_row_errors(api):
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/region-costs/", json=_NO_ROWS_BODY, status=400)
+    with pytest.raises(requests.HTTPError):
+        api.upsert_region_costs(pd.DataFrame({"region": ["UK"]}))
+
+
+@resp_lib.activate
+def test_table_upsert_warns_no_rows_stored_on_400(no_git_meta):
+    from prisma_api import PrismaRowErrorWarning
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/heat-capacity/", json=_NO_ROWS_BODY, status=400)
+    with pytest.warns(PrismaRowErrorWarning, match="no rows stored; server rejected 1 row"):
+        result = no_git_meta.upsert_heat_capacity({"md5": "a1"})
+    assert result == _NO_ROWS_BODY
+
+
+@resp_lib.activate
+def test_table_upsert_raise_on_error_400(no_git_meta):
+    from prisma_api import PrismaUpsertError
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/heat-capacity/", json=_NO_ROWS_BODY, status=400)
+    with pytest.raises(PrismaUpsertError, match="no rows stored") as info:
+        no_git_meta.upsert_heat_capacity({"md5": "a1"}, raise_on_error=True)
+    assert info.value.result == _NO_ROWS_BODY
+
+
+@resp_lib.activate
+def test_collection_marks_400_section_error(no_git_meta):
+    import warnings as _warnings
+    from prisma_api import PrismaUpsertError
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/mofchecker/", json=_NO_ROWS_BODY, status=400)
+    payload = {"mofchecker": [{"md5": "a1"}]}
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        result = no_git_meta.upsert_autoprism_collection(payload)
+    assert result["sections"]["mofchecker"]["status"] == "error"
+    assert result["sections"]["mofchecker"]["rejected"] == 1
+    assert result["overall_status"] == "partial_failure"
+
+    with pytest.raises(PrismaUpsertError, match="mofchecker: no rows stored"):
+        no_git_meta.upsert_autoprism_collection(payload, raise_on_error=True)
+
+
+def test_check_ids_allows_mixture_and_config_by_value():
+    from prisma_api.prisma_api_v2 import _check_nested_ids
+    _check_nested_ids([
+        {"mixture": {"mixture_id": "m1"}, "config": {"config_hash": "abc"}},
+        {"mixture": {}, "mixture_id": "m1", "config": {}, "config_hash": "abc"},  # flat fields
+    ], "adsorption_singlepoints")
+    for row in ({"mixture": {}}, {"config": {}}):
+        with pytest.raises(ValueError, match="mixture_id"):
+            _check_nested_ids([row], "adsorption_singlepoints")
+    with pytest.raises(ValueError, match="row 0: run"):
+        _check_nested_ids([{"run": {"step": "x"}}], "adsorption_singlepoints")
+
+
+@resp_lib.activate
+def test_upsert_adsorption_isotherm_puts_and_unwraps(no_git_meta):
+    rows = [{"structure": {"name": "X"}, "component": "CO2", "pressure_bar": 1.0}]
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/adsorption-isotherm/",
+        match=[matchers.json_params_matcher([{**rows[0], "meta_provenance": {}}])],
+        json={"created": 1, "updated": 0},
+    )
+    assert no_git_meta.upsert_adsorption_isotherm({"adsorption_isotherms": rows})["created"] == 1
+
+
+@resp_lib.activate
+def test_get_adsorption_isotherm_component_filter(api):
+    resp_lib.add(
+        resp_lib.GET,
+        f"{PROD_BASE}/adsorption-isotherm/",
+        match=[matchers.query_param_matcher({"component": "CO2", "limit": "500", "offset": "0"})],
+        json=_envelope([{"id": 1, "component": "CO2"}]),
+    )
+    df = api.get_adsorption_isotherm(component="CO2")
+    assert df.iloc[0]["component"] == "CO2"
+
+
+def test_collection_splits_mixed_isotherms_by_gas(api, monkeypatch):
+    sent = {}
+    monkeypatch.setattr(api, "_resolve_meta_provenance", lambda meta=None, repo_dir=None: {})
+
+    def _capture(name):
+        def _method(payload, **kwargs):
+            sent[name] = payload
+            return {"created": len(payload), "updated": 0}
+        return _method
+
+    monkeypatch.setattr(api, "upsert_isotherm_h2", _capture("h2"))
+    monkeypatch.setattr(api, "upsert_adsorption_isotherm", _capture("other"))
+    result = api.upsert_autoprism_collection({
+        "isotherms": [{"component": "H2"}, {"component": "CO2"}, {"component": "H2O"}],
+        "isotherm_H2s": [{"component": "H2", "isotherm_id": "existing"}],
+    })
+    assert [r["component"] for r in sent["h2"]] == ["H2", "H2"]
+    assert [r["component"] for r in sent["other"]] == ["CO2", "H2O"]
+    assert result["totals"]["created"] == 4
+
+
+def test_bundle_sections_include_adsorption_isotherm():
+    from prisma_api.prisma_api_v2 import _BUNDLE_READONLY_SECTIONS
+    assert _BUNDLE_SECTIONS.index("adsorption_isotherm") == _BUNDLE_SECTIONS.index("isotherm_h2") + 1
+    assert _BUNDLE_READONLY_SECTIONS["adsorption_isotherm"] == "upsert_adsorption_isotherm"
+
+
+@resp_lib.activate
+def test_upsert_warns_unknown_fields(no_git_meta):
+    from prisma_api import PrismaUnknownFieldsWarning
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/zeopp-metrics/",
+                 json={"created": 1, "updated": 0, "unknown_fields": {"foo": 1}})
+    with pytest.warns(PrismaUnknownFieldsWarning, match="/zeopp-metrics/.*foo"):
+        no_git_meta.upsert_zeopp_metrics({"mof": "X", "foo": 1})
+
+
+@resp_lib.activate
+def test_upsert_warns_new_structures(no_git_meta):
+    import warnings as _warnings
+    from prisma_api import PrismaNewStructureWarning
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/heat-capacity/",
+                 json={"created": 1, "updated": 0, "new_structures": ["NEWMOF"]})
+    with pytest.warns(PrismaNewStructureWarning, match="NEWMOF"):
+        no_git_meta.upsert_heat_capacity({"structure": {"name": "NEWMOF"}})
+    # raise_on_error does not apply to notices.
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        no_git_meta.upsert_heat_capacity({"structure": {"name": "NEWMOF"}}, raise_on_error=True)
+
+
+@resp_lib.activate
+def test_collection_summarises_unknown_fields_and_new_structures(no_git_meta):
+    import warnings as _warnings
+    from prisma_api import PrismaNewStructureWarning, PrismaUnknownFieldsWarning
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/heat-capacity/",
+                 json={"created": 1, "updated": 0, "new_structures": ["B", "A"]})
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/mofchecker/",
+                 json={"created": 1, "updated": 0, "new_structures": ["A"],
+                       "unknown_fields": {"structure.source_db": 1}})
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        result = no_git_meta.upsert_autoprism_collection({
+            "heat_capacities": [{"md5": "a"}], "mofchecker": [{"md5": "a"}],
+        })
+
+    assert result["overall_status"] == "ok"
+    assert result["totals"]["new_structures"] == ["A", "B"]
+    assert result["sections"]["heat_capacities"]["new_structures"] == ["B", "A"]
+    assert result["sections"]["mofchecker"]["unknown_fields"] == {"structure.source_db": 1}
+    kinds = [w.category for w in caught]
+    assert kinds.count(PrismaNewStructureWarning) == 1
+    assert kinds.count(PrismaUnknownFieldsWarning) == 1

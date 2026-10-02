@@ -43,12 +43,16 @@ _AUTOPRISM_TABLES = {
     "upsert_adsorption_singlepoint": ("/adsorption-singlepoint/", "adsorption_singlepoints"),
     "upsert_heat_capacity": ("/heat-capacity/", "heat_capacities"),
     "upsert_isotherm_h2": ("/isotherm-h2/", "isotherm_H2s"),
+    "upsert_adsorption_isotherm": ("/adsorption-isotherm/", "adsorption_isotherms"),
     "upsert_mofchecker": ("/mofchecker/", "mofchecker"),
     "upsert_zeopp_metrics": ("/zeopp-metrics/", "zeopp_metrics"),
 }
 # Nested objects the server creates/updates by ``id``; a nested dict without an
-# ``id`` is rejected. ``structure`` is the exception: it may be matched by name.
+# ``id`` is rejected. ``structure`` may be matched by name instead.
 _AUTOPRISM_ID_REQUIRED = ("run", "result", "mixture", "config")
+# Nested objects the server can also match by value: a non-empty value for this
+# key (nested, or flat on the row) stands in for the ``id``.
+_AUTOPRISM_MATCH_BY_VALUE = {"mixture": "mixture_id", "config": "config_hash"}
 # Row errors quoted in warnings, exceptions and collection summaries.
 _ROW_ERROR_PREVIEW = 3
 
@@ -67,14 +71,23 @@ class PrismaUpsertError(RuntimeError):
 
 
 class PrismaRowErrorWarning(UserWarning):
-    """The server accepted the request but rejected some rows (HTTP 207)."""
+    """The server rejected some rows (HTTP 207) or all of them (HTTP 400)."""
+
+
+class PrismaUnknownFieldsWarning(UserWarning):
+    """The server ignored payload fields it does not store (schema drift)."""
+
+
+class PrismaNewStructureWarning(UserWarning):
+    """The upsert created MOF records for structure names that matched nothing."""
 
 # Material bundle sections, in the order the API emits them. Every section is a
 # list except ``mof_h2``, which is a single object or None.
 _BUNDLE_SECTIONS = (
     "cifs", "isotherms", "water_kpis", "carbon_zeopp",
     "carbon_zeopp_experimental", "adsorption_singlepoint", "heat_capacity",
-    "isotherm_h2", "mofchecker", "zeopp_metrics", "mof_h2", "h2_results",
+    "isotherm_h2", "adsorption_isotherm", "mofchecker", "zeopp_metrics",
+    "mof_h2", "h2_results",
 )
 # Server-side hard cap; over this the bundle endpoint returns 400 rather
 # than truncating.
@@ -90,6 +103,7 @@ _BUNDLE_READONLY_SECTIONS = {
     "adsorption_singlepoint": "upsert_adsorption_singlepoint",
     "heat_capacity": "upsert_heat_capacity",
     "isotherm_h2": "upsert_isotherm_h2",
+    "adsorption_isotherm": "upsert_adsorption_isotherm",
     "mofchecker": "upsert_mofchecker",
 }
 # Read-bundle keys with no write meaning — dropped silently by the endpoint.
@@ -194,11 +208,26 @@ class PrismaAPIv2:
         resp.raise_for_status()
         return resp
 
-    def _put(self, path: str, data: list, timeout: int | None = None) -> dict:
-        """PUT (upsert) request. NaN/inf and numpy values are made JSON-safe."""
+    def _put(self, path: str, data: list, timeout: int | None = None,
+             upsert_body_on_400: bool = False) -> dict:
+        """
+        PUT (upsert) request. NaN/inf and numpy values are made JSON-safe.
+
+        With *upsert_body_on_400*, a 400 whose body is an upsert summary (no
+        rows stored, with row ``errors``) is returned like a 207 so the caller
+        can report its row errors; any other error status raises. Only callers
+        that check row errors should set it.
+        """
         resp = requests.put(self._url(path), json=_json_safe(data),
                             headers=self._headers(),
                             timeout=timeout or self.upload_timeout)
+        if upsert_body_on_400 and resp.status_code == 400:
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict) and isinstance(body.get("errors"), list):
+                return body
         resp.raise_for_status()
         return resp.json()
 
@@ -1640,8 +1669,9 @@ class PrismaAPIv2:
             {**record, "meta_provenance": meta} if isinstance(record, dict) else record
             for record in records
         ]
-        result = self._put(path, enriched, timeout=timeout)
+        result = self._put(path, enriched, timeout=timeout, upsert_body_on_400=True)
         _report_row_errors(result, wrapper_key, raise_on_error)
+        _warn_upsert_notices(result, path)
         return result
 
     def _properties_for(self, object_id: int, limit: int = 2000) -> list[dict]:
@@ -2411,12 +2441,12 @@ class PrismaAPIv2:
         PUT /api/v2/computation-runs/
 
         Accepts one object or many objects and forwards all provided fields.
-        Rows the server rejects (HTTP 207 ``errors``) trigger a
+        Rows the server rejects (HTTP 207, or 400 when no row is stored) trigger a
         ``PrismaRowErrorWarning``, or ``PrismaUpsertError`` if
         *raise_on_error* is True.
         """
         result = self._put("/computation-runs/", self._payload_to_records(payload),
-                           timeout=timeout)
+                           timeout=timeout, upsert_body_on_400=True)
         _report_row_errors(result, "computation_runs", raise_on_error, stacklevel=3)
         return result
 
@@ -2467,6 +2497,10 @@ class PrismaAPIv2:
         Accepts one object or many objects. Every row's ``meta_provenance`` is
         replaced with the resolved provenance.
 
+        The server keeps one row per lookup key: structure, md5, mixture, config, component, temperature_K, pressure_bar. Send ``config`` (or ``config_hash``) so rows from different configurations are kept apart.
+        If a row leaves out a key field and more than one stored row matches,
+        the server rejects it as ambiguous; it appears in ``errors``.
+
         Args:
             payload: DataFrame, one record, a list of records, or
                 ``{"adsorption_singlepoints": [...]}``.
@@ -2478,11 +2512,18 @@ class PrismaAPIv2:
                 *meta_provenance* is not given.
             timeout: Request timeout in seconds (default: ``upload_timeout``).
             raise_on_error: Raise ``PrismaUpsertError`` if the server rejects
-                any row (HTTP 207 ``errors``). Otherwise a
+                any row (HTTP 207, or 400 when no row is stored). Otherwise a
                 ``PrismaRowErrorWarning`` is emitted and the response returned.
             check_ids: Raise ``ValueError`` before sending if a nested
-                ``run``, ``run.workflow``, ``result``, ``mixture`` or ``config``
-                object has no ``id`` (the server would reject the row).
+                ``run``, ``run.workflow`` or ``result`` object has no ``id``,
+                or a ``mixture`` / ``config`` has neither an ``id`` nor a
+                ``mixture_id`` / ``config_hash`` (the server would reject the
+                row).
+
+        The response may include ``unknown_fields`` (payload keys the server
+        did not store) and ``new_structures`` (MOF records created because a
+        structure name matched nothing); each triggers a
+        ``PrismaUnknownFieldsWarning`` / ``PrismaNewStructureWarning``.
         """
         return self._upsert_autoprism_table("upsert_adsorption_singlepoint", payload,
                                             meta_provenance, repo_dir, timeout,
@@ -2529,6 +2570,10 @@ class PrismaAPIv2:
         Accepts one object or many objects. Every row's ``meta_provenance`` is
         replaced with the resolved provenance.
 
+        The server keeps one row per lookup key: structure, md5, temperature_K. Send ``md5`` so rows for different CIFs of one structure are kept apart.
+        If a row leaves out a key field and more than one stored row matches,
+        the server rejects it as ambiguous; it appears in ``errors``.
+
         Args:
             payload: DataFrame, one record, a list of records, or
                 ``{"heat_capacities": [...]}``.
@@ -2540,11 +2585,18 @@ class PrismaAPIv2:
                 *meta_provenance* is not given.
             timeout: Request timeout in seconds (default: ``upload_timeout``).
             raise_on_error: Raise ``PrismaUpsertError`` if the server rejects
-                any row (HTTP 207 ``errors``). Otherwise a
+                any row (HTTP 207, or 400 when no row is stored). Otherwise a
                 ``PrismaRowErrorWarning`` is emitted and the response returned.
             check_ids: Raise ``ValueError`` before sending if a nested
-                ``run``, ``run.workflow``, ``result``, ``mixture`` or ``config``
-                object has no ``id`` (the server would reject the row).
+                ``run``, ``run.workflow`` or ``result`` object has no ``id``,
+                or a ``mixture`` / ``config`` has neither an ``id`` nor a
+                ``mixture_id`` / ``config_hash`` (the server would reject the
+                row).
+
+        The response may include ``unknown_fields`` (payload keys the server
+        did not store) and ``new_structures`` (MOF records created because a
+        structure name matched nothing); each triggers a
+        ``PrismaUnknownFieldsWarning`` / ``PrismaNewStructureWarning``.
         """
         return self._upsert_autoprism_table("upsert_heat_capacity", payload,
                                             meta_provenance, repo_dir, timeout,
@@ -2597,8 +2649,14 @@ class PrismaAPIv2:
         """
         PUT /api/v2/isotherm-h2/
 
+        H2 isotherms only; other gases go to ``upsert_adsorption_isotherm``.
+
         Accepts one object or many objects. Every row's ``meta_provenance`` is
         replaced with the resolved provenance.
+
+        The server keeps one row per lookup key: structure, md5, isotherm_id, component, temperature_K, pressure_bar.
+        If a row leaves out a key field and more than one stored row matches,
+        the server rejects it as ambiguous; it appears in ``errors``.
 
         Args:
             payload: DataFrame, one record, a list of records, or
@@ -2611,13 +2669,111 @@ class PrismaAPIv2:
                 *meta_provenance* is not given.
             timeout: Request timeout in seconds (default: ``upload_timeout``).
             raise_on_error: Raise ``PrismaUpsertError`` if the server rejects
-                any row (HTTP 207 ``errors``). Otherwise a
+                any row (HTTP 207, or 400 when no row is stored). Otherwise a
                 ``PrismaRowErrorWarning`` is emitted and the response returned.
             check_ids: Raise ``ValueError`` before sending if a nested
-                ``run``, ``run.workflow``, ``result``, ``mixture`` or ``config``
-                object has no ``id`` (the server would reject the row).
+                ``run``, ``run.workflow`` or ``result`` object has no ``id``,
+                or a ``mixture`` / ``config`` has neither an ``id`` nor a
+                ``mixture_id`` / ``config_hash`` (the server would reject the
+                row).
+
+        The response may include ``unknown_fields`` (payload keys the server
+        did not store) and ``new_structures`` (MOF records created because a
+        structure name matched nothing); each triggers a
+        ``PrismaUnknownFieldsWarning`` / ``PrismaNewStructureWarning``.
         """
         return self._upsert_autoprism_table("upsert_isotherm_h2", payload,
+                                            meta_provenance, repo_dir, timeout,
+                                            raise_on_error, check_ids)
+
+    def get_adsorption_isotherm(
+        self,
+        structure: str | None = None,
+        isotherm_id: str | None = None,
+        component: str | None = None,
+        temperature_K: float | None = None,
+        pressure_bar: float | None = None,
+        limit: int = 500,
+        offset: int = 0,
+        md5: str | None = None,
+    ) -> pd.DataFrame:
+        """
+        GET /api/v2/adsorption-isotherm/ — isotherms for every gas except H2.
+
+        Needs prisma_cloud >= 0.6.16 (404 on older servers).
+
+        Args:
+            structure: Structure name filter.
+            isotherm_id: Isotherm identifier filter.
+            component: Gas, exact match (e.g. ``'CO2'``; ``'H2'`` won't match ``'H2O'``).
+            temperature_K: Temperature filter [K].
+            pressure_bar: Pressure filter [bar].
+            md5: Exact CIF md5 filter.
+        """
+        params = _compact(
+            structure=structure,
+            md5=md5,
+            isotherm_id=isotherm_id,
+            component=component,
+            temperature_K=temperature_K,
+            pressure_bar=pressure_bar,
+            limit=limit,
+            offset=offset,
+        )
+        return self._to_df(self._get("/adsorption-isotherm/", params))
+
+    def get_adsorption_isotherm_item(self, row_id: int) -> dict:
+        """GET /api/v2/adsorption-isotherm/{row_id}/"""
+        return self._get(f"/adsorption-isotherm/{row_id}/")
+
+    def upsert_adsorption_isotherm(
+        self,
+        payload: pd.DataFrame | list[dict] | dict,
+        meta_provenance: dict | None = None,
+        repo_dir: str | Path | None = None,
+        timeout: int | None = None,
+        raise_on_error: bool = False,
+        check_ids: bool = True,
+    ) -> dict:
+        """
+        PUT /api/v2/adsorption-isotherm/
+
+        Isotherms for every gas except H2 (same row shape as isotherm-h2;
+        ``component`` is required). The server rejects H2 rows: use
+        ``upsert_isotherm_h2``. Needs prisma_cloud >= 0.6.16 (404 on older servers).
+
+        Accepts one object or many objects. Every row's ``meta_provenance`` is
+        replaced with the resolved provenance.
+
+        The server keeps one row per lookup key: structure, md5, isotherm_id, config, component, temperature_K, pressure_bar. Send ``config`` so rows from different configurations are kept apart.
+        If a row leaves out a key field and more than one stored row matches,
+        the server rejects it as ambiguous; it appears in ``errors``.
+
+        Args:
+            payload: DataFrame, one record, a list of records, or
+                ``{"adsorption_isotherms": [...]}``.
+            meta_provenance: Provenance stamped on every row, used as-is. If
+                omitted it is derived from git in *repo_dir* (default: the
+                current working directory), with credentials removed from the
+                remote URL.
+            repo_dir: Repository to read provenance from when
+                *meta_provenance* is not given.
+            timeout: Request timeout in seconds (default: ``upload_timeout``).
+            raise_on_error: Raise ``PrismaUpsertError`` if the server rejects
+                any row (HTTP 207, or 400 when no row is stored). Otherwise a
+                ``PrismaRowErrorWarning`` is emitted and the response returned.
+            check_ids: Raise ``ValueError`` before sending if a nested
+                ``run``, ``run.workflow`` or ``result`` object has no ``id``,
+                or a ``mixture`` / ``config`` has neither an ``id`` nor a
+                ``mixture_id`` / ``config_hash`` (the server would reject the
+                row).
+
+        The response may include ``unknown_fields`` (payload keys the server
+        did not store) and ``new_structures`` (MOF records created because a
+        structure name matched nothing); each triggers a
+        ``PrismaUnknownFieldsWarning`` / ``PrismaNewStructureWarning``.
+        """
+        return self._upsert_autoprism_table("upsert_adsorption_isotherm", payload,
                                             meta_provenance, repo_dir, timeout,
                                             raise_on_error, check_ids)
 
@@ -2665,8 +2821,19 @@ class PrismaAPIv2:
         """
         PUT /api/v2/mofchecker/
 
+        The server stores the formal-charge columns
+        ``positive_charge_from_linkers``, ``negative_charge_from_linkers``,
+        ``linker_formal_charge``, ``implied_metal_oxidation_sum``,
+        ``implied_metal_oxidation_per_metal``, ``formal_charge_plausible``,
+        ``formal_charge_reason``, ``has_high_charges``,
+        ``cif_net_atom_site_charge`` and ``cif_charge_neutral``.
+
         Accepts one object or many objects. Every row's ``meta_provenance`` is
         replaced with the resolved provenance.
+
+        The server keeps one row per lookup key: structure, md5.
+        If a row leaves out a key field and more than one stored row matches,
+        the server rejects it as ambiguous; it appears in ``errors``.
 
         Args:
             payload: DataFrame, one record, a list of records, or
@@ -2679,11 +2846,18 @@ class PrismaAPIv2:
                 *meta_provenance* is not given.
             timeout: Request timeout in seconds (default: ``upload_timeout``).
             raise_on_error: Raise ``PrismaUpsertError`` if the server rejects
-                any row (HTTP 207 ``errors``). Otherwise a
+                any row (HTTP 207, or 400 when no row is stored). Otherwise a
                 ``PrismaRowErrorWarning`` is emitted and the response returned.
             check_ids: Raise ``ValueError`` before sending if a nested
-                ``run``, ``run.workflow``, ``result``, ``mixture`` or ``config``
-                object has no ``id`` (the server would reject the row).
+                ``run``, ``run.workflow`` or ``result`` object has no ``id``,
+                or a ``mixture`` / ``config`` has neither an ``id`` nor a
+                ``mixture_id`` / ``config_hash`` (the server would reject the
+                row).
+
+        The response may include ``unknown_fields`` (payload keys the server
+        did not store) and ``new_structures`` (MOF records created because a
+        structure name matched nothing); each triggers a
+        ``PrismaUnknownFieldsWarning`` / ``PrismaNewStructureWarning``.
         """
         return self._upsert_autoprism_table("upsert_mofchecker", payload,
                                             meta_provenance, repo_dir, timeout,
@@ -2727,6 +2901,10 @@ class PrismaAPIv2:
         Accepts one object or many objects. Every row's ``meta_provenance`` is
         replaced with the resolved provenance.
 
+        The server keeps one row per lookup key: mof, md5, probe, scale. Send ``scale`` so runs at different scales are kept apart.
+        If a row leaves out a key field and more than one stored row matches,
+        the server rejects it as ambiguous; it appears in ``errors``.
+
         Args:
             payload: DataFrame, one record, a list of records, or
                 ``{"zeopp_metrics": [...]}``.
@@ -2738,11 +2916,18 @@ class PrismaAPIv2:
                 *meta_provenance* is not given.
             timeout: Request timeout in seconds (default: ``upload_timeout``).
             raise_on_error: Raise ``PrismaUpsertError`` if the server rejects
-                any row (HTTP 207 ``errors``). Otherwise a
+                any row (HTTP 207, or 400 when no row is stored). Otherwise a
                 ``PrismaRowErrorWarning`` is emitted and the response returned.
             check_ids: Raise ``ValueError`` before sending if a nested
-                ``run``, ``run.workflow``, ``result``, ``mixture`` or ``config``
-                object has no ``id`` (the server would reject the row).
+                ``run``, ``run.workflow`` or ``result`` object has no ``id``,
+                or a ``mixture`` / ``config`` has neither an ``id`` nor a
+                ``mixture_id`` / ``config_hash`` (the server would reject the
+                row).
+
+        The response may include ``unknown_fields`` (payload keys the server
+        did not store) and ``new_structures`` (MOF records created because a
+        structure name matched nothing); each triggers a
+        ``PrismaUnknownFieldsWarning`` / ``PrismaNewStructureWarning``.
         """
         return self._upsert_autoprism_table("upsert_zeopp_metrics", payload,
                                             meta_provenance, repo_dir, timeout,
@@ -2763,7 +2948,12 @@ class PrismaAPIv2:
         Expected payload shape mirrors the AutoPrism collection mock payload, with
         optional top-level keys:
             computation_runs, adsorption_singlepoints, heat_capacities,
-            isotherm_H2s, mofchecker, zeopp_metrics, meta_provenance
+            isotherm_H2s, adsorption_isotherms, mofchecker, zeopp_metrics,
+            meta_provenance
+
+        An ``isotherms`` key may hold isotherm rows for mixed gases: rows with
+        ``component == "H2"`` are added to ``isotherm_H2s``, the rest to
+        ``adsorption_isotherms``.
 
         Provenance (stamped on every row of the five AutoPrism tables), in
         order of precedence:
@@ -2773,7 +2963,8 @@ class PrismaAPIv2:
 
         Error handling:
             A section fails if its request raises, or if the server rejects
-            any of its rows (HTTP 207 with an ``errors`` list). A failed
+            any of its rows (HTTP 207, or HTTP 400 when no row is stored,
+            each with an ``errors`` list). A failed
             section has ``status: "error"`` (nothing written) or
             ``"partial"`` (some rows written), plus ``rejected`` and the first
             few row ``errors``. By default nothing is raised:
@@ -2786,14 +2977,25 @@ class PrismaAPIv2:
             Missing nested ``id``s are a caller error: with ``check_ids=True``
             the affected section fails before anything is sent for it.
 
+        Server notices:
+            A section's ``unknown_fields`` (payload keys the server did not
+            store) and ``new_structures`` (MOF records created for unmatched
+            structure names) are copied into its summary;
+            ``totals["new_structures"]`` is the sorted union of the names.
+            One combined ``PrismaUnknownFieldsWarning`` /
+            ``PrismaNewStructureWarning`` is emitted for each kind. These
+            never count as failures.
+
         Returns:
             dict with keys:
                 sections: per-section status details
-                totals: created, updated, rejected (rows) and failed_sections
+                totals: created, updated, rejected (rows), failed_sections
+                    and new_structures
                 overall_status: "ok" if no section failed, else "partial_failure"
         """
         if not isinstance(payload, dict):
             raise TypeError("payload must be a dict matching the AutoPrism collection shape")
+        payload = self._split_mixed_isotherms(payload)
 
         if meta_provenance is None:
             meta_provenance = payload.get("meta_provenance")
@@ -2810,6 +3012,8 @@ class PrismaAPIv2:
         total_updated = 0
         total_rejected = 0
         failed = 0
+        unknown_by_section: dict[str, dict] = {}
+        new_structures: set[str] = set()
 
         for section_name, method_name in section_handlers:
             section_payload = payload.get(section_name)
@@ -2822,9 +3026,12 @@ class PrismaAPIv2:
 
             try:
                 method = getattr(self, method_name)
-                # Row errors are summarised below; silence the per-table warning.
+                # Row errors and server notices are summarised below; silence
+                # the per-table warnings.
                 with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", PrismaRowErrorWarning)
+                    for category in (PrismaRowErrorWarning, PrismaUnknownFieldsWarning,
+                                     PrismaNewStructureWarning):
+                        warnings.simplefilter("ignore", category)
                     if method_name in _AUTOPRISM_TABLES:
                         result = method(section_payload, meta_provenance=meta,
                                         timeout=timeout, check_ids=check_ids)
@@ -2849,6 +3056,13 @@ class PrismaAPIv2:
                         "rejected": len(row_errors),
                         "errors": row_errors[:_ROW_ERROR_PREVIEW],
                     })
+                unknown, created_structures = _upsert_notices(result)
+                if unknown:
+                    sections[section_name]["unknown_fields"] = unknown
+                    unknown_by_section[section_name] = unknown
+                if created_structures:
+                    sections[section_name]["new_structures"] = created_structures
+                    new_structures.update(str(n) for n in created_structures)
             except Exception as exc:
                 failed += 1
                 sections[section_name] = {
@@ -2863,14 +3077,25 @@ class PrismaAPIv2:
                 "updated": total_updated,
                 "rejected": total_rejected,
                 "failed_sections": failed,
+                "new_structures": sorted(new_structures),
             },
             "overall_status": "ok" if failed == 0 else "partial_failure",
         }
+        if unknown_by_section:
+            detail = "; ".join(f"{name}: {fields}" for name, fields in unknown_by_section.items())
+            warnings.warn(f"AutoPrism upsert: server ignored unknown fields ({detail})",
+                          PrismaUnknownFieldsWarning, stacklevel=2)
+        if new_structures:
+            warnings.warn(
+                f"AutoPrism upsert created {len(new_structures)} new MOF record(s) for "
+                f"structure names that matched nothing: {sorted(new_structures)}",
+                PrismaNewStructureWarning, stacklevel=2)
         if failed:
             problems = "; ".join(
                 f"{name}: " + (
                     info["error"] if "error" in info
-                    else f"{info['rejected']} row(s) rejected, first: {info['errors'][0]}"
+                    else ("no rows stored; " if info["status"] == "error" else "")
+                    + f"{info['rejected']} row(s) rejected, first: {info['errors'][0]}"
                 )
                 for name, info in sections.items()
                 if info["status"] in ("error", "partial")
@@ -2881,6 +3106,20 @@ class PrismaAPIv2:
             if total_rejected:
                 warnings.warn(message, PrismaRowErrorWarning, stacklevel=2)
         return summary
+
+    def _split_mixed_isotherms(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Move ``payload["isotherms"]`` rows into isotherm_H2s / adsorption_isotherms by gas."""
+        if payload.get("isotherms") is None:
+            return payload
+        mixed = self._payload_to_records(payload["isotherms"])
+        h2 = [r for r in mixed if isinstance(r, dict) and r.get("component") == "H2"]
+        other = [r for r in mixed if not (isinstance(r, dict) and r.get("component") == "H2")]
+        split = {k: v for k, v in payload.items() if k != "isotherms"}
+        for key, rows in (("isotherm_H2s", h2), ("adsorption_isotherms", other)):
+            if rows:
+                existing = split.get(key)
+                split[key] = (self._payload_to_records(existing) if existing is not None else []) + rows
+        return split
 
     def get_autoprism_collection(
         self,
@@ -2907,13 +3146,14 @@ class PrismaAPIv2:
         Returns a dict with keys:
             computation_runs,
             adsorption_singlepoints, heat_capacities, isotherm_H2s,
-            mofchecker, zeopp_metrics
+            adsorption_isotherms, mofchecker, zeopp_metrics
             meta_provenance
 
         Notes:
-                        - ``workflow_id``, ``step`` and ``status`` filter computation runs.
+            - ``workflow_id``, ``step`` and ``status`` filter computation runs.
             - ``structure`` is used for adsorption_singlepoint, heat_capacity,
-              isotherm_H2 and mofchecker.
+              isotherm_H2, adsorption_isotherm and mofchecker.
+            - ``component`` is an exact match on the isotherm tables.
             - ``mof`` is used for zeopp_metrics.
             - If ``structure`` is omitted and ``mof`` is provided, ``mof`` is
               also used as the structure filter for convenience.
@@ -3006,6 +3246,17 @@ class PrismaAPIv2:
                 limit=limit,
                 offset=offset,
             ),
+            "adsorption_isotherms": _safe_fetch(
+                "adsorption_isotherm",
+                self.get_adsorption_isotherm,
+                structure=structure_filter,
+                isotherm_id=isotherm_id,
+                component=component,
+                temperature_K=temperature_K,
+                pressure_bar=pressure_bar,
+                limit=limit,
+                offset=offset,
+            ),
             "mofchecker": _safe_fetch(
                 "mofchecker",
                 self.get_mofchecker,
@@ -3040,6 +3291,7 @@ class PrismaAPIv2:
             "adsorption_singlepoints",
             "heat_capacities",
             "isotherm_H2s",
+            "adsorption_isotherms",
             "mofchecker",
             "zeopp_metrics",
         ):
@@ -3527,7 +3779,7 @@ def _json_safe(value: Any) -> Any:
 
 
 def _row_errors(result: Any) -> list:
-    """Row errors from an upsert response (HTTP 207 ``errors`` list), or []."""
+    """Row errors from an upsert response (HTTP 207/400 ``errors`` list), or []."""
     if isinstance(result, dict) and isinstance(result.get("errors"), list):
         return result["errors"]
     return []
@@ -3540,17 +3792,43 @@ def _report_row_errors(result: Any, label: str, raise_on_error: bool,
     if not errors:
         return
     preview = "; ".join(str(e) for e in errors[:_ROW_ERROR_PREVIEW])
-    message = f"{label}: server rejected {len(errors)} row(s). First: {preview}"
+    stored = int(result.get("created") or 0) + int(result.get("updated") or 0)
+    prefix = "no rows stored; " if stored == 0 else ""
+    message = f"{label}: {prefix}server rejected {len(errors)} row(s). First: {preview}"
     if raise_on_error:
         raise PrismaUpsertError(message, result=result)
     warnings.warn(message, PrismaRowErrorWarning, stacklevel=stacklevel)
 
 
+def _upsert_notices(result: Any) -> tuple[dict, list]:
+    """``unknown_fields`` and ``new_structures`` from an upsert response."""
+    if not isinstance(result, dict):
+        return {}, []
+    unknown = result.get("unknown_fields")
+    created = result.get("new_structures")
+    return (unknown if isinstance(unknown, dict) else {},
+            list(created) if isinstance(created, (list, tuple)) else [])
+
+
+def _warn_upsert_notices(result: Any, path: str, stacklevel: int = 4) -> None:
+    """Warn about ignored payload fields and newly created MOF records."""
+    unknown, created = _upsert_notices(result)
+    if unknown:
+        warnings.warn(f"{path}: server ignored fields it does not store: {unknown}",
+                      PrismaUnknownFieldsWarning, stacklevel=stacklevel)
+    if created:
+        warnings.warn(f"{path}: created {len(created)} new MOF record(s) for structure "
+                      f"names that matched nothing: {created}",
+                      PrismaNewStructureWarning, stacklevel=stacklevel)
+
+
 def _check_nested_ids(records: list, section: str) -> None:
     """
-    Raise ValueError if a nested object the server keys by ``id`` lacks one.
+    Raise ValueError if a nested object the server needs to identify can't be.
 
-    Checks ``run``, ``run.workflow``, ``result``, ``mixture`` and ``config``.
+    ``run``, ``run.workflow`` and ``result`` need an ``id``. ``mixture`` and
+    ``config`` need an ``id`` or a non-empty ``mixture_id`` / ``config_hash``
+    (nested or flat on the row), which the server matches by value.
     ``structure`` is not checked: the server can match it by ``name``.
     """
     problems = []
@@ -3562,13 +3840,19 @@ def _check_nested_ids(records: list, section: str) -> None:
         if isinstance(run, dict):
             nested.append(("run.workflow", run.get("workflow")))
         for key, value in nested:
-            if isinstance(value, dict) and value.get("id") in (None, ""):
-                problems.append(f"row {index}: {key}")
+            if not isinstance(value, dict) or value.get("id") not in (None, ""):
+                continue
+            value_key = _AUTOPRISM_MATCH_BY_VALUE.get(key)
+            if value_key and (value.get(value_key) not in (None, "")
+                              or record.get(value_key) not in (None, "")):
+                continue
+            problems.append(f"row {index}: {key}")
     if problems:
         shown = ", ".join(problems[:5]) + (f" (+{len(problems) - 5} more)" if len(problems) > 5 else "")
         raise ValueError(
-            f"{section}: nested objects need an 'id' (the server creates/updates them "
-            f"by id; derive one from the content, e.g. uuid5): {shown}. "
+            f"{section}: nested objects can't be identified: {shown}. run, run.workflow "
+            "and result need an 'id' (derive one from the content, e.g. uuid5); mixture "
+            "and config need an 'id' or a 'mixture_id' / 'config_hash'. "
             "Pass check_ids=False to skip this check."
         )
 

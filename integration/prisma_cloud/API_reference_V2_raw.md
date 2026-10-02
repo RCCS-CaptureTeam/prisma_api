@@ -59,6 +59,9 @@ Endpoints that support PUT return:
 
 - GET /api/v2/materials/
 - GET /api/v2/materials/{material_id}/
+- GET /api/v2/materials/{material_id}/bundle/
+- GET,POST /api/v2/materials/bundle/
+- PUT,POST /api/v2/materials/bundle/upsert/
 - GET /api/v2/materials-psdi/
 - GET /api/v2/materials-psdi/{material_id}/
 - GET /api/v2/cifs/
@@ -104,6 +107,8 @@ Endpoints that support PUT return:
 - GET /api/v2/heat-capacity/{row_id}/
 - GET, PUT /api/v2/isotherm-h2/
 - GET /api/v2/isotherm-h2/{row_id}/
+- GET, PUT /api/v2/adsorption-isotherm/
+- GET /api/v2/adsorption-isotherm/{row_id}/
 - GET, PUT /api/v2/mofchecker/
 - GET /api/v2/mofchecker/{row_id}/
 - GET, PUT /api/v2/zeopp-metrics/
@@ -175,6 +180,12 @@ Below are the key filters exposed in api_v2.py docstrings and implementation.
   - name, limit, offset
 - GET /api/v2/materials-psdi/
   - name, limit, offset
+- GET /api/v2/materials/{material_id}/bundle/
+  - sections, exclude, include_cif_content
+- GET,POST /api/v2/materials/bundle/
+  - ids, names, match, sections, exclude, include_cif_content, output
+- PUT,POST /api/v2/materials/bundle/upsert/
+  - create_materials
 
 ### CIFs
 
@@ -226,17 +237,23 @@ Below are the key filters exposed in api_v2.py docstrings and implementation.
   - structure, md5, mixture_id, component, limit, offset
 - PUT /api/v2/adsorption-singlepoint/
   - accepts object or list
-  - upsert lookup key: (structure, md5, mixture_id, component, temperature_K, pressure_bar)
+  - upsert lookup key: (structure, md5, mixture, config, component, temperature_K, pressure_bar)
 - GET /api/v2/heat-capacity/
-  - structure, temperature_K, limit, offset
+  - structure, temperature_K, temperature_C, limit, offset
 - PUT /api/v2/heat-capacity/
   - accepts object or list
-  - upsert lookup key: (structure, temperature_K)
+  - upsert lookup key: (structure, md5, temperature_K); structure required to match
 - GET /api/v2/isotherm-h2/
   - structure, isotherm_id, component, temperature_K, pressure_bar, limit, offset
 - PUT /api/v2/isotherm-h2/
   - accepts object or list
   - upsert lookup key: (structure, md5, isotherm_id, component, temperature_K, pressure_bar)
+- GET /api/v2/adsorption-isotherm/
+  - structure, md5, isotherm_id, component (exact), temperature_K, pressure_bar, limit, offset
+- PUT /api/v2/adsorption-isotherm/
+  - accepts object or list; isotherms for every gas except H2 (same shape as isotherm-h2)
+  - component required; H2 rows rejected (use isotherm-h2)
+  - upsert lookup key: (structure, md5, isotherm_id, config, component, temperature_K, pressure_bar)
 - GET /api/v2/mofchecker/
   - structure, md5, is_mof, MOFQ, limit, offset
 - PUT /api/v2/mofchecker/
@@ -246,7 +263,31 @@ Below are the key filters exposed in api_v2.py docstrings and implementation.
   - mof, md5, probe, limit, offset
 - PUT /api/v2/zeopp-metrics/
   - accepts object or list
-  - upsert lookup key: (mof, md5, probe)
+  - upsert lookup key: (mof, md5, probe, scale)
+
+AutoPrism upsert rules (all six tables above except computation-runs):
+
+- One row per configuration: a new `config`, zeo++ `scale` or CIF `md5`
+  adds a row rather than replacing the earlier result.
+- Key fields absent from a row are not used for matching; if more than one
+  stored row then matches, the row is rejected as ambiguous.
+- `structure` matches a MOF pk or an exact name (`LAGNAK` and `LAGNAK_clean`
+  are different MOFs); an unknown name creates a MOF.
+- `mixture` / `config` accept `{"id": ...}`, or without an id
+  `{"mixture_id": ...}` / `{"config_hash": ...}` and the flat
+  `mixture_id` / `config_hash` fields: matched by value, or created with an
+  id derived from the value.
+- Response: `created`, `updated`, plus `errors`, `unknown_fields`
+  (`{field: row_count}` for payload keys not stored; `meta_provenance` is
+  always accepted) and `new_structures` (MOF names created) when non-empty.
+- Status: 200 all rows stored, 207 partial success, 400 no row stored. The
+  400 rule applies to every v2 upsert endpoint.
+- mofchecker rows carry the formal-charge checks
+  (`positive_charge_from_linkers`, `negative_charge_from_linkers`,
+  `linker_formal_charge`, `implied_metal_oxidation_sum`,
+  `implied_metal_oxidation_per_metal`, `formal_charge_plausible`,
+  `formal_charge_reason`, `has_high_charges`, `cif_net_atom_site_charge`,
+  `cif_charge_neutral`).
 
 ### TEA and LCA
 
@@ -305,6 +346,107 @@ Below are the key filters exposed in api_v2.py docstrings and implementation.
 - PUT /api/v2/flowsheets/upsert/
   - accepts object or list
 
+## Material Bundle Payload Notes
+
+One call returning every per-material record the dataset page draws on, so a
+client does not have to fan out across the per-table endpoints.
+
+`GET /api/v2/materials/{material_id}/bundle/` returns `_schema`,
+`sections`, `material` (the extended materials-psdi representation),
+`counts`, and one key per section:
+
+- cifs
+- isotherms
+- water_kpis
+- carbon_zeopp
+- carbon_zeopp_experimental
+- adsorption_singlepoint
+- heat_capacity
+- isotherm_h2
+- adsorption_isotherm
+- mofchecker
+- zeopp_metrics
+- mof_h2 (single object or null, not a list)
+- h2_results
+
+Sections can be narrowed with `sections=` or trimmed with `exclude=`; an
+unknown name is a 400. `include_cif_content=true` adds a `content` key with
+the raw CIF text to each row in `cifs` (off by default, since it dominates the
+response size).
+
+`GET,POST /api/v2/materials/bundle/` is the bulk form, selected by `ids=`
+and/or `names=` (repeated or comma-separated; `match=contains` switches names
+from exact to substring). It returns `count`, `missing` (requested ids/names
+that matched nothing), `sections`, and `results` — a list of the same bundle
+objects. A request matching more than 200 materials is rejected with a 400
+rather than silently truncated.
+
+`output=zip` returns the same data as a downloadable archive: one
+`<material name>.json` per material plus a `manifest.json` listing ids, names,
+filenames and per-section counts. The switch is spelled `output` rather than
+`format` because DRF reserves `?format=` for content negotiation; the POST
+body accepts either key.
+
+Sections are fetched one query per table for the whole material set, so the
+query count is flat (~15) whether the request covers one material or 200.
+
+## Material Bundle Upsert Notes
+
+`PUT,POST /api/v2/materials/bundle/upsert/` is the write counterpart of the
+bundle read routes. It accepts one bundle object or a list of them in the same
+shape the read route returns, so a bundle can be fetched, edited and posted
+back unchanged.
+
+Writable sections: `material`, `cifs`, `isotherms`, `water_kpis`,
+`carbon_zeopp`, `carbon_zeopp_experimental`, `zeopp_metrics`, `mof_h2`,
+`h2_results`.
+
+Read-only here: `adsorption_singlepoint`, `heat_capacity`, `isotherm_h2`,
+`adsorption_isotherm`, `mofchecker`. These have dedicated PUT endpoints whose nested
+run/result/config payloads the bundle does not reproduce; sending them returns
+an error naming the endpoint to use instead.
+
+Row matching, in order:
+
+1. an `id` on the row updates that row — and must belong to the bundle's
+   material, otherwise the whole bundle is rejected;
+2. otherwise the section's natural key is matched;
+3. otherwise a row is created.
+
+Natural keys: isotherms `(MOF, Molecule, sim_or_exp, T_ref_K)`; water_kpis
+`(MOF, Molecule, source, sim_or_exp, mof_ref)`; carbon_zeopp and
+carbon_zeopp_experimental `(MOF, Molecule, mof_ref, Round)`; zeopp_metrics
+`(mof, md5, probe, scale)`; h2_results `(mof_h2, case_study_h2)`. CIFs have no natural
+key and match on the stored file name instead. `mof_h2` is the single row
+behind `MOF.mof_h2`, so it needs no key.
+
+Rows are never deleted — this is upsert only. Removing a row needs the admin
+or a per-table endpoint.
+
+FK fields accept the name strings a read bundle carries (`molecule`, `source`)
+or raw pks. Names must already exist; an unknown one is an error rather than a
+silent create. `tags` accept names or ids (the read bundle emits both shapes
+depending on section) and must already exist.
+
+CIF file content arrives two ways:
+
+- inline — `"content": "data_...\n..."` on the CIF row, which is exactly what
+  `GET ...?include_cif_content=true` returns;
+- upload — `multipart/form-data` with the JSON document in a `bundle` form
+  field and `"file": "<part name>"` on the CIF row.
+
+The two are mutually exclusive on one row. CIF storage overwrites by name, so
+re-sending the same file name replaces the file and updates the existing row.
+
+`create_materials=false` makes an unknown material an error instead of
+creating it.
+
+Each bundle is applied in its own transaction: one bad row rolls that material
+back entirely and leaves the other bundles in the request untouched. The
+response carries `_schema`, `materials`, `created`/`updated` counts per
+section, `results`, and `errors` when any bundle failed — HTTP 200, or 207
+when at least one bundle failed.
+
 ## Scope Payload Notes
 
 The standalone Scope endpoints use a dedicated serializer and expose:
@@ -333,5 +475,8 @@ The screening analysis bundle endpoint also embeds linked Scope rows under:
 ## Change Log
 
 - 2026-09-09: Added standalone Scope endpoints to the v2 route inventory.
+- 2026-09-21: Added the material bundle endpoints (single and bulk, with zip download).
+- 2026-09-21: Added the material bundle upsert endpoint, including CIF file upload.
 - 2026-09-09: Added AutoPrism table endpoints (adsorption-singlepoint, heat-capacity, isotherm-h2, mofchecker, zeopp-metrics).
 - 2026-09-09: Added authenticated PUT upsert support for AutoPrism table list endpoints.
+- 2026-10-02 (0.6.16): AutoPrism client feedback: added adsorption-isotherm (non-H2 gases) and its bundle section; mofchecker formal-charge columns; heat_capacity md5; one-row-per-configuration upsert keys (config, scale, md5) with ambiguity errors; value-based mixture/config matching; `unknown_fields` / `new_structures` in upsert responses; 400 when an upsert stores no rows.
