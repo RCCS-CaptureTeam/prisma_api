@@ -1,4 +1,9 @@
-__version__ = "0.3.9"
+from importlib.metadata import PackageNotFoundError, version as _version
+
+try:
+    __version__ = _version("prisma_api")
+except PackageNotFoundError:  # running from a source tree without installing
+    __version__ = "0+unknown"
 
 
 from prisma_api.prisma_api import prisma_api as init        # Main prisma_api class for initialisation

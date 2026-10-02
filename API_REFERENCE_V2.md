@@ -1,6 +1,6 @@
 # PrISMa API — Python Client Reference (v2)
 
-> **Package:** `prisma_api` v0.3.9  
+> **Package:** `prisma_api` v0.4.3  
 > **v2 Base URL:** `https://prisma-platform.org/api/v2/`  
 > **Authentication:** `X-API-Key` header (set via config file or `PRISMA_API_KEY` env var)
 
@@ -13,9 +13,28 @@ See [API_REFERENCE_V1.md](API_REFERENCE_V1.md) for the v1 (`api.get_materials_da
 ```python
 import prisma_api
 
-api = prisma_api.init()          # reads key from ~/.config/prisma_api/config.yaml
-api.v2                           # PrismaAPIv2 instance, attached automatically
+api = prisma_api.init()                # PRODUCTION (prisma-platform.org)
+api = prisma_api.init(local_dev=True)  # local dev server on localhost:<dev_host_port>
+api.v2                                 # PrismaAPIv2 instance, attached automatically
 ```
+
+`init()` prints the API base URL it connected to. `local_dev=False` (the
+default) means **production**, so test uploads should use `local_dev=True`.
+
+API key lookup with the default `use_config_file=True`:
+
+1. `config.yaml` (see `prisma_api.locate_config()`), if it exists;
+2. otherwise the env vars `PRISMA_API_KEY`, `PRISMA_API_DEV_API_KEY`,
+   `PRISMA_API_DEV_HOST_PORT`;
+3. otherwise an interactive prompt that writes `config.yaml`. Without a
+   terminal (e.g. CI) this raises `RuntimeError` naming the env vars instead.
+
+`init(use_config_file=False)` reads the env vars only.
+`init(upload_timeout=300)` sets the default timeout (seconds, default 120)
+for PUT upserts; change it later with `api.v2.upload_timeout = ...`.
+
+All upsert bodies are cleaned before sending: NaN/±inf/`pd.NA`/`NaT` become
+`null` and numpy values become plain JSON values.
 
 ---
 
@@ -498,6 +517,33 @@ api.v2.get_carbon_zeopp_experimental_item(1)
 
 ### AutoPrism Tables
 
+AutoPrism table upserts share one signature:
+
+```python
+api.v2.upsert_<table>(payload, meta_provenance=None, repo_dir=None, timeout=None)
+```
+
+Every row's `meta_provenance` is replaced with:
+
+- `meta_provenance`, used as-is, when given (recommended for programs that
+  know their own provenance);
+- otherwise provenance derived from git in `repo_dir`, or in the current
+  working directory when `repo_dir` is omitted. This describes the calling
+  program's repository, not prisma_api. Keys: `source_repo`,
+  `source_repo_url` (with any `user:token@` credentials removed),
+  `source_repo_semantic_version` (from that repo's `pyproject.toml`),
+  `source_repo_tag`, `source_commit_hash`.
+
+```python
+api.v2.upsert_zeopp_metrics(rows, meta_provenance={
+    'source_repo': 'AutoPrism',
+    'source_repo_url': 'https://github.com/AutoPrism/AutoPrism',
+    'source_repo_semantic_version': '0.1.0',
+    'source_repo_tag': '0.1.0',
+    'source_commit_hash': '724b0306f6b21f953fba21e424cdda230525862f',
+})
+```
+
 #### `api.v2.get_computation_runs(workflow_id=None, step=None, status=None, limit=500, offset=0)` / `api.v2.get_computation_run(run_id)`
 
 ```python
@@ -507,7 +553,7 @@ api.v2.get_computation_run(7)
 
 ---
 
-#### `api.v2.upsert_computation_runs(payload)`
+#### `api.v2.upsert_computation_runs(payload, timeout=None)`
 
 PUT wrapper for `/api/v2/computation-runs/`. `payload` may be a `dict`,
 `list[dict]`, or `pd.DataFrame`. All provided fields are forwarded unchanged,
@@ -532,8 +578,9 @@ api.v2.get_adsorption_singlepoint(structure='ABEXEM', component='CO2')
 
 `api.v2.get_adsorption_singlepoint_item(row_id)` returns one row by id.
 
-`api.v2.upsert_adsorption_singlepoint(payload)` upserts one-or-many rows via
-`dict`, `list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged.
+`api.v2.upsert_adsorption_singlepoint(payload, meta_provenance=None, ...)` upserts one-or-many rows via
+`dict`, `list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged
+except `meta_provenance` (see above).
 
 ---
 
@@ -545,8 +592,9 @@ api.v2.get_heat_capacity(structure='ABEXEM', temperature_K=298.0)
 
 `api.v2.get_heat_capacity_item(row_id)` returns one row by id.
 
-`api.v2.upsert_heat_capacity(payload)` upserts one-or-many rows via `dict`,
-`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged.
+`api.v2.upsert_heat_capacity(payload, meta_provenance=None, ...)` upserts one-or-many rows via `dict`,
+`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged
+except `meta_provenance` (see above).
 
 ---
 
@@ -558,8 +606,9 @@ api.v2.get_isotherm_h2(structure='ABEXEM', component='H2')
 
 `api.v2.get_isotherm_h2_item(row_id)` returns one row by id.
 
-`api.v2.upsert_isotherm_h2(payload)` upserts one-or-many rows via `dict`,
-`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged.
+`api.v2.upsert_isotherm_h2(payload, meta_provenance=None, ...)` upserts one-or-many rows via `dict`,
+`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged
+except `meta_provenance` (see above).
 
 ---
 
@@ -571,8 +620,9 @@ api.v2.get_mofchecker(structure='ABEXEM', is_mof=True)
 
 `api.v2.get_mofchecker_item(row_id)` returns one row by id.
 
-`api.v2.upsert_mofchecker(payload)` upserts one-or-many rows via `dict`,
-`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged.
+`api.v2.upsert_mofchecker(payload, meta_provenance=None, ...)` upserts one-or-many rows via `dict`,
+`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged
+except `meta_provenance` (see above).
 
 ---
 
@@ -584,8 +634,9 @@ api.v2.get_zeopp_metrics(mof='ABEXEM', probe='N2')
 
 `api.v2.get_zeopp_metrics_item(row_id)` returns one row by id.
 
-`api.v2.upsert_zeopp_metrics(payload)` upserts one-or-many rows via `dict`,
-`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged.
+`api.v2.upsert_zeopp_metrics(payload, meta_provenance=None, ...)` upserts one-or-many rows via `dict`,
+`list[dict]`, or `pd.DataFrame`, forwarding all fields unchanged
+except `meta_provenance` (see above).
 
 ---
 
@@ -613,6 +664,27 @@ bundle = api.v2.get_autoprism_collection(
 
 bundle['mofchecker']
 bundle['zeopp_metrics']
+```
+
+---
+
+#### `api.v2.upsert_autoprism_collection(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False)`
+
+Upserts every section present in a combined AutoPrism payload
+(`computation_runs`, `adsorption_singlepoints`, `heat_capacities`,
+`isotherm_H2s`, `mofchecker`, `zeopp_metrics`). Provenance for the five
+AutoPrism tables comes from, in order: the `meta_provenance` argument, the
+payload's top-level `meta_provenance`, then git in `repo_dir` / the current
+directory.
+
+A failing section **does not raise by default**: it is reported with
+`status: "error"` and `overall_status` is `"partial_failure"`. Check
+`overall_status`, or pass `raise_on_error=True` to raise `RuntimeError` once
+all sections have been attempted.
+
+```python
+result = api.v2.upsert_autoprism_collection(payload, raise_on_error=True)
+result['totals']   # {'created': ..., 'updated': ..., 'failed_sections': 0}
 ```
 
 ---
@@ -1059,14 +1131,17 @@ All v2 methods route to:
 ## Dev Mode
 
 ```python
-# Preferred: choose target at init time
-api = prisma_api.init(local_dev=True)
+# Choose the target at init time
+api = prisma_api.init()                # PRODUCTION (default)
+api = prisma_api.init(local_dev=True)  # local dev server
 
-# Legacy config toggle (deprecated)
-api.update_dev_mode(True)
-
-# Or set at init time via env vars
-# PRISMA_API_DEV=true PRISMA_API_DEV_HOST_PORT=8000 python script.py
+# Dev host port and key come from config.yaml (`dev_host_port`, `dev_api_key`)
+# or, when there is no config file, from env vars:
+# PRISMA_API_DEV_API_KEY=... PRISMA_API_DEV_HOST_PORT=8000 python script.py
 ```
+
+`init()` prints the base URL it connected to. Only `local_dev=` selects the
+target: there is no env var for it, and the deprecated `update_dev_mode()`
+only writes a `dev` flag to `config.yaml`, which `init()` does not read.
 
 In dev mode all requests (v1 and v2) are routed to `http://localhost:{dev_host_port}/`.

@@ -26,12 +26,26 @@ import copy
 import json
 from collections import Counter
 import re
+import math
 import subprocess
-from datetime import datetime
+from datetime import date, datetime
+from urllib.parse import urlsplit, urlunsplit
 
 
 _BASE_PROD = "https://prisma-platform.org/api/v2"
 _DEFAULT_BUNDLE = object()
+_DEFAULT_UPLOAD_TIMEOUT = 120
+
+# AutoPrism table wrappers: method name -> (endpoint, wrapper key in the
+# collection payload). The wrapper key is also accepted by the single-table
+# upserts, e.g. ``{"zeopp_metrics": [...]}``.
+_AUTOPRISM_TABLES = {
+    "upsert_adsorption_singlepoint": ("/adsorption-singlepoint/", "adsorption_singlepoints"),
+    "upsert_heat_capacity": ("/heat-capacity/", "heat_capacities"),
+    "upsert_isotherm_h2": ("/isotherm-h2/", "isotherm_H2s"),
+    "upsert_mofchecker": ("/mofchecker/", "mofchecker"),
+    "upsert_zeopp_metrics": ("/zeopp-metrics/", "zeopp_metrics"),
+}
 
 # Material bundle sections, in the order the API emits them. Every section is a
 # list except ``mof_h2``, which is a single object or None.
@@ -67,11 +81,15 @@ class PrismaAPIv2:
     """
 
     def __init__(self, key: str, dev: bool = False, dev_host_port: str = "",
-                 return_format: str = "json"):
+                 return_format: str = "json",
+                 upload_timeout: int = _DEFAULT_UPLOAD_TIMEOUT):
         self._key = key
         self._dev = dev
         self._dev_host_port = dev_host_port
         self._return_format = return_format  # 'dataframe' | 'json'
+        # Default timeout (seconds) for PUT upserts; override per call with
+        # ``timeout=`` on the upsert methods that accept it.
+        self.upload_timeout = upload_timeout
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -154,10 +172,11 @@ class PrismaAPIv2:
         resp.raise_for_status()
         return resp
 
-    def _put(self, path: str, data: list) -> dict:
-        """PUT (upsert) request."""
-        resp = requests.put(self._url(path), json=data,
-                            headers=self._headers(), timeout=120)
+    def _put(self, path: str, data: list, timeout: int | None = None) -> dict:
+        """PUT (upsert) request. NaN/inf and numpy values are made JSON-safe."""
+        resp = requests.put(self._url(path), json=_json_safe(data),
+                            headers=self._headers(),
+                            timeout=timeout or self.upload_timeout)
         resp.raise_for_status()
         return resp.json()
 
@@ -1503,45 +1522,44 @@ class PrismaAPIv2:
         return []
 
     def _payload_to_records(self, payload: pd.DataFrame | list[dict] | dict) -> list[dict]:
-        """Normalise write payloads to list[dict] while preserving all fields."""
+        """
+        Normalise write payloads to list[dict] while preserving all fields.
+
+        NaN/±inf/``pd.NA``/``NaT`` become ``None`` and numpy scalars become
+        plain Python values, so the result is valid JSON.
+        """
         if isinstance(payload, pd.DataFrame):
-            return payload.to_dict(orient="records")
+            return _json_safe(payload.to_dict(orient="records"))
         if isinstance(payload, dict):
-            return [payload]
+            return [_json_safe(payload)]
         if isinstance(payload, list):
-            return payload
+            return _json_safe(payload)
         raise TypeError("payload must be a DataFrame, dict, or list[dict]")
 
-    def _autoprism_meta_provenance(self) -> dict[str, str | None]:
-        """Build meta_provenance from local repository and pyproject metadata."""
+    def _autoprism_meta_provenance(self, repo_dir: str | Path | None = None) -> dict[str, str | None]:
+        """
+        Build meta_provenance from the caller's git repository.
+
+        Git runs in *repo_dir*, or the current working directory if omitted —
+        i.e. the program doing the upload, not prisma_api itself. The
+        semantic version comes from that repository's ``pyproject.toml``.
+        """
+        cwd = Path(repo_dir) if repo_dir is not None else Path.cwd()
 
         def _git(args: list[str]) -> str | None:
-            try:
-                cp = subprocess.run(
-                    ["git", *args],
-                    cwd=Path(__file__).resolve().parents[1],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-            except OSError:
-                return None
-            if cp.returncode != 0:
-                return None
-            value = cp.stdout.strip()
-            return value or None
+            return _git_output(args, cwd)
 
         repo_root = _git(["rev-parse", "--show-toplevel"])
-        repo_name = Path(repo_root).name if repo_root else Path(__file__).resolve().parents[1].name
+        root = Path(repo_root) if repo_root else cwd.resolve()
         branch = _git(["rev-parse", "--abbrev-ref", "HEAD"])
         source_repo = (
-            repo_name
-            if branch in (None, "main")
-            else f"{repo_name} (branch: {branch})"
+            root.name
+            if branch in (None, "main", "HEAD")
+            else f"{root.name} (branch: {branch})"
         )
 
         pyproject_version: str | None = None
-        pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        pyproject_path = root / "pyproject.toml"
         if pyproject_path.exists():
             text = pyproject_path.read_text(encoding="utf-8")
             try:
@@ -1563,24 +1581,40 @@ class PrismaAPIv2:
             "source_commit_hash": _git(["rev-parse", "HEAD"]),
         }
 
-    def _autoprism_source_repo_url(self) -> str | None:
-        """Return the repository remote URL used for source provenance, if available."""
-        try:
-            cp = subprocess.run(
-                ["git", "remote", "get-url", "origin"],
-                cwd=Path(__file__).resolve().parents[1],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        except OSError:
-            return None
+    def _autoprism_source_repo_url(self, repo_dir: str | Path | None = None) -> str | None:
+        """Return the caller's ``origin`` remote URL with any credentials removed."""
+        cwd = Path(repo_dir) if repo_dir is not None else Path.cwd()
+        url = _git_output(["remote", "get-url", "origin"], cwd)
+        return _strip_url_credentials(url) if url else None
 
-        if cp.returncode != 0:
-            return None
+    def _resolve_meta_provenance(self, meta_provenance: dict | None = None,
+                                 repo_dir: str | Path | None = None) -> dict:
+        """Return *meta_provenance* as given, or derive it from git in *repo_dir*."""
+        if meta_provenance is not None:
+            if not isinstance(meta_provenance, dict):
+                raise TypeError("meta_provenance must be a dict or None")
+            return _json_safe(dict(meta_provenance))
+        return {
+            **self._autoprism_meta_provenance(repo_dir),
+            "source_repo_url": self._autoprism_source_repo_url(repo_dir),
+        }
 
-        value = cp.stdout.strip()
-        return value or None
+    def _upsert_autoprism_table(self, method_name: str,
+                                payload: pd.DataFrame | list[dict] | dict,
+                                meta_provenance: dict | None,
+                                repo_dir: str | Path | None,
+                                timeout: int | None) -> dict:
+        """Shared body of the AutoPrism table upserts: unwrap, stamp provenance, PUT."""
+        path, wrapper_key = _AUTOPRISM_TABLES[method_name]
+        if isinstance(payload, dict) and isinstance(payload.get(wrapper_key), list):
+            payload = payload[wrapper_key]
+        records = self._payload_to_records(payload)
+        meta = self._resolve_meta_provenance(meta_provenance, repo_dir)
+        enriched = [
+            {**record, "meta_provenance": meta} if isinstance(record, dict) else record
+            for record in records
+        ]
+        return self._put(path, enriched, timeout=timeout)
 
     def _properties_for(self, object_id: int, limit: int = 2000) -> list[dict]:
         """Return all Property records linked to *object_id* via GenericForeignKey.
@@ -2342,13 +2376,15 @@ class PrismaAPIv2:
         """GET /api/v2/computation-runs/{run_id}/"""
         return self._get(f"/computation-runs/{run_id}/")
 
-    def upsert_computation_runs(self, payload: pd.DataFrame | list[dict] | dict) -> dict:
+    def upsert_computation_runs(self, payload: pd.DataFrame | list[dict] | dict,
+                                timeout: int | None = None) -> dict:
         """
         PUT /api/v2/computation-runs/
 
         Accepts one object or many objects and forwards all provided fields.
         """
-        return self._put("/computation-runs/", self._payload_to_records(payload))
+        return self._put("/computation-runs/", self._payload_to_records(payload),
+                         timeout=timeout)
 
     def get_adsorption_singlepoint(
         self,
@@ -2382,31 +2418,32 @@ class PrismaAPIv2:
         """GET /api/v2/adsorption-singlepoint/{row_id}/"""
         return self._get(f"/adsorption-singlepoint/{row_id}/")
 
-    def upsert_adsorption_singlepoint(self, payload: pd.DataFrame | list[dict] | dict) -> dict:
+    def upsert_adsorption_singlepoint(
+        self,
+        payload: pd.DataFrame | list[dict] | dict,
+        meta_provenance: dict | None = None,
+        repo_dir: str | Path | None = None,
+        timeout: int | None = None,
+    ) -> dict:
         """
         PUT /api/v2/adsorption-singlepoint/
 
-        Accepts one object or many objects.
-        Automatically normalises ``meta_provenance`` using local repo metadata.
+        Accepts one object or many objects. Every row's ``meta_provenance`` is
+        replaced with the resolved provenance.
+
+        Args:
+            payload: DataFrame, one record, a list of records, or
+                ``{"adsorption_singlepoints": [...]}``.
+            meta_provenance: Provenance stamped on every row, used as-is. If
+                omitted it is derived from git in *repo_dir* (default: the
+                current working directory), with credentials removed from the
+                remote URL.
+            repo_dir: Repository to read provenance from when
+                *meta_provenance* is not given.
+            timeout: Request timeout in seconds (default: ``upload_timeout``).
         """
-        if isinstance(payload, dict) and isinstance(payload.get("adsorption_singlepoints"), list):
-            records = self._payload_to_records(payload["adsorption_singlepoints"])
-        else:
-            records = self._payload_to_records(payload)
-        meta = {
-            **self._autoprism_meta_provenance(),
-            "source_repo_url": self._autoprism_source_repo_url(),
-        }
-        enriched = [
-            {
-                **record,
-                "meta_provenance": meta,
-            }
-            if isinstance(record, dict)
-            else record
-            for record in records
-        ]
-        return self._put("/adsorption-singlepoint/", enriched)
+        return self._upsert_autoprism_table("upsert_adsorption_singlepoint", payload,
+                                            meta_provenance, repo_dir, timeout)
 
     def get_heat_capacity(
         self,
@@ -2434,32 +2471,32 @@ class PrismaAPIv2:
         """GET /api/v2/heat-capacity/{row_id}/"""
         return self._get(f"/heat-capacity/{row_id}/")
 
-    def upsert_heat_capacity(self, payload: pd.DataFrame | list[dict] | dict) -> dict:
+    def upsert_heat_capacity(
+        self,
+        payload: pd.DataFrame | list[dict] | dict,
+        meta_provenance: dict | None = None,
+        repo_dir: str | Path | None = None,
+        timeout: int | None = None,
+    ) -> dict:
         """
         PUT /api/v2/heat-capacity/
 
-        Accepts one object or many objects.
-        Automatically normalises ``meta_provenance`` using local repo metadata.
-        """
-        if isinstance(payload, dict) and isinstance(payload.get("heat_capacities"), list):
-            records = self._payload_to_records(payload["heat_capacities"])
-        else:
-            records = self._payload_to_records(payload)
+        Accepts one object or many objects. Every row's ``meta_provenance`` is
+        replaced with the resolved provenance.
 
-        meta = {
-            **self._autoprism_meta_provenance(),
-            "source_repo_url": self._autoprism_source_repo_url(),
-        }
-        enriched = [
-            {
-                **record,
-                "meta_provenance": meta,
-            }
-            if isinstance(record, dict)
-            else record
-            for record in records
-        ]
-        return self._put("/heat-capacity/", enriched)
+        Args:
+            payload: DataFrame, one record, a list of records, or
+                ``{"heat_capacities": [...]}``.
+            meta_provenance: Provenance stamped on every row, used as-is. If
+                omitted it is derived from git in *repo_dir* (default: the
+                current working directory), with credentials removed from the
+                remote URL.
+            repo_dir: Repository to read provenance from when
+                *meta_provenance* is not given.
+            timeout: Request timeout in seconds (default: ``upload_timeout``).
+        """
+        return self._upsert_autoprism_table("upsert_heat_capacity", payload,
+                                            meta_provenance, repo_dir, timeout)
 
     def get_isotherm_h2(
         self,
@@ -2496,29 +2533,32 @@ class PrismaAPIv2:
         """GET /api/v2/isotherm-h2/{row_id}/"""
         return self._get(f"/isotherm-h2/{row_id}/")
 
-    def upsert_isotherm_h2(self, payload: pd.DataFrame | list[dict] | dict) -> dict:
+    def upsert_isotherm_h2(
+        self,
+        payload: pd.DataFrame | list[dict] | dict,
+        meta_provenance: dict | None = None,
+        repo_dir: str | Path | None = None,
+        timeout: int | None = None,
+    ) -> dict:
         """
         PUT /api/v2/isotherm-h2/
 
-        Accepts one object or many objects.
-        Automatically normalises ``meta_provenance`` using local repo metadata.
-        """
-        if isinstance(payload, dict) and isinstance(payload.get("isotherm_H2s"), list):
-            records = self._payload_to_records(payload["isotherm_H2s"])
-        else:
-            records = self._payload_to_records(payload)
+        Accepts one object or many objects. Every row's ``meta_provenance`` is
+        replaced with the resolved provenance.
 
-        meta = self._autoprism_meta_provenance()
-        enriched = [
-            {
-                **record,
-                "meta_provenance": meta,
-            }
-            if isinstance(record, dict)
-            else record
-            for record in records
-        ]
-        return self._put("/isotherm-h2/", enriched)
+        Args:
+            payload: DataFrame, one record, a list of records, or
+                ``{"isotherm_H2s": [...]}``.
+            meta_provenance: Provenance stamped on every row, used as-is. If
+                omitted it is derived from git in *repo_dir* (default: the
+                current working directory), with credentials removed from the
+                remote URL.
+            repo_dir: Repository to read provenance from when
+                *meta_provenance* is not given.
+            timeout: Request timeout in seconds (default: ``upload_timeout``).
+        """
+        return self._upsert_autoprism_table("upsert_isotherm_h2", payload,
+                                            meta_provenance, repo_dir, timeout)
 
     def get_mofchecker(
         self,
@@ -2552,29 +2592,32 @@ class PrismaAPIv2:
         """GET /api/v2/mofchecker/{row_id}/"""
         return self._get(f"/mofchecker/{row_id}/")
 
-    def upsert_mofchecker(self, payload: pd.DataFrame | list[dict] | dict) -> dict:
+    def upsert_mofchecker(
+        self,
+        payload: pd.DataFrame | list[dict] | dict,
+        meta_provenance: dict | None = None,
+        repo_dir: str | Path | None = None,
+        timeout: int | None = None,
+    ) -> dict:
         """
         PUT /api/v2/mofchecker/
 
-        Accepts one object or many objects.
-        Automatically normalises ``meta_provenance`` using local repo metadata.
-        """
-        if isinstance(payload, dict) and isinstance(payload.get("mofchecker"), list):
-            records = self._payload_to_records(payload["mofchecker"])
-        else:
-            records = self._payload_to_records(payload)
+        Accepts one object or many objects. Every row's ``meta_provenance`` is
+        replaced with the resolved provenance.
 
-        meta = self._autoprism_meta_provenance()
-        enriched = [
-            {
-                **record,
-                "meta_provenance": meta,
-            }
-            if isinstance(record, dict)
-            else record
-            for record in records
-        ]
-        return self._put("/mofchecker/", enriched)
+        Args:
+            payload: DataFrame, one record, a list of records, or
+                ``{"mofchecker": [...]}``.
+            meta_provenance: Provenance stamped on every row, used as-is. If
+                omitted it is derived from git in *repo_dir* (default: the
+                current working directory), with credentials removed from the
+                remote URL.
+            repo_dir: Repository to read provenance from when
+                *meta_provenance* is not given.
+            timeout: Request timeout in seconds (default: ``upload_timeout``).
+        """
+        return self._upsert_autoprism_table("upsert_mofchecker", payload,
+                                            meta_provenance, repo_dir, timeout)
 
     def get_zeopp_metrics(
         self,
@@ -2599,31 +2642,41 @@ class PrismaAPIv2:
         """GET /api/v2/zeopp-metrics/{row_id}/"""
         return self._get(f"/zeopp-metrics/{row_id}/")
 
-    def upsert_zeopp_metrics(self, payload: pd.DataFrame | list[dict] | dict) -> dict:
+    def upsert_zeopp_metrics(
+        self,
+        payload: pd.DataFrame | list[dict] | dict,
+        meta_provenance: dict | None = None,
+        repo_dir: str | Path | None = None,
+        timeout: int | None = None,
+    ) -> dict:
         """
         PUT /api/v2/zeopp-metrics/
 
-        Accepts one object or many objects.
-        Automatically normalises ``meta_provenance`` using local repo metadata.
+        Accepts one object or many objects. Every row's ``meta_provenance`` is
+        replaced with the resolved provenance.
+
+        Args:
+            payload: DataFrame, one record, a list of records, or
+                ``{"zeopp_metrics": [...]}``.
+            meta_provenance: Provenance stamped on every row, used as-is. If
+                omitted it is derived from git in *repo_dir* (default: the
+                current working directory), with credentials removed from the
+                remote URL.
+            repo_dir: Repository to read provenance from when
+                *meta_provenance* is not given.
+            timeout: Request timeout in seconds (default: ``upload_timeout``).
         """
-        if isinstance(payload, dict) and isinstance(payload.get("zeopp_metrics"), list):
-            records = self._payload_to_records(payload["zeopp_metrics"])
-        else:
-            records = self._payload_to_records(payload)
+        return self._upsert_autoprism_table("upsert_zeopp_metrics", payload,
+                                            meta_provenance, repo_dir, timeout)
 
-        meta = self._autoprism_meta_provenance()
-        enriched = [
-            {
-                **record,
-                "meta_provenance": meta,
-            }
-            if isinstance(record, dict)
-            else record
-            for record in records
-        ]
-        return self._put("/zeopp-metrics/", enriched)
-
-    def upsert_autoprism_collection(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def upsert_autoprism_collection(
+        self,
+        payload: dict[str, Any],
+        meta_provenance: dict | None = None,
+        repo_dir: str | Path | None = None,
+        timeout: int | None = None,
+        raise_on_error: bool = False,
+    ) -> dict[str, Any]:
         """
         Upsert multiple AutoPrism sections from a single combined payload.
 
@@ -2632,10 +2685,18 @@ class PrismaAPIv2:
             computation_runs, adsorption_singlepoints, heat_capacities,
             isotherm_H2s, mofchecker, zeopp_metrics, meta_provenance
 
-        Notes:
-            - Top-level ``meta_provenance`` is ignored.
-            - Each section is passed to its dedicated upsert wrapper so section-
-              specific provenance normalization rules remain in one place.
+        Provenance (stamped on every row of the five AutoPrism tables), in
+        order of precedence:
+            1. the *meta_provenance* argument;
+            2. the payload's top-level ``meta_provenance``;
+            3. derived from git in *repo_dir* (default: current directory).
+
+        Error handling:
+            By default a failing section does not raise: it is reported with
+            ``status: "error"`` and ``overall_status`` becomes
+            ``"partial_failure"``. Check ``overall_status``, or pass
+            ``raise_on_error=True`` to raise ``RuntimeError`` after all
+            sections have been attempted.
 
         Returns:
             dict with keys:
@@ -2646,13 +2707,14 @@ class PrismaAPIv2:
         if not isinstance(payload, dict):
             raise TypeError("payload must be a dict matching the AutoPrism collection shape")
 
-        section_handlers: list[tuple[str, str, Any]] = [
-            ("computation_runs", "upsert_computation_runs", payload.get("computation_runs")),
-            ("adsorption_singlepoints", "upsert_adsorption_singlepoint", payload.get("adsorption_singlepoints")),
-            ("heat_capacities", "upsert_heat_capacity", payload.get("heat_capacities")),
-            ("isotherm_H2s", "upsert_isotherm_h2", payload.get("isotherm_H2s")),
-            ("mofchecker", "upsert_mofchecker", payload.get("mofchecker")),
-            ("zeopp_metrics", "upsert_zeopp_metrics", payload.get("zeopp_metrics")),
+        if meta_provenance is None:
+            meta_provenance = payload.get("meta_provenance")
+        # Resolve once so every section carries identical provenance.
+        meta = self._resolve_meta_provenance(meta_provenance, repo_dir)
+
+        section_handlers: list[tuple[str, str]] = [
+            ("computation_runs", "upsert_computation_runs"),
+            *((key, method) for method, (_, key) in _AUTOPRISM_TABLES.items()),
         ]
 
         sections: dict[str, dict[str, Any]] = {}
@@ -2660,7 +2722,8 @@ class PrismaAPIv2:
         total_updated = 0
         failed = 0
 
-        for section_name, method_name, section_payload in section_handlers:
+        for section_name, method_name in section_handlers:
+            section_payload = payload.get(section_name)
             if section_payload is None:
                 sections[section_name] = {
                     "status": "skipped",
@@ -2670,7 +2733,10 @@ class PrismaAPIv2:
 
             try:
                 method = getattr(self, method_name)
-                result = method(section_payload)
+                if method_name in _AUTOPRISM_TABLES:
+                    result = method(section_payload, meta_provenance=meta, timeout=timeout)
+                else:
+                    result = method(section_payload, timeout=timeout)
                 created = int(result.get("created", 0)) if isinstance(result, dict) else 0
                 updated = int(result.get("updated", 0)) if isinstance(result, dict) else 0
                 total_created += created
@@ -2688,7 +2754,7 @@ class PrismaAPIv2:
                     "error": str(exc),
                 }
 
-        return {
+        summary = {
             "sections": sections,
             "totals": {
                 "created": total_created,
@@ -2697,6 +2763,14 @@ class PrismaAPIv2:
             },
             "overall_status": "ok" if failed == 0 else "partial_failure",
         }
+        if raise_on_error and failed:
+            errors = "; ".join(
+                f"{name}: {info['error']}"
+                for name, info in sections.items()
+                if info["status"] == "error"
+            )
+            raise RuntimeError(f"AutoPrism upsert failed for {failed} section(s): {errors}")
+        return summary
 
     def get_autoprism_collection(
         self,
@@ -2763,10 +2837,7 @@ class PrismaAPIv2:
             records = self._as_records(value)
             return [r for r in records if isinstance(r, dict)]
 
-        meta = {
-            **self._autoprism_meta_provenance(),
-            "source_repo_url": self._autoprism_source_repo_url(),
-        }
+        meta = self._resolve_meta_provenance()
 
         def _safe_fetch(section: str, fetcher, **kwargs) -> pd.DataFrame | list[dict]:
             try:
@@ -3312,6 +3383,63 @@ class PrismaAPIv2:
 def _compact(**kwargs) -> dict:
     """Return kwargs dict with None values removed."""
     return {k: v for k, v in kwargs.items() if v is not None}
+
+
+def _json_safe(value: Any) -> Any:
+    """
+    Recursively convert *value* into something ``json.dumps(allow_nan=False)``
+    accepts: NaN/±inf/``pd.NA``/``NaT`` -> None, numpy scalars and arrays ->
+    Python values, timestamps -> ISO strings.
+    """
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, int):
+        return value
+    if value is pd.NA or value is pd.NaT:
+        return None
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        return value.isoformat()
+    tolist = getattr(value, "tolist", None)  # numpy scalars and arrays
+    if callable(tolist):
+        return _json_safe(tolist())
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def _git_output(args: list[str], cwd: Path) -> str | None:
+    """Run ``git <args>`` in *cwd*; return stripped stdout, or None on failure."""
+    try:
+        cp = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if cp.returncode != 0:
+        return None
+    return cp.stdout.strip() or None
+
+
+def _strip_url_credentials(url: str) -> str:
+    """Drop ``user:token@`` from an http(s) remote URL (CI checkouts embed tokens)."""
+    parts = urlsplit(url)
+    if parts.scheme in ("http", "https") and "@" in parts.netloc:
+        host = parts.netloc.rsplit("@", 1)[1]
+        return urlunsplit(parts._replace(netloc=host))
+    return url
 
 
 def _as_material_names(value: str | list[str] | None) -> list[str]:

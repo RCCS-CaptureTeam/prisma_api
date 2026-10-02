@@ -1,6 +1,6 @@
 # PrISMa API — Python Client Reference (v1)
 
-> **Package:** `prisma_api` v0.3.9  
+> **Package:** `prisma_api` v0.4.3  
 > **Base URL (production):** `https://prisma-platform.org/api/`  
 > **Authentication:** `X-API-Key` header (set via config file or `PRISMA_API_KEY` env var)
 
@@ -13,13 +13,28 @@ See [API_REFERENCE_V2.md](API_REFERENCE_V2.md) for the `api.v2` method reference
 ```python
 import prisma_api
 
-api = prisma_api.init()          # reads key from ~/.config/prisma_api/config.yaml
-api_dev = prisma_api.init(local_dev=True)   # target local/dev backend at init time
-api.v2                           # PrismaAPIv2 instance, attached automatically
+api = prisma_api.init()                    # PRODUCTION (prisma-platform.org)
+api_dev = prisma_api.init(local_dev=True)  # local dev server on localhost:<dev_host_port>
+api.v2                                     # PrismaAPIv2 instance, attached automatically
 ```
 
-`update_dev_mode()` still exists but is deprecated; prefer selecting dev/prod
-target with `init(local_dev=True|False)`.
+`init()` prints the API base URL it connected to. `local_dev=False` (the
+default) means **production**.
+
+API key lookup with the default `use_config_file=True`:
+
+1. `config.yaml` (see `prisma_api.locate_config()`), if it exists;
+2. otherwise the env vars `PRISMA_API_KEY`, `PRISMA_API_DEV_API_KEY`,
+   `PRISMA_API_DEV_HOST_PORT`;
+3. otherwise an interactive prompt that writes `config.yaml`. Without a
+   terminal (e.g. CI) this raises `RuntimeError` naming the env vars instead.
+
+`init(use_config_file=False)` reads the env vars only.
+
+`update_dev_mode()` is deprecated and no longer changes the target; select
+dev/prod with `init(local_dev=True|False)`. See
+[API_REFERENCE_V2.md](API_REFERENCE_V2.md#initialisation) for
+`upload_timeout` and other v2 options.
 
 ---
 
@@ -106,14 +121,17 @@ host responded.
 ## Dev Mode
 
 ```python
-# Preferred: choose target at init time
-api = prisma_api.init(local_dev=True)
+# Choose the target at init time
+api = prisma_api.init()                # PRODUCTION (default)
+api = prisma_api.init(local_dev=True)  # local dev server
 
-# Deprecated: persisted config toggle (still available)
-api.update_dev_mode(True)
-
-# Or set at init time via env vars
-# PRISMA_API_DEV=true PRISMA_API_DEV_HOST_PORT=8000 python script.py
+# Dev host port and key come from config.yaml (`dev_host_port`, `dev_api_key`)
+# or, when there is no config file, from env vars:
+# PRISMA_API_DEV_API_KEY=... PRISMA_API_DEV_HOST_PORT=8000 python script.py
 ```
+
+`init()` prints the base URL it connected to. Only `local_dev=` selects the
+target: there is no env var for it, and the deprecated `update_dev_mode()`
+only writes a `dev` flag to `config.yaml`, which `init()` does not read.
 
 In dev mode all requests (v1 and v2) are routed to `http://localhost:{dev_host_port}/`.

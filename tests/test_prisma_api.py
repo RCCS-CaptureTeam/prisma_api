@@ -380,3 +380,39 @@ def test_get_materials_data_empty_data_list():
     df = result.get("data") if "data" in result else result.get("simulated")
     if df is not None:
         assert isinstance(df, pd.DataFrame)
+
+
+# ── Config fallback (no config file) ──────────────────────────────────────────
+
+def test_get_or_create_config_falls_back_to_env(monkeypatch):
+    from prisma_api import config
+    monkeypatch.setattr(config, "load_config", lambda: None)
+    monkeypatch.setenv("PRISMA_API_KEY", "env-prod")
+    monkeypatch.delenv("PRISMA_API_DEV_API_KEY", raising=False)
+    monkeypatch.setenv("PRISMA_API_DEV_HOST_PORT", "9000")
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("must not prompt"))
+
+    cfg = config.get_or_create_config()
+
+    assert cfg == {"api_key": "env-prod", "dev_api_key": "env-prod", "dev_host_port": "9000"}
+
+
+def test_get_or_create_config_raises_without_tty(monkeypatch):
+    from prisma_api import config
+    monkeypatch.setattr(config, "load_config", lambda: None)
+    for name in config.ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(config.sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("must not prompt"))
+
+    with pytest.raises(RuntimeError, match="PRISMA_API_KEY"):
+        config.get_or_create_config()
+
+
+def test_version_matches_installed_metadata():
+    import prisma_api as pkg
+    from importlib.metadata import version, PackageNotFoundError
+    try:
+        assert pkg.__version__ == version("prisma_api")
+    except PackageNotFoundError:
+        assert pkg.__version__ == "0+unknown"

@@ -1,3 +1,5 @@
+import os
+import sys
 from pathlib import Path
 import pandas as pd
 import yaml
@@ -54,6 +56,12 @@ def create_config_file(api_key: str = None):
         raise ImportError("PyYAML is required. Install with: pip install pyyaml")
 
     if not api_key:
+        if not sys.stdin or not sys.stdin.isatty():
+            raise RuntimeError(
+                f"No PrISMa config file at {get_config_path()} and no API key in the "
+                f"environment. Set {', '.join(ENV_VARS)} (at least PRISMA_API_KEY), "
+                "or run interactively once to create the config file."
+            )
         val = input("Enter your PrISMa API key: ").strip()
         api_key = val
 
@@ -67,10 +75,40 @@ def create_config_file(api_key: str = None):
         yaml.safe_dump(cfg, f, sort_keys=False)
     return cfg
 
+# Environment variables read when no config file exists (or use_config_file=False)
+ENV_VARS = ("PRISMA_API_KEY", "PRISMA_API_DEV_API_KEY", "PRISMA_API_DEV_HOST_PORT")
+
+
+def config_from_env():
+    """
+    Build a config dict from PRISMA_API_* environment variables.
+
+    Returns None if none of them is set.
+    """
+    if not any(os.getenv(name) for name in ENV_VARS):
+        return None
+    prod_key = os.getenv("PRISMA_API_KEY", "")
+    return {
+        "api_key": prod_key,
+        "dev_api_key": os.getenv("PRISMA_API_DEV_API_KEY", prod_key),
+        "dev_host_port": os.getenv("PRISMA_API_DEV_HOST_PORT", "8000"),
+    }
+
+
 # Get or create config - intended use by initialisation of main prisma_api class
 def get_or_create_config():
-    """Return existing config or create it interactively if missing."""
+    """
+    Return the config, in order of preference:
+
+    1. config.yaml, if it exists;
+    2. PRISMA_API_* environment variables (nothing is written to disk);
+    3. an interactive prompt, which creates config.yaml. Without a terminal
+       (e.g. CI) this raises instead of blocking on input().
+    """
     cfg = load_config()
+    if cfg is not None:
+        return cfg
+    cfg = config_from_env()
     if cfg is not None:
         return cfg
     return create_config_file()

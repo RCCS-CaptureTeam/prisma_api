@@ -1549,8 +1549,8 @@ def test_upsert_autoprism_tables_accept_dataframes_and_pass_all_fields(api, monk
         "source_commit_hash": "724b0306f6b21f953fba21e424cdda230525862f",
     }
     fake_repo_url = "https://github.com/AutoPrism/AutoPrism"
-    monkeypatch.setattr(api, "_autoprism_meta_provenance", lambda: fake_meta)
-    monkeypatch.setattr(api, "_autoprism_source_repo_url", lambda: fake_repo_url)
+    monkeypatch.setattr(api, "_autoprism_meta_provenance", lambda repo_dir=None: fake_meta)
+    monkeypatch.setattr(api, "_autoprism_source_repo_url", lambda repo_dir=None: fake_repo_url)
 
     adsorption_df = pd.DataFrame([
         {
@@ -1595,15 +1595,15 @@ def test_upsert_autoprism_tables_accept_dataframes_and_pass_all_fields(api, monk
     }]
     isotherm_h2_expected = [{
         **isotherm_h2_df.to_dict(orient="records")[0],
-        "meta_provenance": fake_meta,
+        "meta_provenance": {**fake_meta, "source_repo_url": fake_repo_url},
     }]
     mofchecker_expected = [{
         **mofchecker_df.to_dict(orient="records")[0],
-        "meta_provenance": fake_meta,
+        "meta_provenance": {**fake_meta, "source_repo_url": fake_repo_url},
     }]
     zeopp_expected = [{
         **zeopp_df.to_dict(orient="records")[0],
-        "meta_provenance": fake_meta,
+        "meta_provenance": {**fake_meta, "source_repo_url": fake_repo_url},
     }]
 
     resp_lib.add(
@@ -1657,7 +1657,8 @@ def test_upsert_zeopp_metrics_accepts_wrapped_payload_and_overwrites_meta(api, m
         "source_repo_tag": "0.1.0",
         "source_commit_hash": "724b0306f6b21f953fba21e424cdda230525862f",
     }
-    monkeypatch.setattr(api, "_autoprism_meta_provenance", lambda: fake_meta)
+    monkeypatch.setattr(api, "_autoprism_meta_provenance", lambda repo_dir=None: fake_meta)
+    monkeypatch.setattr(api, "_autoprism_source_repo_url", lambda repo_dir=None: None)
 
     payload = {
         "zeopp_metrics": [
@@ -1687,7 +1688,7 @@ def test_upsert_zeopp_metrics_accepts_wrapped_payload_and_overwrites_meta(api, m
         "md5": "aaaaaaaa",
         "probe": "N2",
         "Di": 6.4,
-        "meta_provenance": fake_meta,
+        "meta_provenance": {**fake_meta, "source_repo_url": None},
     }]
 
     resp_lib.add(
@@ -1703,13 +1704,22 @@ def test_upsert_zeopp_metrics_accepts_wrapped_payload_and_overwrites_meta(api, m
 
 
 def test_upsert_autoprism_collection_dispatches_sections(api, monkeypatch):
-    monkeypatch.setattr(api, "upsert_computation_runs", lambda payload: {"created": 1, "updated": 0})
-    monkeypatch.setattr(api, "upsert_adsorption_singlepoint", lambda payload: {"created": 2, "updated": 0})
-    monkeypatch.setattr(api, "upsert_heat_capacity", lambda payload: {"created": 0, "updated": 3})
-    monkeypatch.setattr(api, "upsert_isotherm_h2", lambda payload: {"created": 4, "updated": 1})
-    monkeypatch.setattr(api, "upsert_mofchecker", lambda payload: {"created": 5, "updated": 0})
-    monkeypatch.setattr(api, "upsert_zeopp_metrics", lambda payload: {"created": 6, "updated": 2})
+    calls = {}
 
+    def _fake(name, result):
+        def _method(payload, **kwargs):
+            calls[name] = kwargs
+            return result
+        return _method
+
+    monkeypatch.setattr(api, "upsert_computation_runs", _fake("computation_runs", {"created": 1, "updated": 0}))
+    monkeypatch.setattr(api, "upsert_adsorption_singlepoint", _fake("adsorption", {"created": 2, "updated": 0}))
+    monkeypatch.setattr(api, "upsert_heat_capacity", _fake("heat", {"created": 0, "updated": 3}))
+    monkeypatch.setattr(api, "upsert_isotherm_h2", _fake("h2", {"created": 4, "updated": 1}))
+    monkeypatch.setattr(api, "upsert_mofchecker", _fake("mofchecker", {"created": 5, "updated": 0}))
+    monkeypatch.setattr(api, "upsert_zeopp_metrics", _fake("zeopp", {"created": 6, "updated": 2}))
+
+    top_level_meta = {"source_repo": "AutoPrism", "source_commit_hash": "abc123"}
     payload = {
         "computation_runs": [{"id": "run-1"}],
         "adsorption_singlepoints": [{"id": 1}],
@@ -1717,7 +1727,7 @@ def test_upsert_autoprism_collection_dispatches_sections(api, monkeypatch):
         "isotherm_H2s": [{"id": 3}],
         "mofchecker": [{"id": 4}],
         "zeopp_metrics": [{"id": 5}],
-        "meta_provenance": {"source_repo": "ignored"},
+        "meta_provenance": top_level_meta,
     }
 
     result = api.upsert_autoprism_collection(payload)
@@ -1728,12 +1738,33 @@ def test_upsert_autoprism_collection_dispatches_sections(api, monkeypatch):
     assert result["totals"]["failed_sections"] == 0
     assert result["sections"]["zeopp_metrics"]["status"] == "ok"
     assert result["sections"]["mofchecker"]["status"] == "ok"
+    # Top-level meta_provenance is passed down to every AutoPrism table.
+    for name in ("adsorption", "heat", "h2", "mofchecker", "zeopp"):
+        assert calls[name]["meta_provenance"] == top_level_meta
+    assert "meta_provenance" not in calls["computation_runs"]
+
+
+def test_upsert_autoprism_collection_argument_meta_overrides_payload(api, monkeypatch):
+    seen = {}
+
+    def _capture(payload, **kwargs):
+        seen.update(kwargs)
+        return {"created": 1, "updated": 0}
+
+    monkeypatch.setattr(api, "upsert_zeopp_metrics", _capture)
+    override = {"source_repo": "explicit"}
+    api.upsert_autoprism_collection(
+        {"zeopp_metrics": [{"id": 5}], "meta_provenance": {"source_repo": "payload"}},
+        meta_provenance=override,
+    )
+    assert seen["meta_provenance"] == override
 
 
 def test_upsert_autoprism_collection_reports_skips_and_errors(api, monkeypatch):
-    monkeypatch.setattr(api, "upsert_computation_runs", lambda payload: {"created": 1, "updated": 0})
+    monkeypatch.setattr(api, "upsert_computation_runs", lambda payload, **kw: {"created": 1, "updated": 0})
+    monkeypatch.setattr(api, "_resolve_meta_provenance", lambda meta=None, repo_dir=None: meta or {})
 
-    def _raise_error(payload):
+    def _raise_error(payload, **kwargs):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(api, "upsert_zeopp_metrics", _raise_error)
@@ -1752,6 +1783,111 @@ def test_upsert_autoprism_collection_reports_skips_and_errors(api, monkeypatch):
     assert result["sections"]["computation_runs"]["status"] == "ok"
     assert result["sections"]["adsorption_singlepoints"]["status"] == "skipped"
     assert result["sections"]["zeopp_metrics"]["status"] == "error"
+
+    with pytest.raises(RuntimeError, match="zeopp_metrics: boom"):
+        api.upsert_autoprism_collection(payload, raise_on_error=True)
+
+
+@resp_lib.activate
+def test_upsert_explicit_meta_provenance_used_as_is(api, monkeypatch):
+    def _no_git(*args, **kwargs):
+        raise AssertionError("git provenance must not be derived when meta_provenance is given")
+
+    monkeypatch.setattr(api, "_autoprism_meta_provenance", _no_git)
+    meta = {"source_repo": "AutoPrism", "source_commit_hash": "abc123"}
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/isotherm-h2/",
+        match=[matchers.json_params_matcher([{"structure": "X", "meta_provenance": meta}])],
+        json={"created": 1, "updated": 0},
+    )
+    assert api.upsert_isotherm_h2({"structure": "X"}, meta_provenance=meta)["created"] == 1
+
+
+def _init_git_repo(path, remote):
+    import subprocess
+    run = lambda *a: subprocess.run(["git", *a], cwd=path, check=True, capture_output=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "t")
+    (path / "pyproject.toml").write_text('[project]\nname = "caller"\nversion = "9.8.7"\n')
+    run("add", ".")
+    run("commit", "-q", "-m", "init")
+    run("tag", "v9.8.7")
+    run("remote", "add", "origin", remote)
+
+
+def test_meta_provenance_describes_caller_repo_not_prisma_api(api, tmp_path, monkeypatch):
+    repo = tmp_path / "caller_repo"
+    repo.mkdir()
+    _init_git_repo(repo, "https://x-access-token:SECRET@github.com/org/caller_repo.git")
+    monkeypatch.chdir(repo)
+
+    meta = api._resolve_meta_provenance()
+
+    assert meta["source_repo"] == "caller_repo"
+    assert meta["source_repo_semantic_version"] == "9.8.7"
+    assert meta["source_repo_tag"] == "v9.8.7"
+    assert meta["source_commit_hash"] and len(meta["source_commit_hash"]) == 40
+    assert meta["source_repo_url"] == "https://github.com/org/caller_repo.git"
+    assert "SECRET" not in json.dumps(meta)
+
+    # repo_dir= takes precedence over the working directory.
+    monkeypatch.chdir(tmp_path)
+    assert api._resolve_meta_provenance(repo_dir=repo)["source_repo"] == "caller_repo"
+
+
+@pytest.mark.parametrize("url, expected", [
+    ("https://x-access-token:tok@github.com/o/r.git", "https://github.com/o/r.git"),
+    ("https://user@github.com/o/r", "https://github.com/o/r"),
+    ("https://github.com/o/r", "https://github.com/o/r"),
+    ("git@github.com:o/r.git", "git@github.com:o/r.git"),
+])
+def test_strip_url_credentials(url, expected):
+    from prisma_api.prisma_api_v2 import _strip_url_credentials
+    assert _strip_url_credentials(url) == expected
+
+
+def test_payload_to_records_is_strict_json_safe(api):
+    import numpy as np
+    df = pd.DataFrame({
+        "structure": ["A", "B", None],
+        "value": [1.0, np.nan, np.inf],
+        "count": pd.array([1, None, 3], dtype="Int64"),
+        "when": [pd.Timestamp("2026-01-01"), pd.NaT, pd.Timestamp("2026-01-02")],
+        "flag": [np.bool_(True), np.bool_(False), np.bool_(True)],
+    })
+    records = api._payload_to_records(df)
+    json.dumps(records, allow_nan=False)
+    assert records[1]["value"] is None
+    assert records[2]["value"] is None
+    assert records[1]["count"] is None
+    assert records[1]["when"] is None
+    assert records[0]["flag"] is True
+
+    nested = api._payload_to_records([{"a": float("nan"), "b": {"c": np.float64("-inf"), "d": [np.int64(2)]}}])
+    json.dumps(nested, allow_nan=False)
+    assert nested == [{"a": None, "b": {"c": None, "d": [2]}}]
+
+
+@resp_lib.activate
+def test_put_body_has_no_nan_and_honours_timeout(api, monkeypatch):
+    import numpy as np
+    captured = {}
+    real_put = requests.put
+
+    def _spy(url, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return real_put(url, **kwargs)
+
+    monkeypatch.setattr(requests, "put", _spy)
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/region-costs/", json={"created": 1})
+    api.upload_timeout = 999
+    api.upsert_region_costs(pd.DataFrame({"region": ["UK"], "cost": [np.nan]}))
+
+    body = resp_lib.calls[0].request.body
+    json.loads(body, parse_constant=lambda c: pytest.fail(f"non-JSON constant {c}"))
+    assert captured["timeout"] == 999
 
 
 def test_get_autoprism_collection_allows_empty_payloads(api, monkeypatch):

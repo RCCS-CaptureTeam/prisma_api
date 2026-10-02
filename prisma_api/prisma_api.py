@@ -25,11 +25,15 @@ def _safe_nan_check(x):
 # prisma_api main class
 class prisma_api():
 
-    def __init__(self, use_config_file=True, local_dev: bool = False):
+    def __init__(self, use_config_file=True, local_dev: bool = False,
+                 upload_timeout: int = 120):
         
         # Initialise `prisma_api` object with api_key location
         self.verbose = False
         # Initialise `prisma_api` object with api_key location
+        # use_config_file=True: config.yaml, else PRISMA_API_* env vars, else
+        # an interactive prompt (raises instead when there is no terminal).
+        # use_config_file=False: env vars only.
         if use_config_file:
             cfg = get_or_create_config()
             prod_key = cfg.get('api_key', '')
@@ -40,7 +44,9 @@ class prisma_api():
             dev_key = os.getenv('PRISMA_API_DEV_API_KEY', prod_key)
             dev_host_port = os.getenv('PRISMA_API_DEV_HOST_PORT', '8000')
 
-        # local_dev now controls target DB explicitly at init time.
+        # local_dev controls the target DB at init time:
+        #   local_dev=False (default) -> PRODUCTION (prisma-platform.org)
+        #   local_dev=True            -> local dev server on localhost:<dev_host_port>
         self.dev = bool(local_dev)
         self.dev_host_port = dev_host_port
         self.key = dev_key if self.dev else prod_key
@@ -50,7 +56,12 @@ class prisma_api():
             dev=self.dev,
             dev_host_port=getattr(self, 'dev_host_port', ''),
             return_format=getattr(self, '_return_format', 'json'),
+            upload_timeout=upload_timeout,
         )
+
+        # Make the target explicit so test uploads don't go to production by mistake.
+        target = "LOCAL DEV" if self.dev else "PRODUCTION"
+        print(f"prisma_api: connected to {target} API at {self.v2._base_url()}")
 
     def set_return_format(self, fmt: str) -> None:
         """
