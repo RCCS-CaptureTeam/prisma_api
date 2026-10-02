@@ -46,6 +46,28 @@ _AUTOPRISM_TABLES = {
     "upsert_mofchecker": ("/mofchecker/", "mofchecker"),
     "upsert_zeopp_metrics": ("/zeopp-metrics/", "zeopp_metrics"),
 }
+# Nested objects the server creates/updates by ``id``; a nested dict without an
+# ``id`` is rejected. ``structure`` is the exception: it may be matched by name.
+_AUTOPRISM_ID_REQUIRED = ("run", "result", "mixture", "config")
+# Row errors quoted in warnings, exceptions and collection summaries.
+_ROW_ERROR_PREVIEW = 3
+
+
+class PrismaUpsertError(RuntimeError):
+    """
+    An upsert was rejected in whole or in part.
+
+    ``result`` holds the response body (single-table upserts) or the
+    collection summary (``upsert_autoprism_collection``).
+    """
+
+    def __init__(self, message: str, result: Any = None):
+        super().__init__(message)
+        self.result = result
+
+
+class PrismaRowErrorWarning(UserWarning):
+    """The server accepted the request but rejected some rows (HTTP 207)."""
 
 # Material bundle sections, in the order the API emits them. Every section is a
 # list except ``mof_h2``, which is a single object or None.
@@ -1603,18 +1625,24 @@ class PrismaAPIv2:
                                 payload: pd.DataFrame | list[dict] | dict,
                                 meta_provenance: dict | None,
                                 repo_dir: str | Path | None,
-                                timeout: int | None) -> dict:
-        """Shared body of the AutoPrism table upserts: unwrap, stamp provenance, PUT."""
+                                timeout: int | None,
+                                raise_on_error: bool,
+                                check_ids: bool) -> dict:
+        """Shared body of the AutoPrism table upserts: unwrap, check, stamp provenance, PUT."""
         path, wrapper_key = _AUTOPRISM_TABLES[method_name]
         if isinstance(payload, dict) and isinstance(payload.get(wrapper_key), list):
             payload = payload[wrapper_key]
         records = self._payload_to_records(payload)
+        if check_ids:
+            _check_nested_ids(records, wrapper_key)
         meta = self._resolve_meta_provenance(meta_provenance, repo_dir)
         enriched = [
             {**record, "meta_provenance": meta} if isinstance(record, dict) else record
             for record in records
         ]
-        return self._put(path, enriched, timeout=timeout)
+        result = self._put(path, enriched, timeout=timeout)
+        _report_row_errors(result, wrapper_key, raise_on_error)
+        return result
 
     def _properties_for(self, object_id: int, limit: int = 2000) -> list[dict]:
         """Return all Property records linked to *object_id* via GenericForeignKey.
@@ -2377,14 +2405,20 @@ class PrismaAPIv2:
         return self._get(f"/computation-runs/{run_id}/")
 
     def upsert_computation_runs(self, payload: pd.DataFrame | list[dict] | dict,
-                                timeout: int | None = None) -> dict:
+                                timeout: int | None = None,
+                                raise_on_error: bool = False) -> dict:
         """
         PUT /api/v2/computation-runs/
 
         Accepts one object or many objects and forwards all provided fields.
+        Rows the server rejects (HTTP 207 ``errors``) trigger a
+        ``PrismaRowErrorWarning``, or ``PrismaUpsertError`` if
+        *raise_on_error* is True.
         """
-        return self._put("/computation-runs/", self._payload_to_records(payload),
-                         timeout=timeout)
+        result = self._put("/computation-runs/", self._payload_to_records(payload),
+                           timeout=timeout)
+        _report_row_errors(result, "computation_runs", raise_on_error, stacklevel=3)
+        return result
 
     def get_adsorption_singlepoint(
         self,
@@ -2424,6 +2458,8 @@ class PrismaAPIv2:
         meta_provenance: dict | None = None,
         repo_dir: str | Path | None = None,
         timeout: int | None = None,
+        raise_on_error: bool = False,
+        check_ids: bool = True,
     ) -> dict:
         """
         PUT /api/v2/adsorption-singlepoint/
@@ -2441,9 +2477,16 @@ class PrismaAPIv2:
             repo_dir: Repository to read provenance from when
                 *meta_provenance* is not given.
             timeout: Request timeout in seconds (default: ``upload_timeout``).
+            raise_on_error: Raise ``PrismaUpsertError`` if the server rejects
+                any row (HTTP 207 ``errors``). Otherwise a
+                ``PrismaRowErrorWarning`` is emitted and the response returned.
+            check_ids: Raise ``ValueError`` before sending if a nested
+                ``run``, ``run.workflow``, ``result``, ``mixture`` or ``config``
+                object has no ``id`` (the server would reject the row).
         """
         return self._upsert_autoprism_table("upsert_adsorption_singlepoint", payload,
-                                            meta_provenance, repo_dir, timeout)
+                                            meta_provenance, repo_dir, timeout,
+                                            raise_on_error, check_ids)
 
     def get_heat_capacity(
         self,
@@ -2477,6 +2520,8 @@ class PrismaAPIv2:
         meta_provenance: dict | None = None,
         repo_dir: str | Path | None = None,
         timeout: int | None = None,
+        raise_on_error: bool = False,
+        check_ids: bool = True,
     ) -> dict:
         """
         PUT /api/v2/heat-capacity/
@@ -2494,9 +2539,16 @@ class PrismaAPIv2:
             repo_dir: Repository to read provenance from when
                 *meta_provenance* is not given.
             timeout: Request timeout in seconds (default: ``upload_timeout``).
+            raise_on_error: Raise ``PrismaUpsertError`` if the server rejects
+                any row (HTTP 207 ``errors``). Otherwise a
+                ``PrismaRowErrorWarning`` is emitted and the response returned.
+            check_ids: Raise ``ValueError`` before sending if a nested
+                ``run``, ``run.workflow``, ``result``, ``mixture`` or ``config``
+                object has no ``id`` (the server would reject the row).
         """
         return self._upsert_autoprism_table("upsert_heat_capacity", payload,
-                                            meta_provenance, repo_dir, timeout)
+                                            meta_provenance, repo_dir, timeout,
+                                            raise_on_error, check_ids)
 
     def get_isotherm_h2(
         self,
@@ -2539,6 +2591,8 @@ class PrismaAPIv2:
         meta_provenance: dict | None = None,
         repo_dir: str | Path | None = None,
         timeout: int | None = None,
+        raise_on_error: bool = False,
+        check_ids: bool = True,
     ) -> dict:
         """
         PUT /api/v2/isotherm-h2/
@@ -2556,9 +2610,16 @@ class PrismaAPIv2:
             repo_dir: Repository to read provenance from when
                 *meta_provenance* is not given.
             timeout: Request timeout in seconds (default: ``upload_timeout``).
+            raise_on_error: Raise ``PrismaUpsertError`` if the server rejects
+                any row (HTTP 207 ``errors``). Otherwise a
+                ``PrismaRowErrorWarning`` is emitted and the response returned.
+            check_ids: Raise ``ValueError`` before sending if a nested
+                ``run``, ``run.workflow``, ``result``, ``mixture`` or ``config``
+                object has no ``id`` (the server would reject the row).
         """
         return self._upsert_autoprism_table("upsert_isotherm_h2", payload,
-                                            meta_provenance, repo_dir, timeout)
+                                            meta_provenance, repo_dir, timeout,
+                                            raise_on_error, check_ids)
 
     def get_mofchecker(
         self,
@@ -2598,6 +2659,8 @@ class PrismaAPIv2:
         meta_provenance: dict | None = None,
         repo_dir: str | Path | None = None,
         timeout: int | None = None,
+        raise_on_error: bool = False,
+        check_ids: bool = True,
     ) -> dict:
         """
         PUT /api/v2/mofchecker/
@@ -2615,9 +2678,16 @@ class PrismaAPIv2:
             repo_dir: Repository to read provenance from when
                 *meta_provenance* is not given.
             timeout: Request timeout in seconds (default: ``upload_timeout``).
+            raise_on_error: Raise ``PrismaUpsertError`` if the server rejects
+                any row (HTTP 207 ``errors``). Otherwise a
+                ``PrismaRowErrorWarning`` is emitted and the response returned.
+            check_ids: Raise ``ValueError`` before sending if a nested
+                ``run``, ``run.workflow``, ``result``, ``mixture`` or ``config``
+                object has no ``id`` (the server would reject the row).
         """
         return self._upsert_autoprism_table("upsert_mofchecker", payload,
-                                            meta_provenance, repo_dir, timeout)
+                                            meta_provenance, repo_dir, timeout,
+                                            raise_on_error, check_ids)
 
     def get_zeopp_metrics(
         self,
@@ -2648,6 +2718,8 @@ class PrismaAPIv2:
         meta_provenance: dict | None = None,
         repo_dir: str | Path | None = None,
         timeout: int | None = None,
+        raise_on_error: bool = False,
+        check_ids: bool = True,
     ) -> dict:
         """
         PUT /api/v2/zeopp-metrics/
@@ -2665,9 +2737,16 @@ class PrismaAPIv2:
             repo_dir: Repository to read provenance from when
                 *meta_provenance* is not given.
             timeout: Request timeout in seconds (default: ``upload_timeout``).
+            raise_on_error: Raise ``PrismaUpsertError`` if the server rejects
+                any row (HTTP 207 ``errors``). Otherwise a
+                ``PrismaRowErrorWarning`` is emitted and the response returned.
+            check_ids: Raise ``ValueError`` before sending if a nested
+                ``run``, ``run.workflow``, ``result``, ``mixture`` or ``config``
+                object has no ``id`` (the server would reject the row).
         """
         return self._upsert_autoprism_table("upsert_zeopp_metrics", payload,
-                                            meta_provenance, repo_dir, timeout)
+                                            meta_provenance, repo_dir, timeout,
+                                            raise_on_error, check_ids)
 
     def upsert_autoprism_collection(
         self,
@@ -2676,6 +2755,7 @@ class PrismaAPIv2:
         repo_dir: str | Path | None = None,
         timeout: int | None = None,
         raise_on_error: bool = False,
+        check_ids: bool = True,
     ) -> dict[str, Any]:
         """
         Upsert multiple AutoPrism sections from a single combined payload.
@@ -2692,16 +2772,24 @@ class PrismaAPIv2:
             3. derived from git in *repo_dir* (default: current directory).
 
         Error handling:
-            By default a failing section does not raise: it is reported with
-            ``status: "error"`` and ``overall_status`` becomes
-            ``"partial_failure"``. Check ``overall_status``, or pass
-            ``raise_on_error=True`` to raise ``RuntimeError`` after all
-            sections have been attempted.
+            A section fails if its request raises, or if the server rejects
+            any of its rows (HTTP 207 with an ``errors`` list). A failed
+            section has ``status: "error"`` (nothing written) or
+            ``"partial"`` (some rows written), plus ``rejected`` and the first
+            few row ``errors``. By default nothing is raised:
+            ``overall_status`` becomes ``"partial_failure"`` and one
+            ``PrismaRowErrorWarning`` is emitted if rows were rejected. Pass
+            ``raise_on_error=True`` to raise ``PrismaUpsertError`` (a
+            ``RuntimeError``) after all sections have been attempted; its
+            ``result`` attribute holds this summary.
+
+            Missing nested ``id``s are a caller error: with ``check_ids=True``
+            the affected section fails before anything is sent for it.
 
         Returns:
             dict with keys:
                 sections: per-section status details
-                totals: aggregate created/updated counters
+                totals: created, updated, rejected (rows) and failed_sections
                 overall_status: "ok" if no section failed, else "partial_failure"
         """
         if not isinstance(payload, dict):
@@ -2720,6 +2808,7 @@ class PrismaAPIv2:
         sections: dict[str, dict[str, Any]] = {}
         total_created = 0
         total_updated = 0
+        total_rejected = 0
         failed = 0
 
         for section_name, method_name in section_handlers:
@@ -2733,20 +2822,33 @@ class PrismaAPIv2:
 
             try:
                 method = getattr(self, method_name)
-                if method_name in _AUTOPRISM_TABLES:
-                    result = method(section_payload, meta_provenance=meta, timeout=timeout)
-                else:
-                    result = method(section_payload, timeout=timeout)
+                # Row errors are summarised below; silence the per-table warning.
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", PrismaRowErrorWarning)
+                    if method_name in _AUTOPRISM_TABLES:
+                        result = method(section_payload, meta_provenance=meta,
+                                        timeout=timeout, check_ids=check_ids)
+                    else:
+                        result = method(section_payload, timeout=timeout)
                 created = int(result.get("created", 0)) if isinstance(result, dict) else 0
                 updated = int(result.get("updated", 0)) if isinstance(result, dict) else 0
+                row_errors = _row_errors(result)
                 total_created += created
                 total_updated += updated
+                total_rejected += len(row_errors)
                 sections[section_name] = {
                     "status": "ok",
                     "created": created,
                     "updated": updated,
                     "result": result,
                 }
+                if row_errors:
+                    failed += 1
+                    sections[section_name].update({
+                        "status": "partial" if created or updated else "error",
+                        "rejected": len(row_errors),
+                        "errors": row_errors[:_ROW_ERROR_PREVIEW],
+                    })
             except Exception as exc:
                 failed += 1
                 sections[section_name] = {
@@ -2759,17 +2861,25 @@ class PrismaAPIv2:
             "totals": {
                 "created": total_created,
                 "updated": total_updated,
+                "rejected": total_rejected,
                 "failed_sections": failed,
             },
             "overall_status": "ok" if failed == 0 else "partial_failure",
         }
-        if raise_on_error and failed:
-            errors = "; ".join(
-                f"{name}: {info['error']}"
+        if failed:
+            problems = "; ".join(
+                f"{name}: " + (
+                    info["error"] if "error" in info
+                    else f"{info['rejected']} row(s) rejected, first: {info['errors'][0]}"
+                )
                 for name, info in sections.items()
-                if info["status"] == "error"
+                if info["status"] in ("error", "partial")
             )
-            raise RuntimeError(f"AutoPrism upsert failed for {failed} section(s): {errors}")
+            message = f"AutoPrism upsert failed for {failed} section(s): {problems}"
+            if raise_on_error:
+                raise PrismaUpsertError(message, result=summary)
+            if total_rejected:
+                warnings.warn(message, PrismaRowErrorWarning, stacklevel=2)
         return summary
 
     def get_autoprism_collection(
@@ -3414,6 +3524,53 @@ def _json_safe(value: Any) -> Any:
     except (TypeError, ValueError):
         pass
     return value
+
+
+def _row_errors(result: Any) -> list:
+    """Row errors from an upsert response (HTTP 207 ``errors`` list), or []."""
+    if isinstance(result, dict) and isinstance(result.get("errors"), list):
+        return result["errors"]
+    return []
+
+
+def _report_row_errors(result: Any, label: str, raise_on_error: bool,
+                       stacklevel: int = 4) -> None:
+    """Warn about, or raise for, rows the server rejected (*stacklevel* points at the user's call)."""
+    errors = _row_errors(result)
+    if not errors:
+        return
+    preview = "; ".join(str(e) for e in errors[:_ROW_ERROR_PREVIEW])
+    message = f"{label}: server rejected {len(errors)} row(s). First: {preview}"
+    if raise_on_error:
+        raise PrismaUpsertError(message, result=result)
+    warnings.warn(message, PrismaRowErrorWarning, stacklevel=stacklevel)
+
+
+def _check_nested_ids(records: list, section: str) -> None:
+    """
+    Raise ValueError if a nested object the server keys by ``id`` lacks one.
+
+    Checks ``run``, ``run.workflow``, ``result``, ``mixture`` and ``config``.
+    ``structure`` is not checked: the server can match it by ``name``.
+    """
+    problems = []
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            continue
+        nested = [(key, record.get(key)) for key in _AUTOPRISM_ID_REQUIRED]
+        run = record.get("run")
+        if isinstance(run, dict):
+            nested.append(("run.workflow", run.get("workflow")))
+        for key, value in nested:
+            if isinstance(value, dict) and value.get("id") in (None, ""):
+                problems.append(f"row {index}: {key}")
+    if problems:
+        shown = ", ".join(problems[:5]) + (f" (+{len(problems) - 5} more)" if len(problems) > 5 else "")
+        raise ValueError(
+            f"{section}: nested objects need an 'id' (the server creates/updates them "
+            f"by id; derive one from the content, e.g. uuid5): {shown}. "
+            "Pass check_ids=False to skip this check."
+        )
 
 
 def _git_output(args: list[str], cwd: Path) -> str | None:

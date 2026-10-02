@@ -1,6 +1,6 @@
 # PrISMa API — Python Client Reference (v2)
 
-> **Package:** `prisma_api` v0.4.3  
+> **Package:** `prisma_api` v0.4.4  
 > **v2 Base URL:** `https://prisma-platform.org/api/v2/`  
 > **Authentication:** `X-API-Key` header (set via config file or `PRISMA_API_KEY` env var)
 
@@ -520,7 +520,8 @@ api.v2.get_carbon_zeopp_experimental_item(1)
 AutoPrism table upserts share one signature:
 
 ```python
-api.v2.upsert_<table>(payload, meta_provenance=None, repo_dir=None, timeout=None)
+api.v2.upsert_<table>(payload, meta_provenance=None, repo_dir=None, timeout=None,
+                      raise_on_error=False, check_ids=True)
 ```
 
 Every row's `meta_provenance` is replaced with:
@@ -544,6 +545,42 @@ api.v2.upsert_zeopp_metrics(rows, meta_provenance={
 })
 ```
 
+**Nested objects and `id`s.** The server creates or updates these nested
+objects *by their `id`*, and rejects a row whose nested object has none:
+
+| Nested object | Keyed by |
+|---|---|
+| `run` | `id` (required) |
+| `run.workflow` | `id` (required) |
+| `result` | `id` (required) |
+| `mixture` | `id` (required) |
+| `config` | `id` (required) |
+| `structure` | `id`, or `name` |
+
+Derive these `id`s from the content so repeat uploads update the same records
+instead of creating new ones, e.g.:
+
+```python
+import uuid
+NS = uuid.uuid5(uuid.NAMESPACE_URL, "https://github.com/<org>/<repo>/runs")
+row["mixture"] = {"id": str(uuid.uuid5(NS, f"mixture:{mixture_id}")), "mixture_id": mixture_id}
+row["config"] = {"id": str(uuid.uuid5(NS, f"config:{config_hash}")), "config_hash": config_hash}
+```
+
+With `check_ids=True` (default) the client raises `ValueError` before sending
+if any of the required `id`s is missing. Only `id` and `name` are read from
+`structure`; other keys there (e.g. `source`) are not stored.
+
+**Rejected rows (HTTP 207).** If the server rejects some or all rows it still
+answers with HTTP 207 and `{"created": n, "updated": m, "errors": [{"item": ..., "errors": {...}}]}`.
+The upsert then emits a `prisma_api.PrismaRowErrorWarning` and returns that
+body, or raises `prisma_api.PrismaUpsertError` (with `.result` set to the
+body) when `raise_on_error=True`. `upsert_computation_runs` behaves the same.
+Always check `result.get("errors")` if you neither raise nor watch warnings.
+
+Example payloads (generated from a real AutoPrism export):
+`reference_data/autoprism/01/mock_payload_*.json`.
+
 #### `api.v2.get_computation_runs(workflow_id=None, step=None, status=None, limit=500, offset=0)` / `api.v2.get_computation_run(run_id)`
 
 ```python
@@ -553,7 +590,7 @@ api.v2.get_computation_run(7)
 
 ---
 
-#### `api.v2.upsert_computation_runs(payload, timeout=None)`
+#### `api.v2.upsert_computation_runs(payload, timeout=None, raise_on_error=False)`
 
 PUT wrapper for `/api/v2/computation-runs/`. `payload` may be a `dict`,
 `list[dict]`, or `pd.DataFrame`. All provided fields are forwarded unchanged,
@@ -668,7 +705,7 @@ bundle['zeopp_metrics']
 
 ---
 
-#### `api.v2.upsert_autoprism_collection(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False)`
+#### `api.v2.upsert_autoprism_collection(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
 
 Upserts every section present in a combined AutoPrism payload
 (`computation_runs`, `adsorption_singlepoints`, `heat_capacities`,
@@ -677,14 +714,21 @@ AutoPrism tables comes from, in order: the `meta_provenance` argument, the
 payload's top-level `meta_provenance`, then git in `repo_dir` / the current
 directory.
 
-A failing section **does not raise by default**: it is reported with
-`status: "error"` and `overall_status` is `"partial_failure"`. Check
-`overall_status`, or pass `raise_on_error=True` to raise `RuntimeError` once
-all sections have been attempted.
+A section fails if its request raises or if the server rejects any of its
+rows (HTTP 207 `errors`). A failed section has `status: "error"` (nothing
+written) or `"partial"` (some rows written), plus `rejected` (count) and
+`errors` (the first few row errors). `totals["rejected"]` counts rejected rows
+across sections.
+
+Failures **do not raise by default**: `overall_status` is `"partial_failure"`
+and one `PrismaRowErrorWarning` summarises any rejected rows. Pass
+`raise_on_error=True` to raise `prisma_api.PrismaUpsertError` (a
+`RuntimeError`) once all sections have been attempted; its `.result` holds the
+summary. `check_ids` is passed to every table upsert.
 
 ```python
 result = api.v2.upsert_autoprism_collection(payload, raise_on_error=True)
-result['totals']   # {'created': ..., 'updated': ..., 'failed_sections': 0}
+result['totals']   # {'created': ..., 'updated': ..., 'rejected': 0, 'failed_sections': 0}
 ```
 
 ---

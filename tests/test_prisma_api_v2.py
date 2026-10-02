@@ -3308,3 +3308,115 @@ def test_upsert_material_bundles_inline_cifs_derive_once(api, cif_file):
 def test_upsert_material_bundles_rejects_bad_derive_mode(api):
     with pytest.raises(ValueError, match="derive_cif_metadata must be"):
         api.upsert_material_bundles(_minimal_bundle(), derive_cif_metadata="yes")
+
+
+# ── AutoPrism: HTTP 207 row errors and nested id checks ───────────────────────
+
+_ROW_ERROR_BODY = {
+    "created": 0,
+    "updated": 0,
+    "errors": [{"item": {"md5": "a1"}, "errors": {"mixture": ["id is required when mixture is an object"]}}],
+}
+
+
+@pytest.fixture
+def no_git_meta(api, monkeypatch):
+    monkeypatch.setattr(api, "_resolve_meta_provenance", lambda meta=None, repo_dir=None: meta or {})
+    return api
+
+
+@resp_lib.activate
+def test_table_upsert_warns_on_207_row_errors(no_git_meta):
+    from prisma_api import PrismaRowErrorWarning
+    api = no_git_meta
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/adsorption-singlepoint/", json=_ROW_ERROR_BODY, status=207)
+
+    with pytest.warns(PrismaRowErrorWarning, match="rejected 1 row"):
+        result = api.upsert_adsorption_singlepoint({"md5": "a1"})
+    assert result["errors"] == _ROW_ERROR_BODY["errors"]
+
+
+@resp_lib.activate
+def test_table_upsert_raise_on_error_207(no_git_meta):
+    from prisma_api import PrismaUpsertError
+    api = no_git_meta
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/adsorption-singlepoint/", json=_ROW_ERROR_BODY, status=207)
+
+    with pytest.raises(PrismaUpsertError, match="id is required") as info:
+        api.upsert_adsorption_singlepoint({"md5": "a1"}, raise_on_error=True)
+    assert info.value.result == _ROW_ERROR_BODY
+
+
+@resp_lib.activate
+def test_computation_runs_upsert_raise_on_error_207(api):
+    from prisma_api import PrismaUpsertError
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/computation-runs/", json=_ROW_ERROR_BODY, status=207)
+    with pytest.raises(PrismaUpsertError):
+        api.upsert_computation_runs({"id": "r1"}, raise_on_error=True)
+
+
+@resp_lib.activate
+def test_collection_marks_207_sections_failed(no_git_meta):
+    import warnings as _warnings
+    from prisma_api import PrismaRowErrorWarning, PrismaUpsertError
+    api = no_git_meta
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/adsorption-singlepoint/", json=_ROW_ERROR_BODY, status=207)
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/heat-capacity/",
+                 json={"created": 2, "updated": 0, "errors": _ROW_ERROR_BODY["errors"] * 2}, status=207)
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/zeopp-metrics/", json={"created": 1, "updated": 0})
+    payload = {
+        "adsorption_singlepoints": [{"md5": "a1"}],
+        "heat_capacities": [{"md5": "a1"}, {"md5": "a2"}, {"md5": "a3"}, {"md5": "a4"}],
+        "zeopp_metrics": [{"md5": "a1"}],
+    }
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        result = api.upsert_autoprism_collection(payload)
+    row_warnings = [w for w in caught if issubclass(w.category, PrismaRowErrorWarning)]
+    assert len(row_warnings) == 1  # one summary, not one per section
+
+    assert result["overall_status"] == "partial_failure"
+    assert result["totals"] == {"created": 3, "updated": 0, "rejected": 3, "failed_sections": 2}
+    assert result["sections"]["adsorption_singlepoints"]["status"] == "error"
+    assert result["sections"]["adsorption_singlepoints"]["rejected"] == 1
+    assert result["sections"]["heat_capacities"]["status"] == "partial"
+    assert len(result["sections"]["heat_capacities"]["errors"]) == 2
+    assert result["sections"]["zeopp_metrics"]["status"] == "ok"
+
+    with pytest.raises(PrismaUpsertError, match="adsorption_singlepoints: 1 row") as info:
+        api.upsert_autoprism_collection(payload, raise_on_error=True)
+    assert info.value.result["totals"]["rejected"] == 3
+
+
+@pytest.mark.parametrize("row, missing", [
+    ({"mixture": {"mixture_id": "m1"}}, "mixture"),
+    ({"config": {"config_hash": "abc"}}, "config"),
+    ({"result": {}}, "result"),
+    ({"run": {"step": "x", "workflow": {"id": "w"}}}, "run"),
+    ({"run": {"id": "r", "workflow": {}}}, "run.workflow"),
+])
+def test_check_ids_rejects_nested_objects_without_id(no_git_meta, row, missing):
+    with pytest.raises(ValueError, match=f"row 0: {missing}"):
+        no_git_meta.upsert_adsorption_singlepoint({"structure": {"name": "X"}, **row})
+
+
+@resp_lib.activate
+def test_check_ids_allows_structure_by_name_and_can_be_disabled(no_git_meta):
+    api = no_git_meta
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/heat-capacity/", json={"created": 1, "updated": 0})
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/mofchecker/", json={"created": 1, "updated": 0})
+    api.upsert_heat_capacity({"structure": {"name": "X"}, "run": {"id": "r", "workflow": {"id": "w"}}})
+    api.upsert_mofchecker({"run": {"step": "no-id"}}, check_ids=False)
+    assert len(resp_lib.calls) == 2
+
+
+_MOCK_DIR = Path(__file__).resolve().parents[1] / "reference_data" / "autoprism" / "01"
+
+
+@pytest.mark.skipif(not _MOCK_DIR.exists(), reason="AutoPrism mock payloads not present")
+def test_autoprism_mock_payloads_pass_id_check():
+    from prisma_api.prisma_api_v2 import _check_nested_ids
+    payload = json.loads((_MOCK_DIR / "mock_payload_all_autoprism.json").read_text())
+    for section in ("adsorption_singlepoints", "heat_capacities", "isotherm_H2s", "mofchecker", "zeopp_metrics"):
+        _check_nested_ids(payload.get(section, []), section)

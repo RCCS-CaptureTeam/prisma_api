@@ -1,6 +1,6 @@
 # PrISMa API — Python Client Reference (v1)
 
-> **Package:** `prisma_api` v0.4.3  
+> **Package:** `prisma_api` v0.4.4  
 > **Base URL (production):** `https://prisma-platform.org/api/`  
 > **Authentication:** `X-API-Key` header (set via config file or `PRISMA_API_KEY` env var)
 
