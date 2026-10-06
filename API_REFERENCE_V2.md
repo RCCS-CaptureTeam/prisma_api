@@ -1,6 +1,6 @@
 # PrISMa API — Python Client Reference (v2)
 
-> **Package:** `prisma_api` v0.4.4  
+> **Package:** `prisma_api` v0.4.5  
 > **v2 Base URL:** `https://prisma-platform.org/api/v2/`  
 > **Authentication:** `X-API-Key` header (set via config file or `PRISMA_API_KEY` env var)
 
@@ -521,6 +521,25 @@ api.v2.get_carbon_zeopp_experimental_item(1)
 > for `mixture`/`config`, and the `unknown_fields` / `new_structures` notices
 > need prisma_cloud **>= 0.6.16**. Older servers return 404 for
 > `adsorption-isotherm`.
+>
+> Since 0.6.16, `adsorption_isotherm` holds isotherms for **every gas, H2
+> included**. `/isotherm-h2/` is a deprecated alias over the same table: GET
+> returns its `component == "H2"` rows, PUT writes there (`component` defaults
+> to `"H2"`, other gases are rejected), and ids are `adsorption_isotherm` ids.
+> The `*_isotherm_h2*` methods still work but emit a `DeprecationWarning`.
+
+#### Exact-match name filter
+
+The AutoPrism getters take `match` next to their name filter (`structure`, or
+`mof` on `get_zeopp_metrics`), and `get_autoprism_collection` forwards it.
+`match="exact"` makes the name filter an exact (case-insensitive) match;
+the default is a substring match (`"LAGNAK"` also returns `"LAGNAK_clean"`).
+Any other value than `None`, `"exact"` or `"contains"` raises `ValueError`
+before a request is sent. Servers without the filter ignore it.
+
+```python
+api.v2.get_heat_capacity(structure='LAGNAK', match='exact')
+```
 
 AutoPrism table upserts share one signature:
 
@@ -567,7 +586,7 @@ earlier result.
 |---|---|---|
 | `upsert_adsorption_singlepoint` | structure, md5, mixture, config, component, temperature_K, pressure_bar | `config` / `config_hash` |
 | `upsert_heat_capacity` | structure, md5, temperature_K | `md5` |
-| `upsert_isotherm_h2` | structure, md5, isotherm_id, component, temperature_K, pressure_bar | — |
+| `upsert_isotherm_h2` (deprecated) | shared with `upsert_adsorption_isotherm`, including `config` | `config` |
 | `upsert_adsorption_isotherm` | structure, md5, isotherm_id, config, component, temperature_K, pressure_bar | `config` |
 | `upsert_mofchecker` | structure, md5 | — |
 | `upsert_zeopp_metrics` | mof, md5, probe, scale | `scale` |
@@ -638,6 +657,51 @@ Example payloads (generated from a real AutoPrism export):
 
 ---
 
+#### `api.v2.upsert_autoprism_cifs(cifs, tags=None, create_materials=True, batch_size=50, raise_on_error=False, timeout=300)`
+
+Uploads the exact CIF file each AutoPrism result was computed from, bound to
+the MOF named by `structure`. Each item is
+`{"structure": name, "content": cif_text, "md5": md5_of_the_bytes}`;
+`content` must be the file's exact text (bytes decoded as UTF-8, no newline
+translation), and a given `md5` that doesn't match it raises `ValueError`.
+
+Files are stored as **`{structure}__autoprism_{md5[:12]}.cif`**, never under
+the bare structure name. The server stores CIFs as `cifs/<basename>`, and a
+new file replaces an old one of the same basename; that stored file is often
+shared by `MOF.cif_file` and several `CIF` rows (e.g. `cifs/LAGNAK_clean.cif`
+backs the MOF and 4 CIF records), so a bare-name upload would overwrite the
+platform's curated CIF. A stored path over 100 characters (`CIF.file`) raises
+`ValueError`.
+
+The upload goes through `upsert_material_bundles` (`PUT
+/materials/bundle/upsert/`), one bundle per structure in batches of
+`batch_size`, each bundle in its own server transaction. The material is
+matched by **exact** name, as the table upserts are, and created if missing
+(`create_materials=True`), so a CIF and its results land on the same MOF.
+Tags must already exist on the server; send them spelled as stored
+(`'autoprism'`).
+
+Re-sending an unchanged CIF updates the same row. A changed CIF has a new md5,
+hence a new file name and a new `CIF` row beside the old one.
+
+Returns `{"created": n, "updated": n, "materials_created": [names], "errors":
+[{index, material, error}]}`. The server answers **207 when any bundle failed,
+even all of them**, so failures are judged from `errors`: a non-empty list
+emits `PrismaRowErrorWarning`, or raises `PrismaUpsertError` with
+`raise_on_error=True`. `materials_created` emits `PrismaNewStructureWarning`.
+
+```python
+api.v2.upsert_autoprism_cifs(
+    [{'structure': 'LAGNAK', 'content': text, 'md5': md5}],
+    tags=['autoprism'],
+)
+```
+
+Read them back with `get_material_bundles` / `get_cifs`: AutoPrism's are the
+material's `*__autoprism_*.cif` rows.
+
+---
+
 #### `api.v2.get_computation_runs(workflow_id=None, step=None, status=None, limit=500, offset=0)` / `api.v2.get_computation_run(run_id)`
 
 ```python
@@ -664,7 +728,7 @@ api.v2.upsert_computation_runs({
 
 ---
 
-#### `api.v2.get_adsorption_singlepoint(structure=None, md5=None, mixture_id=None, component=None, limit=500, offset=0)`
+#### `api.v2.get_adsorption_singlepoint(structure=None, md5=None, mixture_id=None, component=None, limit=500, offset=0, match=None)`
 
 ```python
 api.v2.get_adsorption_singlepoint(structure='ABEXEM', component='CO2')
@@ -676,7 +740,7 @@ api.v2.get_adsorption_singlepoint(structure='ABEXEM', component='CO2')
 
 ---
 
-#### `api.v2.get_heat_capacity(structure=None, temperature_K=None, limit=500, offset=0)`
+#### `api.v2.get_heat_capacity(structure=None, temperature_K=None, limit=500, offset=0, match=None)`
 
 ```python
 api.v2.get_heat_capacity(structure='ABEXEM', temperature_K=298.0)
@@ -688,24 +752,29 @@ api.v2.get_heat_capacity(structure='ABEXEM', temperature_K=298.0)
 
 ---
 
-#### `api.v2.get_isotherm_h2(structure=None, isotherm_id=None, component=None, temperature_K=None, pressure_bar=None, limit=500, offset=0)`
+#### `api.v2.get_isotherm_h2(structure=None, isotherm_id=None, component=None, temperature_K=None, pressure_bar=None, limit=500, offset=0, match=None)` — deprecated
 
-H2 isotherms only; other gases are in `adsorption_isotherm`.
+Deprecated (`DeprecationWarning`): results and ids come from
+`adsorption_isotherm`. Use `get_adsorption_isotherm(component='H2')`.
 
 ```python
-api.v2.get_isotherm_h2(structure='ABEXEM', component='H2')
+api.v2.get_adsorption_isotherm(structure='ABEXEM', component='H2')
 ```
 
-`api.v2.get_isotherm_h2_item(row_id)` returns one row by id.
-`api.v2.upsert_isotherm_h2(payload, ...)` — collection key `isotherm_H2s`.
+`api.v2.get_isotherm_h2_item(row_id)` (deprecated) returns one
+`adsorption_isotherm` row by id; use `get_adsorption_isotherm_item`.
+`api.v2.upsert_isotherm_h2(payload, ...)` (deprecated) writes to
+`adsorption_isotherm` with `component` defaulting to `"H2"`; other gases are
+rejected. Use `upsert_adsorption_isotherm` with `component='H2'`. Collection
+key `isotherm_H2s` (deprecated).
 
 ---
 
-#### `api.v2.get_adsorption_isotherm(structure=None, isotherm_id=None, component=None, temperature_K=None, pressure_bar=None, limit=500, offset=0, md5=None)`
+#### `api.v2.get_adsorption_isotherm(structure=None, isotherm_id=None, component=None, temperature_K=None, pressure_bar=None, limit=500, offset=0, md5=None, match=None)`
 
-Isotherms for **every gas except H2** (prisma_cloud >= 0.6.16). Same row shape
-as isotherm-h2, with the gas in `component`, which is required on upload. The
-`component` filter is an exact match, so `'H2'` won't return `'H2O'`.
+Isotherms for **every gas, H2 included** (prisma_cloud >= 0.6.16), with the
+gas in `component`, which is required on upload. The `component` filter is an
+exact match, so `'H2'` won't return `'H2O'`.
 
 ```python
 api.v2.get_adsorption_isotherm(structure='ABEXEM', component='CO2')
@@ -713,12 +782,11 @@ api.v2.get_adsorption_isotherm(structure='ABEXEM', component='CO2')
 
 `api.v2.get_adsorption_isotherm_item(row_id)` returns one row by id.
 `api.v2.upsert_adsorption_isotherm(payload, ...)` — collection key
-`adsorption_isotherms`. The server rejects `component == "H2"` rows here; send
-them to `upsert_isotherm_h2`.
+`adsorption_isotherms`. H2 rows go here too (`component='H2'`).
 
 ---
 
-#### `api.v2.get_mofchecker(structure=None, md5=None, is_mof=None, MOFQ=None, limit=500, offset=0)`
+#### `api.v2.get_mofchecker(structure=None, md5=None, is_mof=None, MOFQ=None, limit=500, offset=0, match=None)`
 
 ```python
 api.v2.get_mofchecker(structure='ABEXEM', is_mof=True)
@@ -734,7 +802,7 @@ server stores the formal-charge columns `positive_charge_from_linkers`,
 
 ---
 
-#### `api.v2.get_zeopp_metrics(mof=None, md5=None, probe=None, limit=500, offset=0)`
+#### `api.v2.get_zeopp_metrics(mof=None, md5=None, probe=None, limit=500, offset=0, match=None)`
 
 ```python
 api.v2.get_zeopp_metrics(mof='ABEXEM', probe='N2')
@@ -746,15 +814,18 @@ api.v2.get_zeopp_metrics(mof='ABEXEM', probe='N2')
 
 ---
 
-#### `api.v2.get_autoprism_collection(workflow_id=None, step=None, status=None, structure=None, mof=None, md5=None, mixture_id=None, component=None, isotherm_id=None, temperature_K=None, pressure_bar=None, probe=None, is_mof=None, MOFQ=None, limit=500, offset=0)`
+#### `api.v2.get_autoprism_collection(workflow_id=None, step=None, status=None, structure=None, mof=None, md5=None, mixture_id=None, component=None, isotherm_id=None, temperature_K=None, pressure_bar=None, probe=None, is_mof=None, MOFQ=None, limit=500, offset=0, match=None, include_deprecated_h2=True)`
 
 Fetches AutoPrism records in one call and returns a dict with:
 
 - `computation_runs`
 - `adsorption_singlepoints`
 - `heat_capacities`
-- `isotherm_H2s`
-- `adsorption_isotherms`
+- `isotherm_H2s` — deprecated subset of `adsorption_isotherms` (its
+  `component == "H2"` rows); don't add it to `adsorption_isotherms`. Left out
+  with `include_deprecated_h2=False`, which becomes the default in the next
+  minor release before the key is removed.
+- `adsorption_isotherms` — every gas, H2 included
 - `mofchecker`
 - `zeopp_metrics`
 - `meta_provenance`
@@ -763,7 +834,10 @@ Fetches AutoPrism records in one call and returns a dict with:
 adsorption_isotherm and mofchecker; `mof` filters zeopp_metrics. If
 `structure` is omitted and `mof` is provided, `mof` is used for both. A section
 whose request fails is returned empty with a `UserWarning` (e.g.
-`adsorption_isotherms` against a server older than 0.6.16).
+`adsorption_isotherms` against a server older than 0.6.16). `match` is
+forwarded to every request that sends `structure` or `mof`.
+
+CIFs are not part of the collection; see `upsert_autoprism_cifs` above.
 
 ```python
 bundle = api.v2.get_autoprism_collection(
@@ -779,15 +853,22 @@ bundle['zeopp_metrics']
 
 ---
 
-#### `api.v2.upsert_autoprism_collection(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
+#### `api.v2.upsert_autoprism_collection(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True, cif_tags=None)`
 
 Upserts every section present in a combined AutoPrism payload
-(`computation_runs`, `adsorption_singlepoints`, `heat_capacities`,
-`isotherm_H2s`, `adsorption_isotherms`, `mofchecker`, `zeopp_metrics`).
+(`cifs`, `computation_runs`, `adsorption_singlepoints`, `heat_capacities`,
+`adsorption_isotherms`, `mofchecker`, `zeopp_metrics`; `isotherm_H2s` is
+deprecated).
 
-An `isotherms` key may hold isotherm rows for mixed gases: rows with
-`component == "H2"` are added to `isotherm_H2s`, the rest to
-`adsorption_isotherms`.
+`cifs` holds `upsert_autoprism_cifs` items and is uploaded **first**, tagged
+with `cif_tags`, so new MOFs are created with their CIF. Its summary is
+`sections["cifs"]` (same status values); its counts are added to `totals` and
+its `materials_created` to `totals["new_structures"]`.
+
+An `isotherms` key may hold isotherm rows for mixed gases, H2 included: all
+are added to `adsorption_isotherms`. The deprecated `isotherm_H2s` key is
+still accepted (with a `DeprecationWarning`): its rows go through the H2
+alias endpoint, with `component: "H2"` added where missing.
 
 Provenance for the AutoPrism tables comes from, in order: the
 `meta_provenance` argument, the payload's top-level `meta_provenance`, then

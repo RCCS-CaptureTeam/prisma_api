@@ -145,7 +145,7 @@ The main client exposes these v1 methods:
 - `get_materials_data(payload={}, separate_experimental=True)`
 - `update_adsorption_singlepoint(df)`
 - `update_heat_capacity_all_tidy(df)`
-- `update_isotherm_h2(df)`
+- `update_isotherm_h2(df)` — deprecated; still works (the server stores its rows in `adsorption_isotherm`)
 - `update_mofchecker(df)`
 - `update_zeopp_metrics(df)`
 
@@ -253,11 +253,15 @@ All methods below are available on `api.v2`.
 - `upsert_computation_runs(payload, timeout=None, raise_on_error=False)`
 - `get_adsorption_singlepoint(...)` / `get_adsorption_singlepoint_item(row_id)` / `upsert_adsorption_singlepoint(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
 - `get_heat_capacity(...)` / `get_heat_capacity_item(row_id)` / `upsert_heat_capacity(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
-- `get_isotherm_h2(...)` / `get_isotherm_h2_item(row_id)` / `upsert_isotherm_h2(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)` — H2 only
-- `get_adsorption_isotherm(structure=None, isotherm_id=None, component=None, temperature_K=None, pressure_bar=None, limit=500, offset=0, md5=None)` / `get_adsorption_isotherm_item(row_id)` / `upsert_adsorption_isotherm(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)` — every gas except H2; needs prisma_cloud **>= 0.6.16** (older servers return 404)
+- `get_isotherm_h2(...)` / `get_isotherm_h2_item(row_id)` / `upsert_isotherm_h2(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)` — deprecated; use the `adsorption_isotherm` methods with `component='H2'`
+- `get_adsorption_isotherm(structure=None, isotherm_id=None, component=None, temperature_K=None, pressure_bar=None, limit=500, offset=0, md5=None, match=None)` / `get_adsorption_isotherm_item(row_id)` / `upsert_adsorption_isotherm(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)` — every gas, H2 included; needs prisma_cloud **>= 0.6.16** (older servers return 404)
 - `get_mofchecker(...)` / `get_mofchecker_item(row_id)` / `upsert_mofchecker(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
 - `get_zeopp_metrics(...)` / `get_zeopp_metrics_item(row_id)` / `upsert_zeopp_metrics(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
-- `get_autoprism_collection(...)` / `upsert_autoprism_collection(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
+- `upsert_autoprism_cifs(cifs, tags=None, create_materials=True, batch_size=50, raise_on_error=False, timeout=300)` — AutoPrism's own CIFs, stored as `{structure}__autoprism_{md5[:12]}.cif`
+- `get_autoprism_collection(...)` / `upsert_autoprism_collection(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True, cif_tags=None)`
+
+The getters take `match="exact"` for an exact (case-insensitive) name match
+instead of the default substring match.
 
 Rejected rows (HTTP 207, or 400 when nothing is stored) raise
 `PrismaUpsertError` with `raise_on_error=True`, else emit
@@ -383,3 +387,4 @@ pytest tests/ -v --cov=prisma_api --cov-report=term-missing
 - Authentication header: `X-API-Key`
 - Local development routing is selected with `prisma_api.init(local_dev=True)`; the default targets production
 - 0.4.4: the `adsorption-isotherm` endpoints and the 400/notice handling need prisma_cloud >= 0.6.16
+- 0.4.5: H2 isotherms go through `upsert_adsorption_isotherm` (prisma_cloud >= 0.6.16); the H2-only methods and the `isotherm_H2s` collection key are deprecated. New `upsert_autoprism_cifs` uses the existing bundle upsert endpoint. AutoPrism getters take `match="exact"`.

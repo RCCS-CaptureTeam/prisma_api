@@ -105,8 +105,8 @@ Endpoints that support PUT return:
 - GET /api/v2/adsorption-singlepoint/{row_id}/
 - GET, PUT /api/v2/heat-capacity/
 - GET /api/v2/heat-capacity/{row_id}/
-- GET, PUT /api/v2/isotherm-h2/
-- GET /api/v2/isotherm-h2/{row_id}/
+- GET, PUT /api/v2/isotherm-h2/ (deprecated alias of adsorption-isotherm, component H2)
+- GET /api/v2/isotherm-h2/{row_id}/ (deprecated; adsorption-isotherm ids)
 - GET, PUT /api/v2/adsorption-isotherm/
 - GET /api/v2/adsorption-isotherm/{row_id}/
 - GET, PUT /api/v2/mofchecker/
@@ -243,16 +243,18 @@ Below are the key filters exposed in api_v2.py docstrings and implementation.
 - PUT /api/v2/heat-capacity/
   - accepts object or list
   - upsert lookup key: (structure, md5, temperature_K); structure required to match
-- GET /api/v2/isotherm-h2/
-  - structure, isotherm_id, component, temperature_K, pressure_bar, limit, offset
-- PUT /api/v2/isotherm-h2/
-  - accepts object or list
-  - upsert lookup key: (structure, md5, isotherm_id, component, temperature_K, pressure_bar)
+- GET /api/v2/isotherm-h2/ (deprecated)
+  - structure, md5, isotherm_id, temperature_K, pressure_bar, limit, offset
+  - returns the component-H2 rows of adsorption_isotherm
+- PUT /api/v2/isotherm-h2/ (deprecated)
+  - accepts object or list; writes adsorption_isotherm
+  - component defaults to H2; any other gas is rejected
+  - upsert lookup key: as adsorption-isotherm
 - GET /api/v2/adsorption-isotherm/
   - structure, md5, isotherm_id, component (exact), temperature_K, pressure_bar, limit, offset
 - PUT /api/v2/adsorption-isotherm/
-  - accepts object or list; isotherms for every gas except H2 (same shape as isotherm-h2)
-  - component required; H2 rows rejected (use isotherm-h2)
+  - accepts object or list; isotherms for every gas, H2 included
+  - component required
   - upsert lookup key: (structure, md5, isotherm_id, config, component, temperature_K, pressure_bar)
 - GET /api/v2/mofchecker/
   - structure, md5, is_mof, MOFQ, limit, offset
@@ -264,6 +266,11 @@ Below are the key filters exposed in api_v2.py docstrings and implementation.
 - PUT /api/v2/zeopp-metrics/
   - accepts object or list
   - upsert lookup key: (mof, md5, probe, scale)
+
+AutoPrism GET name filters (`structure`, or `mof` on zeopp-metrics) are
+case-insensitive substring matches by default, so `structure=LAGNAK` also
+returns `LAGNAK_clean`. Add `match=exact` for an exact (case-insensitive)
+match; any other `match` value is a 400.
 
 AutoPrism upsert rules (all six tables above except computation-runs):
 
@@ -362,8 +369,8 @@ client does not have to fan out across the per-table endpoints.
 - carbon_zeopp_experimental
 - adsorption_singlepoint
 - heat_capacity
-- isotherm_h2
-- adsorption_isotherm
+- isotherm_h2 (deprecated: the H2 rows of adsorption_isotherm, repeated)
+- adsorption_isotherm (all gases)
 - mofchecker
 - zeopp_metrics
 - mof_h2 (single object or null, not a list)
@@ -426,7 +433,9 @@ or a per-table endpoint.
 FK fields accept the name strings a read bundle carries (`molecule`, `source`)
 or raw pks. Names must already exist; an unknown one is an error rather than a
 silent create. `tags` accept names or ids (the read bundle emits both shapes
-depending on section) and must already exist.
+depending on section) and must already exist. Tag names match exactly first,
+then case-insensitively (`AutoPrism` finds `autoprism`); a name matching
+several tags that differ only in case is an error.
 
 CIF file content arrives two ways:
 
@@ -435,8 +444,15 @@ CIF file content arrives two ways:
 - upload — `multipart/form-data` with the JSON document in a `bundle` form
   field and `"file": "<part name>"` on the CIF row.
 
-The two are mutually exclusive on one row. CIF storage overwrites by name, so
-re-sending the same file name replaces the file and updates the existing row.
+The two are mutually exclusive on one row. CIF storage is keyed by file
+name, so re-sending the same file name updates the existing row and replaces
+its file, **unless** that stored file is also used by another CIF row or by
+another material's `MOF.cif_file`. Then different content is rejected
+("refusing to overwrite") and the bundle rolls back; identical content is
+accepted unchanged. Upload a different file under a distinct name, e.g.
+`{name}__{source}_{checksum}.cif`. A material with no primary CIF
+(`MOF.cif_file` empty, e.g. one created by this upload) adopts the uploaded
+file as its primary CIF; an existing primary CIF is never replaced.
 
 `create_materials=false` makes an unknown material an error instead of
 creating it.
@@ -479,4 +495,6 @@ The screening analysis bundle endpoint also embeds linked Scope rows under:
 - 2026-09-21: Added the material bundle upsert endpoint, including CIF file upload.
 - 2026-09-09: Added AutoPrism table endpoints (adsorption-singlepoint, heat-capacity, isotherm-h2, mofchecker, zeopp-metrics).
 - 2026-09-09: Added authenticated PUT upsert support for AutoPrism table list endpoints.
-- 2026-10-02 (0.6.16): AutoPrism client feedback: added adsorption-isotherm (non-H2 gases) and its bundle section; mofchecker formal-charge columns; heat_capacity md5; one-row-per-configuration upsert keys (config, scale, md5) with ambiguity errors; value-based mixture/config matching; `unknown_fields` / `new_structures` in upsert responses; 400 when an upsert stores no rows.
+- Unreleased: `match=exact` on the AutoPrism GET `structure` / `mof` filters (AutoPrism closeout C2).
+- Unreleased: bundle upsert refuses to overwrite a stored CIF file shared with other records; materials without a primary CIF adopt the uploaded one; tag names resolve case-insensitively.
+- 2026-10-02 (0.6.16): AutoPrism client feedback: added adsorption-isotherm (all gases) and its bundle section, with isotherm-h2 (endpoint, bundle section and v1 update_isotherm_h2) now an alias over it and isotherm_H2 frozen (rows copied by migration 0055); mofchecker formal-charge columns; heat_capacity md5; one-row-per-configuration upsert keys (config, scale, md5) with ambiguity errors; value-based mixture/config matching; `unknown_fields` / `new_structures` in upsert responses; 400 when an upsert stores no rows.

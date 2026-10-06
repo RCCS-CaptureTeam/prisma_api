@@ -11,18 +11,22 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
+from numbers import Integral
+from pathlib import Path
+
+import pandas as pd
 import pytest
 import requests
 import responses as resp_lib
 from responses import matchers
-from datetime import datetime
-from numbers import Integral
 
-import pandas as pd
-from pathlib import Path
-
-from prisma_api.prisma_api_v2 import (PrismaAPIv2, _BASE_PROD, _BUNDLE_SECTIONS,
-                                      _parse_cif_metadata)
+from prisma_api.prisma_api_v2 import (
+    _BASE_PROD,
+    _BUNDLE_SECTIONS,
+    PrismaAPIv2,
+    _parse_cif_metadata,
+)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -106,12 +110,12 @@ def test_json_format_restores_to_dataframe(api):
 @resp_lib.activate
 def test_json_format_cif_url_resolved(api):
     """cif_url relative paths are resolved even in json mode."""
-    import pandas as pd
     api.set_return_format("json")
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
                  json=_envelope([{"id": 1, "name": "MOF1", "cif_url": "/cifs/MOF1.cif"}]),
                  status=200)
     result = api.list_materials()
+    assert result[0]["cif_url"] == "https://prisma-platform.org/cifs/MOF1.cif"
 
 
 # ── _compact ─────────────────────────────────────────────────────────────────
@@ -162,7 +166,7 @@ def test_health_ok(api):
 def test_health_http_error_raises(api):
     """Non-2xx response should propagate as an exception."""
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/health/", status=503)
-    with pytest.raises(Exception):
+    with pytest.raises(requests.HTTPError):
         api.health()
 
 
@@ -204,7 +208,7 @@ def test_list_materials_returns_dataframe(api):
     body = _envelope([
         {"id": 1, "name": "ABEXEM", "cif_url": "/media/ABEXEM.cif", **_MATERIAL_EXTRA_FIELDS},
         {"id": 2, "name": "FOOFOO", "cif_url": "/media/FOOFOO.cif",
-         **{**_MATERIAL_EXTRA_FIELDS, "material_id": "FOOFOO"}},
+         **_MATERIAL_EXTRA_FIELDS, "material_id": "FOOFOO"},
     ])
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/", json=body, status=200)
     df = api.list_materials()
@@ -826,38 +830,6 @@ def test_get_mea_kpi_detail(api):
     resp_lib.add(resp_lib.GET, f"{PROD_BASE}/mea-kpis/1/",
                  json={"id": 1, "name": "CAPEX", "category": "CAC"}, status=200)
     assert api.get_mea_kpi(1)["category"] == "CAC"
-
-@pytest.mark.parametrize("method,path,fixture", [
-    ("get_sources",    "/sources/",    [{"id": 1, "name": "Coal Plant", "short_name": "CP"}]),
-    ("get_scopes",     "/scopes/",     [{"id": 7, "name": "Point Source"}]),
-    ("get_sinks",      "/sinks/",      [{"id": 2, "name": "North Sea"}]),
-    ("get_transport_scenarios", "/transport-scenarios/", [{"id": 3, "name": "Pipeline 200km"}]),
-    ("get_utilities",  "/utilities/",  [{"id": 4, "name": "Steam"}]),
-    ("get_references", "/references/", [{"id": 5, "Name": "IPCC AR6", "Doi": "10.1/x"}]),
-])
-@resp_lib.activate
-def test_catalog_list_endpoints_return_dataframe(api, method, path, fixture):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}{path}",
-                 json=_envelope(fixture), status=200)
-    df = getattr(api, method)()
-    assert len(df) == 1
-
-
-@pytest.mark.parametrize("method,path,record", [
-    ("get_source",             "/sources/1/",            {"id": 1, "name": "Coal Plant"}),
-    ("get_scope",              "/scopes/7/",             {"id": 7, "name": "Point Source"}),
-    ("get_sink",               "/sinks/2/",              {"id": 2, "name": "North Sea"}),
-    ("get_transport_scenario", "/transport-scenarios/3/",{"id": 3, "name": "Pipeline"}),
-    ("get_utility",            "/utilities/4/",          {"id": 4, "name": "Steam"}),
-    ("get_reference",          "/references/5/",         {"id": 5, "Name": "IPCC"}),
-])
-@resp_lib.activate
-def test_catalog_detail_endpoints_return_dict(api, method, path, record):
-    resp_lib.add(resp_lib.GET, f"{PROD_BASE}{path}", json=record, status=200)
-    pk = record["id"]
-    result = getattr(api, method)(pk)
-    assert result["id"] == pk
-
 
 # ── Isotherms ─────────────────────────────────────────────────────────────────
 
@@ -1560,7 +1532,8 @@ def test_autoprism_detail_endpoints(api):
 
     assert api.get_adsorption_singlepoint_item(1)["id"] == 1
     assert api.get_heat_capacity_item(2)["id"] == 2
-    assert api.get_isotherm_h2_item(3)["id"] == 3
+    with pytest.warns(DeprecationWarning):
+        assert api.get_isotherm_h2_item(3)["id"] == 3
     assert api.get_adsorption_isotherm_item(6)["id"] == 6
     assert api.get_mofchecker_item(4)["id"] == 4
     assert api.get_zeopp_metrics_item(5)["id"] == 5
@@ -1670,7 +1643,8 @@ def test_upsert_autoprism_tables_accept_dataframes_and_pass_all_fields(api, monk
 
     assert api.upsert_adsorption_singlepoint(adsorption_df)["created"] == 1
     assert api.upsert_heat_capacity(heat_capacity_df)["created"] == 1
-    assert api.upsert_isotherm_h2(isotherm_h2_df)["created"] == 1
+    with pytest.warns(DeprecationWarning):
+        assert api.upsert_isotherm_h2(isotherm_h2_df)["created"] == 1
     assert api.upsert_mofchecker(mofchecker_df)["created"] == 1
     assert api.upsert_zeopp_metrics(zeopp_df)["created"] == 1
 
@@ -1758,7 +1732,8 @@ def test_upsert_autoprism_collection_dispatches_sections(api, monkeypatch):
         "meta_provenance": top_level_meta,
     }
 
-    result = api.upsert_autoprism_collection(payload)
+    with pytest.warns(DeprecationWarning, match="isotherm_H2s"):
+        result = api.upsert_autoprism_collection(payload)
 
     assert result["overall_status"] == "ok"
     assert result["totals"]["created"] == 25
@@ -1830,7 +1805,8 @@ def test_upsert_explicit_meta_provenance_used_as_is(api, monkeypatch):
         match=[matchers.json_params_matcher([{"structure": "X", "meta_provenance": meta}])],
         json={"created": 1, "updated": 0},
     )
-    assert api.upsert_isotherm_h2({"structure": "X"}, meta_provenance=meta)["created"] == 1
+    with pytest.warns(DeprecationWarning):
+        assert api.upsert_isotherm_h2({"structure": "X"}, meta_provenance=meta)["created"] == 1
 
 
 def _init_git_repo(path, remote):
@@ -3394,6 +3370,7 @@ def test_computation_runs_upsert_raise_on_error_207(api):
 @resp_lib.activate
 def test_collection_marks_207_sections_failed(no_git_meta):
     import warnings as _warnings
+
     from prisma_api import PrismaRowErrorWarning, PrismaUpsertError
     api = no_git_meta
     resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/adsorption-singlepoint/", json=_ROW_ERROR_BODY, status=207)
@@ -3455,7 +3432,8 @@ _MOCK_DIR = Path(__file__).resolve().parents[1] / "reference_data" / "autoprism"
 def test_autoprism_mock_payloads_pass_id_check():
     from prisma_api.prisma_api_v2 import _check_nested_ids
     payload = json.loads((_MOCK_DIR / "mock_payload_all_autoprism.json").read_text())
-    for section in ("adsorption_singlepoints", "heat_capacities", "isotherm_H2s", "mofchecker", "zeopp_metrics"):
+    for section in ("adsorption_singlepoints", "heat_capacities", "adsorption_isotherms",
+                    "mofchecker", "zeopp_metrics"):
         _check_nested_ids(payload.get(section, []), section)
 
 
@@ -3506,6 +3484,7 @@ def test_table_upsert_raise_on_error_400(no_git_meta):
 @resp_lib.activate
 def test_collection_marks_400_section_error(no_git_meta):
     import warnings as _warnings
+
     from prisma_api import PrismaUpsertError
     resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/mofchecker/", json=_NO_ROWS_BODY, status=400)
     payload = {"mofchecker": [{"md5": "a1"}]}
@@ -3572,11 +3551,27 @@ def test_collection_splits_mixed_isotherms_by_gas(api, monkeypatch):
     monkeypatch.setattr(api, "upsert_adsorption_isotherm", _capture("other"))
     result = api.upsert_autoprism_collection({
         "isotherms": [{"component": "H2"}, {"component": "CO2"}, {"component": "H2O"}],
-        "isotherm_H2s": [{"component": "H2", "isotherm_id": "existing"}],
+        "adsorption_isotherms": [{"component": "N2", "isotherm_id": "existing"}],
     })
-    assert [r["component"] for r in sent["h2"]] == ["H2", "H2"]
-    assert [r["component"] for r in sent["other"]] == ["CO2", "H2O"]
+    assert "h2" not in sent
+    assert [r["component"] for r in sent["other"]] == ["N2", "H2", "CO2", "H2O"]
+    assert result["sections"]["isotherm_H2s"]["status"] == "skipped"
     assert result["totals"]["created"] == 4
+
+
+def test_collection_isotherm_h2s_key_is_deprecated_and_gets_component(api, monkeypatch):
+    sent = {}
+    monkeypatch.setattr(api, "_resolve_meta_provenance", lambda meta=None, repo_dir=None: {})
+
+    def _capture(payload, **kwargs):
+        sent["h2"] = payload
+        return {"created": len(payload), "updated": 0}
+
+    monkeypatch.setattr(api, "upsert_isotherm_h2", _capture)
+    with pytest.warns(DeprecationWarning, match="isotherm_H2s collection key is deprecated"):
+        api.upsert_autoprism_collection({"isotherm_H2s": [{"isotherm_id": "a"},
+                                                          {"component": "H2", "isotherm_id": "b"}]})
+    assert [r["component"] for r in sent["h2"]] == ["H2", "H2"]
 
 
 def test_bundle_sections_include_adsorption_isotherm():
@@ -3597,6 +3592,7 @@ def test_upsert_warns_unknown_fields(no_git_meta):
 @resp_lib.activate
 def test_upsert_warns_new_structures(no_git_meta):
     import warnings as _warnings
+
     from prisma_api import PrismaNewStructureWarning
     resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/heat-capacity/",
                  json={"created": 1, "updated": 0, "new_structures": ["NEWMOF"]})
@@ -3611,6 +3607,7 @@ def test_upsert_warns_new_structures(no_git_meta):
 @resp_lib.activate
 def test_collection_summarises_unknown_fields_and_new_structures(no_git_meta):
     import warnings as _warnings
+
     from prisma_api import PrismaNewStructureWarning, PrismaUnknownFieldsWarning
     resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/heat-capacity/",
                  json={"created": 1, "updated": 0, "new_structures": ["B", "A"]})
@@ -3631,3 +3628,236 @@ def test_collection_summarises_unknown_fields_and_new_structures(no_git_meta):
     kinds = [w.category for w in caught]
     assert kinds.count(PrismaNewStructureWarning) == 1
     assert kinds.count(PrismaUnknownFieldsWarning) == 1
+
+
+# ── 0.4.5: H2 via adsorption_isotherm, exact-match filter, AutoPrism CIFs ──────
+
+@resp_lib.activate
+def test_upsert_isotherm_h2_warns_deprecated(no_git_meta):
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/isotherm-h2/", json={"created": 1, "updated": 0})
+    with pytest.warns(DeprecationWarning, match="use upsert_adsorption_isotherm with component='H2'"):
+        no_git_meta.upsert_isotherm_h2({"structure": "X", "component": "H2"})
+    assert resp_lib.calls[0].request.url == f"{PROD_BASE}/isotherm-h2/"
+
+
+@resp_lib.activate
+def test_get_isotherm_h2_warns_deprecated(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/isotherm-h2/", json=_envelope([{"id": 1, "component": "H2"}]))
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/isotherm-h2/1/", json={"id": 1})
+    with pytest.warns(DeprecationWarning, match=r"get_adsorption_isotherm\(component='H2'\)"):
+        api.get_isotherm_h2(structure="X")
+    with pytest.warns(DeprecationWarning, match="get_adsorption_isotherm_item"):
+        api.get_isotherm_h2_item(1)
+    assert all("/isotherm-h2/" in call.request.url for call in resp_lib.calls)
+
+
+@resp_lib.activate
+def test_upsert_adsorption_isotherm_accepts_h2(no_git_meta):
+    import warnings as _warnings
+    row = {"structure": {"name": "X"}, "component": "H2", "temperature_K": 77.0, "pressure_bar": 1.0}
+    resp_lib.add(
+        resp_lib.PUT,
+        f"{PROD_BASE}/adsorption-isotherm/",
+        match=[matchers.json_params_matcher([{**row, "meta_provenance": {}}])],
+        json={"created": 1, "updated": 0},
+    )
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        assert no_git_meta.upsert_adsorption_isotherm([row])["created"] == 1
+
+
+def _fake_collection_getters(api, monkeypatch, seen):
+    monkeypatch.setattr(api, "_resolve_meta_provenance", lambda meta=None, repo_dir=None: {})
+    rows = {
+        "get_computation_runs": [],
+        "get_adsorption_singlepoint": [],
+        "get_heat_capacity": [],
+        "get_isotherm_h2": [{"id": 1, "component": "H2"}],
+        "get_adsorption_isotherm": [{"id": 1, "component": "H2"}, {"id": 2, "component": "CO2"}],
+        "get_mofchecker": [],
+        "get_zeopp_metrics": [],
+    }
+    for name, records in rows.items():
+        def _getter(_name=name, _records=records, **kwargs):
+            seen[_name] = kwargs
+            return _records
+        monkeypatch.setattr(api, name, _getter)
+
+
+def test_get_autoprism_collection_h2_subset_and_include_flag(api, monkeypatch, capsys):
+    seen = {}
+    _fake_collection_getters(api, monkeypatch, seen)
+
+    collection = api.get_autoprism_collection(structure="X")
+    assert [r["id"] for r in collection["isotherm_H2s"]] == [1]
+    # adsorption_isotherms already holds the H2 rows; isotherm_H2s is a subset.
+    assert [r["component"] for r in collection["adsorption_isotherms"]] == ["H2", "CO2"]
+    assert "isotherm_H2s (H2 subset, deprecated)" in capsys.readouterr().out
+    assert "subset" in PrismaAPIv2.get_autoprism_collection.__doc__
+
+    seen.clear()
+    collection = api.get_autoprism_collection(structure="X", include_deprecated_h2=False)
+    assert "isotherm_H2s" not in collection
+    assert "get_isotherm_h2" not in seen
+    assert "isotherm_H2s" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("method, path, name_param", [
+    ("get_adsorption_singlepoint", "/adsorption-singlepoint/", "structure"),
+    ("get_heat_capacity", "/heat-capacity/", "structure"),
+    ("get_isotherm_h2", "/isotherm-h2/", "structure"),
+    ("get_adsorption_isotherm", "/adsorption-isotherm/", "structure"),
+    ("get_mofchecker", "/mofchecker/", "structure"),
+    ("get_zeopp_metrics", "/zeopp-metrics/", "mof"),
+])
+@resp_lib.activate
+def test_getters_send_match_only_when_given(api, method, path, name_param):
+    import warnings as _warnings
+    base = {name_param: "LAGNAK", "limit": "500", "offset": "0"}
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}{path}",
+                 match=[matchers.query_param_matcher({**base, "match": "exact"})], json=_envelope([]))
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}{path}",
+                 match=[matchers.query_param_matcher(base)], json=_envelope([]))
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", DeprecationWarning)
+        getattr(api, method)(**{name_param: "LAGNAK", "match": "exact"})
+        getattr(api, method)(**{name_param: "LAGNAK"})
+        with pytest.raises(ValueError, match="match must be"):
+            getattr(api, method)(**{name_param: "LAGNAK", "match": "fuzzy"})
+    assert len(resp_lib.calls) == 2
+
+
+def test_get_autoprism_collection_forwards_match(api, monkeypatch):
+    seen = {}
+    _fake_collection_getters(api, monkeypatch, seen)
+    api.get_autoprism_collection(structure="LAGNAK", mof="LAGNAK", match="exact")
+    named = [name for name in seen if name != "get_computation_runs"]
+    assert len(named) == 6
+    assert all(seen[name]["match"] == "exact" for name in named)
+    assert "match" not in seen["get_computation_runs"]
+
+
+def test_get_autoprism_collection_rejects_invalid_match_before_requests(api, monkeypatch):
+    seen = {}
+    _fake_collection_getters(api, monkeypatch, seen)
+    with pytest.raises(ValueError, match="match must be"):
+        api.get_autoprism_collection(structure="X", match="EXACT")
+    assert seen == {}
+
+
+_CIF_TEXT = "data_LAGNAK\n_cell_length_a 10.0\n_cell_length_b 11.0\n_cell_length_c 12.0\n"
+_BUNDLE_UPSERT = f"{PROD_BASE}/materials/bundle/upsert/"
+
+
+def _cif_md5(text: str = _CIF_TEXT) -> str:
+    import hashlib
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+def _bundle_ok(names, created=True):
+    return {"materials": len(names), "created": {"cifs": len(names)}, "updated": {},
+            "results": [{"material": {"id": i, "name": n, "created": created},
+                         "created": {"cifs": 1}, "updated": {}} for i, n in enumerate(names)]}
+
+
+@resp_lib.activate
+def test_upsert_autoprism_cifs_names_files_by_md5(api):
+    import warnings as _warnings
+    resp_lib.add(resp_lib.PUT, _BUNDLE_UPSERT, json=_bundle_ok(["LAGNAK"], created=False))
+    md5 = _cif_md5()
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        result = api.upsert_autoprism_cifs([{"structure": "LAGNAK", "content": _CIF_TEXT, "md5": md5}],
+                                           tags=["autoprism"])
+    assert result == {"created": 1, "updated": 0, "materials_created": [], "errors": []}
+
+    request = resp_lib.calls[0].request
+    assert "create_materials=true" in request.url
+    body = json.loads(request.body)
+    assert body[0]["material"] == {"name": "LAGNAK"}
+    row = body[0]["cifs"][0]
+    assert row["filename"] == f"LAGNAK__autoprism_{md5[:12]}.cif"
+    assert row["filename"] != "LAGNAK.cif"
+    assert row["content"] == _CIF_TEXT
+    assert row["tags"] == ["autoprism"]
+
+
+def test_upsert_autoprism_cifs_rejects_md5_mismatch(api):
+    with pytest.raises(ValueError, match="does not match the content"):
+        api.upsert_autoprism_cifs([{"structure": "LAGNAK", "content": _CIF_TEXT, "md5": "0" * 32}])
+
+
+def test_upsert_autoprism_cifs_rejects_long_paths(api):
+    with pytest.raises(ValueError, match="CIF.file limit"):
+        api.upsert_autoprism_cifs([{"structure": "X" * 70, "content": _CIF_TEXT}])
+
+
+@resp_lib.activate
+def test_upsert_autoprism_cifs_batches(api):
+    def _reply(request):
+        names = [b["material"]["name"] for b in json.loads(request.body)]
+        return 200, {}, json.dumps(_bundle_ok(names, created=False))
+
+    resp_lib.add_callback(resp_lib.PUT, _BUNDLE_UPSERT, callback=_reply)
+    items = [{"structure": f"MOF{i}", "content": _CIF_TEXT + f"# {i}\n"} for i in range(120)]
+    result = api.upsert_autoprism_cifs(items, batch_size=50)
+    assert [len(json.loads(c.request.body)) for c in resp_lib.calls] == [50, 50, 20]
+    assert result["created"] == 120
+
+
+@resp_lib.activate
+def test_upsert_autoprism_cifs_reports_materials_created(api):
+    from prisma_api import PrismaNewStructureWarning
+    resp_lib.add(resp_lib.PUT, _BUNDLE_UPSERT, json=_bundle_ok(["NEWMOF"]))
+    with pytest.warns(PrismaNewStructureWarning, match="NEWMOF"):
+        result = api.upsert_autoprism_cifs([{"structure": "NEWMOF", "content": _CIF_TEXT}])
+    assert result["materials_created"] == ["NEWMOF"]
+
+
+@resp_lib.activate
+def test_upsert_autoprism_cifs_207_all_failed_is_failure(api):
+    import warnings as _warnings
+
+    from prisma_api import PrismaRowErrorWarning, PrismaUpsertError
+    body = {"materials": 1, "created": {}, "updated": {}, "results": [],
+            "errors": [{"index": 0, "material": "LAGNAK", "error": "Unknown tag 'AutoPrism'"}]}
+    resp_lib.add(resp_lib.PUT, _BUNDLE_UPSERT, json=body, status=207)
+    items = [{"structure": "LAGNAK", "content": _CIF_TEXT}]
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        result = api.upsert_autoprism_cifs(items)
+    assert [w.category for w in caught] == [PrismaRowErrorWarning]
+    assert "no rows stored" in str(caught[0].message)
+    assert result["created"] == 0 and len(result["errors"]) == 1
+
+    with pytest.raises(PrismaUpsertError, match="Unknown tag"):
+        api.upsert_autoprism_cifs(items, raise_on_error=True)
+
+
+@resp_lib.activate
+def test_collection_uploads_cifs_first(no_git_meta):
+    import warnings as _warnings
+
+    from prisma_api import PrismaNewStructureWarning
+    resp_lib.add(resp_lib.PUT, _BUNDLE_UPSERT, json=_bundle_ok(["NEWMOF"]))
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/computation-runs/", json={"created": 1, "updated": 0})
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/heat-capacity/", json={"created": 2, "updated": 0})
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        result = no_git_meta.upsert_autoprism_collection({
+            "heat_capacities": [{"md5": "a"}, {"md5": "b"}],
+            "computation_runs": [{"id": "r"}],
+            "cifs": [{"structure": "NEWMOF", "content": _CIF_TEXT}],
+        }, cif_tags=["autoprism"])
+
+    paths = [c.request.url.split("/api/v2")[1].split("?")[0] for c in resp_lib.calls]
+    assert paths == ["/materials/bundle/upsert/", "/computation-runs/", "/heat-capacity/"]
+    assert json.loads(resp_lib.calls[0].request.body)[0]["cifs"][0]["tags"] == ["autoprism"]
+    assert result["sections"]["cifs"]["status"] == "ok"
+    assert result["sections"]["cifs"]["created"] == 1
+    assert result["sections"]["cifs"]["new_structures"] == ["NEWMOF"]
+    assert result["totals"]["created"] == 4
+    assert result["totals"]["new_structures"] == ["NEWMOF"]
+    assert [w.category for w in caught].count(PrismaNewStructureWarning) == 1

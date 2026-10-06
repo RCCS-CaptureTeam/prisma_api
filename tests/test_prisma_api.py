@@ -9,12 +9,11 @@ access is needed.  Run with:
 
 from __future__ import annotations
 
-import json
-import pytest
-import responses as resp_lib
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pandas as pd
+import pytest
+import responses as resp_lib
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -410,8 +409,9 @@ def test_get_or_create_config_raises_without_tty(monkeypatch):
 
 
 def test_version_matches_installed_metadata():
+    from importlib.metadata import PackageNotFoundError, version
+
     import prisma_api as pkg
-    from importlib.metadata import version, PackageNotFoundError
     try:
         assert pkg.__version__ == version("prisma_api")
     except PackageNotFoundError:

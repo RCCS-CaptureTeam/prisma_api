@@ -1,6 +1,6 @@
 # %%
-import pandas
 import prisma_api
+
 api = prisma_api.init(local_dev=True)
 
 # %%

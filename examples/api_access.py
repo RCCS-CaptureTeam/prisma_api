@@ -12,6 +12,7 @@ api = prisma_api.init()
 
 # %%
 from prisma_api.config import update_dev_mode
+
 update_dev_mode(True)
 api = prisma_api.init()
 

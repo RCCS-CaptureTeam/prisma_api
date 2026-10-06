@@ -63,15 +63,15 @@ import argparse
 import json
 import sys
 from collections import Counter
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pandas as pd
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
 
-from prisma_api.prisma_api_v2 import PrismaAPIv2
 from prisma_api.config import load_config
-
+from prisma_api.prisma_api_v2 import PrismaAPIv2
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
 
@@ -404,7 +404,6 @@ def main() -> int:
     print(_bold(f"Tables to check: {', '.join(requested)}\n"))
 
     overall_rc = 0
-    json_results: list[dict] = []
 
     for flag in requested:
         rc = run_table_check(
@@ -423,7 +422,7 @@ def main() -> int:
         if overall_rc == 0:
             print(_green(f"\n  ✓ All {len(requested)} table(s) match between dev and prod.\n"))
         else:
-            print(_red(f"\n  ✗ Differences found in one or more tables.\n"))
+            print(_red("\n  ✗ Differences found in one or more tables.\n"))
 
     return overall_rc
 

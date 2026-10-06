@@ -60,10 +60,9 @@ from typing import Any
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
 
 import prisma_api
-from prisma_api.prisma_api_v2 import PrismaAPIv2
 from prisma_api.config import load_config
-from tests.crosscheck_dev_vs_prod import _to_json, _diff_excerpt
-
+from prisma_api.prisma_api_v2 import PrismaAPIv2
+from tests.crosscheck_dev_vs_prod import _diff_excerpt
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
 
@@ -339,8 +338,8 @@ def run_bundle_check(
 ) -> int:
     """Fetch bundles from dev and prod and compare them. Returns 0 or 1."""
 
-    fetch_kwargs = dict(name=name, source=source, sink=sink, region=region,
-                        limit_cases=n)
+    fetch_kwargs = {"name": name, "source": source, "sink": sink, "region": region,
+                    "limit_cases": n}
 
     print(f"\n  Fetching bundles from {dev_label} …", end="", flush=True)
     try:

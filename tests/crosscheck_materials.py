@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any
 
 import pandas as pd
 
@@ -47,8 +46,7 @@ from prisma_api.prisma_api_v2 import PrismaAPIv2
 
 # Reuse normalisation and diff helpers from the main cross-check module
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
-from tests.crosscheck_dev_vs_prod import _to_json, _diff_excerpt
-
+from tests.crosscheck_dev_vs_prod import _diff_excerpt, _to_json
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
 

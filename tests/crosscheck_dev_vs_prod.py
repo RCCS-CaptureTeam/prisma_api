@@ -32,7 +32,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import traceback
 from typing import Any
 
 import pandas as pd
@@ -42,7 +41,6 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]
 
 import prisma_api
 from prisma_api.prisma_api_v2 import PrismaAPIv2
-
 
 # ── Colour helpers (degrade gracefully on Windows / no-tty) ──────────────────
 
@@ -497,7 +495,7 @@ def _probe_detail_checks(
             continue
 
         sig = inspect.signature(getattr(prod_api, detail_method))
-        param_name = list(sig.parameters.keys())[0]
+        param_name = next(iter(sig.parameters))
 
         target_name: str | None = first_record.get("name") if isinstance(first_record, dict) else None
 

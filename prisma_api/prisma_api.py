@@ -1,14 +1,15 @@
+import math
 import os
 import warnings
-from .config import get_or_create_config, update_dev_mode as _update_dev_mode
-from .prisma_api_v2 import PrismaAPIv2
-from pathlib import Path
+
+import numpy as np
 import pandas as pd
 import requests
 
-import numpy as np
-import json
-import math
+from .config import get_or_create_config
+from .config import update_dev_mode as _update_dev_mode
+from .prisma_api_v2 import PrismaAPIv2
+
 
 def _safe_nan_check(x):
     if x is None:
@@ -23,7 +24,7 @@ def _safe_nan_check(x):
   
 
 # prisma_api main class
-class prisma_api():
+class prisma_api:
 
     def __init__(self, use_config_file=True, local_dev: bool = False,
                  upload_timeout: int = 120):
@@ -91,7 +92,7 @@ class prisma_api():
         )
         return _update_dev_mode(dev)
         
-    def get_mofs(self, payload={}):
+    def get_mofs(self, payload: dict | None = None):
 
         api = self
 
@@ -105,7 +106,7 @@ class prisma_api():
             "Content-Type": "application/json"
         }
 
-        response = requests.post(url, json=payload, headers=headers, timeout=60)
+        response = requests.post(url, json=payload or {}, headers=headers, timeout=60)
         data = response.json()['data']
 
         data = pd.DataFrame.from_dict(data)
@@ -113,7 +114,7 @@ class prisma_api():
         return data
     
     
-    def get_carbon_isotherms(self, payload={}):
+    def get_carbon_isotherms(self, payload: dict | None = None):
 
         api = self
 
@@ -128,7 +129,7 @@ class prisma_api():
         }
 
         try:
-            response = requests.post(url, json=payload, headers=headers, timeout=60)
+            response = requests.post(url, json=payload or {}, headers=headers, timeout=60)
             data = response.json()['data']
 
             data = pd.DataFrame.from_dict(data)
@@ -147,11 +148,11 @@ class prisma_api():
 
             return data
         
-        except Exception as e:
+        except Exception:  # noqa: BLE001 - v1 contract: print and return empty
             print("Error retrieving carbon isotherms: check that the query parameter names are correct.")
             return pd.DataFrame()
     
-    def get_carbon_data_nested(self, payload={}, safe_names=False):
+    def get_carbon_data_nested(self, payload: dict | None = None, safe_names=False):
         """
         Get carbon data with nested structure, returned as separate DataFrames.
 
@@ -180,7 +181,7 @@ class prisma_api():
         }
 
         try:
-            response = requests.post(url, json=payload, headers=headers, timeout=60)
+            response = requests.post(url, json=payload or {}, headers=headers, timeout=60)
             data = response.json()
 
             col_names_carbon = data.get('meta', {}).get('original_column_names', {})
@@ -234,11 +235,11 @@ class prisma_api():
                 }
             }
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - v1 contract: print and return empty
             print(f"Error retrieving carbon data nested: {e}")
             return {}
     
-    def get_materials_data(self, payload={}, separate_experimental=True):
+    def get_materials_data(self, payload: dict | None = None, separate_experimental=True):
         """
         Args:
             payload:                 Dictionary containing query parameters for filtering.
@@ -279,12 +280,12 @@ class prisma_api():
             source_key = None
             for name, endpoint in urls.items():
                 try:
-                    response = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+                    response = requests.post(endpoint, json=payload or {}, headers=headers, timeout=60)
                     data_raw = response.json()
                     if data_raw.get('data'):
                         source_key = name
                         break
-                except Exception:
+                except Exception:  # noqa: BLE001, S112 - endpoint fallback: try the next one
                     continue
             
             if data_raw is None:
@@ -406,7 +407,7 @@ class prisma_api():
                     'meta': {'source': source_key},
                 }
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - v1 contract: print and return empty
             print(f"Error retrieving materials data: {e}")
             return {}
     
@@ -446,8 +447,6 @@ class prisma_api():
         if df.empty:
             return "[]"
         
-        import numpy as np
-        import json
         
         # Use pandas to_json which handles NaN properly, then parse back
         df_clean = df.copy()

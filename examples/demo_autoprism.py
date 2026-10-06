@@ -12,8 +12,9 @@
 # real uploads.
 
 # %%
-import prisma_api
 import json
+
+import prisma_api
 
 # API key: ~/.config/prisma_api/config.yaml, or PRISMA_API_* env vars if
 # there is no config file. init() prints the base URL it connected to.
@@ -46,13 +47,17 @@ resp_heat = api.v2.upsert_heat_capacity(sample_heat_capacity)
 
 
 # %%
-# ### isotherm_h2 (only)
+# ### H2 isotherms (only)
+# H2 isotherms are stored in adsorption_isotherm (prisma_cloud >= 0.6.16);
+# upsert_isotherm_h2 is deprecated.
 
 # Load mock payload from json, assume the python session generates this data (and doesn't simply read it from a file)
 with open(f"{MOCK_DIR}/mock_payload_isotherm_h2.json", "r") as f:
     sample_isotherm_h2 = json.load(f)
 
-resp_h2 = api.v2.upsert_isotherm_h2(sample_isotherm_h2)
+resp_h2 = api.v2.upsert_adsorption_isotherm(
+    [{**row, "component": row.get("component") or "H2"} for row in sample_isotherm_h2["isotherm_H2s"]]
+)
 
 
 # %%

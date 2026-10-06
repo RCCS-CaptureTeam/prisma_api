@@ -1,11 +1,10 @@
 import os
 import sys
 from pathlib import Path
+
 import pandas as pd
-import yaml
 import platformdirs
-
-
+import yaml
 
 ### Helper functions for config management
 
@@ -42,7 +41,7 @@ def load_config():
     return cfg
 
 # Internal function to create config.yaml
-def create_config_file(api_key: str = None):
+def create_config_file(api_key: str | None = None):
     """
     Create config.yaml. If api_key is None, prompt via CLI.
 

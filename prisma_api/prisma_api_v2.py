@@ -16,21 +16,21 @@ Usage:
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
+import math
+import re
+import subprocess
+import warnings
+from collections import Counter
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlencode, urlsplit, urlunsplit
+
 import pandas as pd
 import requests
-from typing import Any
-from pathlib import Path
-from urllib.parse import urlencode
-import warnings
-import copy
-import json
-from collections import Counter
-import re
-import math
-import subprocess
-from datetime import date, datetime
-from urllib.parse import urlsplit, urlunsplit
-
 
 _BASE_PROD = "https://prisma-platform.org/api/v2"
 _DEFAULT_BUNDLE = object()
@@ -55,6 +55,24 @@ _AUTOPRISM_ID_REQUIRED = ("run", "result", "mixture", "config")
 _AUTOPRISM_MATCH_BY_VALUE = {"mixture": "mixture_id", "config": "config_hash"}
 # Row errors quoted in warnings, exceptions and collection summaries.
 _ROW_ERROR_PREVIEW = 3
+# The H2-only isotherm endpoint is an alias over adsorption_isotherm
+# (prisma_cloud >= 0.6.16); its methods still work but are deprecated.
+_H2_DEPRECATED = {
+    "upsert_isotherm_h2": (
+        "upsert_isotherm_h2 is deprecated: H2 isotherms are stored in adsorption_isotherm; "
+        "use upsert_adsorption_isotherm with component='H2'"
+    ),
+    "get_isotherm_h2": (
+        "get_isotherm_h2 is deprecated: H2 isotherms are stored in adsorption_isotherm; "
+        "use get_adsorption_isotherm(component='H2')"
+    ),
+    "get_isotherm_h2_item": (
+        "get_isotherm_h2_item is deprecated: ids are adsorption_isotherm ids; "
+        "use get_adsorption_isotherm_item"
+    ),
+}
+# AutoPrism CIFs are stored as ``cifs/<filename>``; CIF.file holds at most this many characters.
+_CIF_FILE_MAX_LEN = 100
 
 
 class PrismaUpsertError(RuntimeError):
@@ -231,7 +249,7 @@ class PrismaAPIv2:
         resp.raise_for_status()
         return resp.json()
 
-    def _to_df(self, response: Any, key: str = "results") -> "pd.DataFrame | list":
+    def _to_df(self, response: Any, key: str = "results") -> pd.DataFrame | list:
         """Convert a list-endpoint response envelope to a DataFrame or list of dicts."""
         records = response.get(key, response) if isinstance(response, dict) else response
         records = records or []
@@ -239,7 +257,7 @@ class PrismaAPIv2:
             return records
         return pd.DataFrame(records) if records else pd.DataFrame()
 
-    def _resolve_cif_url_df(self, data: "pd.DataFrame | list") -> "pd.DataFrame | list":
+    def _resolve_cif_url_df(self, data: pd.DataFrame | list) -> pd.DataFrame | list:
         """Prepend the base URL to any relative cif_url values in a DataFrame or list of dicts."""
         base = self._base_url().rstrip("/").rsplit("/api/v2", 1)[0]
         if isinstance(data, pd.DataFrame):
@@ -589,9 +607,7 @@ class PrismaAPIv2:
                 return True
             if field_name.endswith(("_table", "_rows", "_records", "_sites")):
                 return True
-            if field_name.startswith(("atoms_", "bond_", "symmetry_", "cell_")):
-                return True
-            return False
+            return field_name.startswith(("atoms_", "bond_", "symmetry_", "cell_"))
 
         def _clean_and_convert(value: Any, path: tuple[str, ...] = ()) -> Any:
             if isinstance(value, dict):
@@ -603,9 +619,9 @@ class PrismaAPIv2:
                 return cleaned
             if isinstance(value, list):
                 cleaned_list = [_clean_and_convert(v, path) for v in value]
-                if cleaned_list and all(isinstance(x, dict) for x in cleaned_list):
-                    if _should_convert_to_df(path, cleaned_list):
-                        return pd.DataFrame(cleaned_list)
+                if (cleaned_list and all(isinstance(x, dict) for x in cleaned_list)
+                        and _should_convert_to_df(path, cleaned_list)):
+                    return pd.DataFrame(cleaned_list)
                 return cleaned_list
             return value
 
@@ -1160,6 +1176,13 @@ class PrismaAPIv2:
             truncating) and the envelopes merged. ``output='zip'`` is a single
             request, so it is capped at 200.
 
+            ``isotherm_h2`` is a subset of ``adsorption_isotherm`` (its
+            ``component == "H2"`` rows), not extra rows: don't add the two
+            sections' rows or counts together.
+
+            AutoPrism's own CIFs are the ``cifs`` rows whose file name matches
+            ``*__autoprism_*.cif`` (see ``upsert_autoprism_cifs``).
+
         Examples:
             >>> api.v2.get_material_bundles('Zeolite_13X')['counts']
             {'cifs': 2, 'isotherms': 4, 'water_kpis': 7, ...}
@@ -1512,7 +1535,7 @@ class PrismaAPIv2:
             bundle = bundles[index]
             rows = bundle.setdefault("cifs", [])
             if not isinstance(rows, list):
-                raise ValueError(f"bundles[{index}]['cifs'] must be a list")
+                raise ValueError(f"bundles[{index}]['cifs'] must be a list")  # noqa: TRY004 - documented ValueError
 
             for position, path in enumerate(paths):
                 if not path.is_file():
@@ -1620,8 +1643,9 @@ class PrismaAPIv2:
                 project = data.get("project", {}) if isinstance(data, dict) else {}
                 value = project.get("version") if isinstance(project, dict) else None
                 pyproject_version = str(value) if value else None
-            except Exception:
-                # Fallback for environments where tomllib is unavailable.
+            except (ImportError, ValueError):
+                # Fallback for environments where tomllib is unavailable (or
+                # the file isn't valid TOML; TOMLDecodeError is a ValueError).
                 m = re.search(r"(?ms)^\[project\].*?^version\s*=\s*\"([^\"]+)\"", text)
                 pyproject_version = m.group(1).strip() if m else None
 
@@ -1890,7 +1914,7 @@ class PrismaAPIv2:
                 if pc_id:
                     try:
                         pc_rec = self.get_process_condition(int(pc_id))
-                    except Exception:
+                    except (requests.RequestException, TypeError, ValueError):
                         pc_rec = None
                 elif pc_name:
                     pc_rec = _first_record(
@@ -2458,18 +2482,22 @@ class PrismaAPIv2:
         component: str | None = None,
         limit: int = 500,
         offset: int = 0,
+        match: str | None = None,
     ) -> pd.DataFrame:
         """
         GET /api/v2/adsorption-singlepoint/
 
         Args:
             structure: Structure name filter.
+            match: ``"exact"`` for an exact (case-insensitive) name match; default is a
+                substring match (``"LAGNAK"`` also returns ``"LAGNAK_clean"``).
             md5: Exact md5 hash filter.
             mixture_id: Mixture identifier filter.
             component: Component filter.
         """
         params = _compact(
             structure=structure,
+            match=_check_match(match),
             md5=md5,
             mixture_id=mixture_id,
             component=component,
@@ -2535,16 +2563,20 @@ class PrismaAPIv2:
         temperature_K: float | None = None,
         limit: int = 500,
         offset: int = 0,
+        match: str | None = None,
     ) -> pd.DataFrame:
         """
         GET /api/v2/heat-capacity/
 
         Args:
             structure: Structure name filter.
+            match: ``"exact"`` for an exact (case-insensitive) name match; default is a
+                substring match (``"LAGNAK"`` also returns ``"LAGNAK_clean"``).
             temperature_K: Temperature filter [K].
         """
         params = _compact(
             structure=structure,
+            match=_check_match(match),
             temperature_K=temperature_K,
             limit=limit,
             offset=offset,
@@ -2611,12 +2643,19 @@ class PrismaAPIv2:
         pressure_bar: float | None = None,
         limit: int = 500,
         offset: int = 0,
+        match: str | None = None,
     ) -> pd.DataFrame:
         """
-        GET /api/v2/isotherm-h2/
+        GET /api/v2/isotherm-h2/ — deprecated.
+
+        Deprecated alias over ``adsorption_isotherm``: returns its
+        ``component == "H2"`` rows, and the ids are ``adsorption_isotherm`` ids.
+        Use ``get_adsorption_isotherm(component="H2")`` instead.
 
         Args:
             structure: Structure name filter.
+            match: ``"exact"`` for an exact (case-insensitive) name match; default is a
+                substring match (``"LAGNAK"`` also returns ``"LAGNAK_clean"``).
             isotherm_id: Isotherm identifier filter.
             component: Component filter.
             temperature_K: Temperature filter [K].
@@ -2624,6 +2663,7 @@ class PrismaAPIv2:
         """
         params = _compact(
             structure=structure,
+            match=_check_match(match),
             isotherm_id=isotherm_id,
             component=component,
             temperature_K=temperature_K,
@@ -2631,10 +2671,17 @@ class PrismaAPIv2:
             limit=limit,
             offset=offset,
         )
+        warnings.warn(_H2_DEPRECATED["get_isotherm_h2"], DeprecationWarning, stacklevel=2)
         return self._to_df(self._get("/isotherm-h2/", params))
 
     def get_isotherm_h2_item(self, row_id: int) -> dict:
-        """GET /api/v2/isotherm-h2/{row_id}/"""
+        """
+        GET /api/v2/isotherm-h2/{row_id}/ — deprecated.
+
+        *row_id* is an ``adsorption_isotherm`` id; use
+        ``get_adsorption_isotherm_item`` instead.
+        """
+        warnings.warn(_H2_DEPRECATED["get_isotherm_h2_item"], DeprecationWarning, stacklevel=2)
         return self._get(f"/isotherm-h2/{row_id}/")
 
     def upsert_isotherm_h2(
@@ -2647,14 +2694,17 @@ class PrismaAPIv2:
         check_ids: bool = True,
     ) -> dict:
         """
-        PUT /api/v2/isotherm-h2/
+        PUT /api/v2/isotherm-h2/ — deprecated.
 
-        H2 isotherms only; other gases go to ``upsert_adsorption_isotherm``.
+        Deprecated: use ``upsert_adsorption_isotherm`` with ``component='H2'``.
+        Rows are stored in ``adsorption_isotherm``; ``component`` defaults to
+        ``"H2"`` and the server rejects other gases.
 
         Accepts one object or many objects. Every row's ``meta_provenance`` is
         replaced with the resolved provenance.
 
-        The server keeps one row per lookup key: structure, md5, isotherm_id, component, temperature_K, pressure_bar.
+        The server keeps one row per lookup key, shared with
+        ``upsert_adsorption_isotherm``: structure, md5, isotherm_id, config, component, temperature_K, pressure_bar.
         If a row leaves out a key field and more than one stored row matches,
         the server rejects it as ambiguous; it appears in ``errors``.
 
@@ -2682,6 +2732,7 @@ class PrismaAPIv2:
         structure name matched nothing); each triggers a
         ``PrismaUnknownFieldsWarning`` / ``PrismaNewStructureWarning``.
         """
+        warnings.warn(_H2_DEPRECATED["upsert_isotherm_h2"], DeprecationWarning, stacklevel=2)
         return self._upsert_autoprism_table("upsert_isotherm_h2", payload,
                                             meta_provenance, repo_dir, timeout,
                                             raise_on_error, check_ids)
@@ -2696,14 +2747,17 @@ class PrismaAPIv2:
         limit: int = 500,
         offset: int = 0,
         md5: str | None = None,
+        match: str | None = None,
     ) -> pd.DataFrame:
         """
-        GET /api/v2/adsorption-isotherm/ — isotherms for every gas except H2.
+        GET /api/v2/adsorption-isotherm/ — isotherms for every gas, H2 included.
 
         Needs prisma_cloud >= 0.6.16 (404 on older servers).
 
         Args:
             structure: Structure name filter.
+            match: ``"exact"`` for an exact (case-insensitive) name match; default is a
+                substring match (``"LAGNAK"`` also returns ``"LAGNAK_clean"``).
             isotherm_id: Isotherm identifier filter.
             component: Gas, exact match (e.g. ``'CO2'``; ``'H2'`` won't match ``'H2O'``).
             temperature_K: Temperature filter [K].
@@ -2712,6 +2766,7 @@ class PrismaAPIv2:
         """
         params = _compact(
             structure=structure,
+            match=_check_match(match),
             md5=md5,
             isotherm_id=isotherm_id,
             component=component,
@@ -2738,9 +2793,8 @@ class PrismaAPIv2:
         """
         PUT /api/v2/adsorption-isotherm/
 
-        Isotherms for every gas except H2 (same row shape as isotherm-h2;
-        ``component`` is required). The server rejects H2 rows: use
-        ``upsert_isotherm_h2``. Needs prisma_cloud >= 0.6.16 (404 on older servers).
+        Isotherms for every gas, H2 included (``component`` required, e.g.
+        ``'H2'``, ``'CO2'``). Needs prisma_cloud >= 0.6.16 (404 on older servers).
 
         Accepts one object or many objects. Every row's ``meta_provenance`` is
         replaced with the resolved provenance.
@@ -2785,18 +2839,22 @@ class PrismaAPIv2:
         MOFQ: str | None = None,
         limit: int = 500,
         offset: int = 0,
+        match: str | None = None,
     ) -> pd.DataFrame:
         """
         GET /api/v2/mofchecker/
 
         Args:
             structure: Structure name filter.
+            match: ``"exact"`` for an exact (case-insensitive) name match; default is a
+                substring match (``"LAGNAK"`` also returns ``"LAGNAK_clean"``).
             md5: Exact md5 hash filter.
             is_mof: Boolean mofchecker flag.
             MOFQ: MOFQ classifier filter.
         """
         params = _compact(
             structure=structure,
+            match=_check_match(match),
             md5=md5,
             is_mof=None if is_mof is None else str(is_mof).lower(),
             MOFQ=MOFQ,
@@ -2870,16 +2928,20 @@ class PrismaAPIv2:
         probe: str | None = None,
         limit: int = 500,
         offset: int = 0,
+        match: str | None = None,
     ) -> pd.DataFrame:
         """
         GET /api/v2/zeopp-metrics/
 
         Args:
             mof: MOF name filter.
+            match: ``"exact"`` for an exact (case-insensitive) name match; default is a
+                substring match (``"LAGNAK"`` also returns ``"LAGNAK_clean"``).
             md5: Exact md5 hash filter.
             probe: Probe name filter.
         """
-        params = _compact(mof=mof, md5=md5, probe=probe, limit=limit, offset=offset)
+        params = _compact(mof=mof, match=_check_match(match), md5=md5, probe=probe,
+                          limit=limit, offset=offset)
         return self._to_df(self._get("/zeopp-metrics/", params))
 
     def get_zeopp_metrics_item(self, row_id: int) -> dict:
@@ -2933,6 +2995,124 @@ class PrismaAPIv2:
                                             meta_provenance, repo_dir, timeout,
                                             raise_on_error, check_ids)
 
+    def upsert_autoprism_cifs(
+        self,
+        cifs: list[dict],
+        tags: list[str] | None = None,
+        create_materials: bool = True,
+        batch_size: int = 50,
+        raise_on_error: bool = False,
+        timeout: int = 300,
+    ) -> dict:
+        """
+        Upload AutoPrism's own CIF files, each bound to the MOF named by ``structure``.
+
+        Each item: ``{"structure": name, "content": cif_text, "md5": md5_of_the_bytes}``.
+        ``content`` must be the file's exact text (bytes decoded as UTF-8, no
+        newline translation) so its md5 matches the md5 on the result rows;
+        ``md5`` is optional and, if given, must match.
+
+        Stored as ``{structure}__autoprism_{md5[:12]}.cif``. Never the bare
+        structure name: the server stores files as ``cifs/<basename>`` and a
+        new file replaces an old one of the same basename, which is often the
+        platform's curated CIF backing the MOF and several ``CIF`` rows.
+
+        Written through ``upsert_material_bundles`` (one bundle per structure,
+        each its own server transaction). The material is matched by exact
+        name, as the AutoPrism table upserts do, and created if missing when
+        *create_materials* is True. Re-sending an unchanged CIF updates the
+        same row; a changed CIF has a new md5, so it gets a new file and a new
+        ``CIF`` row beside the old one.
+
+        Args:
+            cifs: Items as above.
+            tags: Tag names for every CIF row. Tags must already exist on the
+                server; send them spelled exactly as stored (e.g. ``'autoprism'``).
+            create_materials: Create a material the database does not have.
+            batch_size: Bundles (structures) per request.
+            raise_on_error: Raise ``PrismaUpsertError`` if any bundle fails.
+                Otherwise a ``PrismaRowErrorWarning`` is emitted.
+            timeout: Request timeout in seconds per batch.
+
+        Returns:
+            ``{"created": n, "updated": n, "materials_created": [names],
+            "errors": [{index, material, error}, ...]}``. ``created`` /
+            ``updated`` count CIF rows; ``index`` counts structures across
+            all batches. Success is judged from ``errors``, not the status
+            code: the server answers 207 even when every bundle failed.
+            ``materials_created`` also triggers a ``PrismaNewStructureWarning``.
+
+        Raises:
+            ValueError: an empty ``structure`` or ``content``, an ``md5`` that
+                doesn't match ``content``, or a stored path over the
+                ``CIF.file`` limit of 100 characters.
+        """
+        if not isinstance(cifs, list):
+            raise TypeError("cifs must be a list of {'structure', 'content', 'md5'} dicts")
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
+
+        bundles: dict[str, dict] = {}
+        for index, item in enumerate(cifs):
+            if not isinstance(item, dict):
+                raise TypeError(f"cifs[{index}] must be a dict, got {type(item).__name__}")
+            structure, content = item.get("structure"), item.get("content")
+            if not isinstance(structure, str) or not structure:
+                raise ValueError(f"cifs[{index}]: 'structure' must be a non-empty string")
+            if not isinstance(content, str) or not content:
+                raise ValueError(f"cifs[{index}]: 'content' must be a non-empty string")
+            md5 = hashlib.md5(content.encode("utf-8")).hexdigest()
+            given = item.get("md5")
+            if given not in (None, "") and str(given).lower() != md5:
+                raise ValueError(
+                    f"cifs[{index}] ({structure}): md5 {given} does not match the content "
+                    f"({md5}). Send the file's exact text, decoded as UTF-8 without "
+                    "newline translation: the md5 ties result rows to this file."
+                )
+            filename = f"{structure}__autoprism_{md5[:12]}.cif"
+            if len("cifs/" + filename) > _CIF_FILE_MAX_LEN:
+                raise ValueError(
+                    f"cifs[{index}]: stored path 'cifs/{filename}' is longer than the "
+                    f"{_CIF_FILE_MAX_LEN}-character CIF.file limit"
+                )
+            bundle = bundles.setdefault(structure, {"material": {"name": structure}, "cifs": []})
+            if any(row["filename"] == filename for row in bundle["cifs"]):
+                continue  # the same file twice
+            bundle["cifs"].append({"filename": filename, "content": content,
+                                   "tags": list(tags or [])})
+
+        ordered = list(bundles.values())
+        summary: dict[str, Any] = {"created": 0, "updated": 0, "materials_created": [], "errors": []}
+        for start in range(0, len(ordered), batch_size):
+            with warnings.catch_warnings():
+                # Failed bundles are reported below, as PrismaRowErrorWarning.
+                warnings.filterwarnings("ignore", message=r"Partial success \(207\)",
+                                        category=UserWarning)
+                result = self.upsert_material_bundles(
+                    ordered[start:start + batch_size],
+                    create_materials=create_materials,
+                    derive_cif_metadata=True,
+                    timeout=timeout,
+                )
+            for item in result.get("results") or []:
+                summary["created"] += int((item.get("created") or {}).get("cifs") or 0)
+                summary["updated"] += int((item.get("updated") or {}).get("cifs") or 0)
+                material = item.get("material") or {}
+                if material.get("created"):
+                    summary["materials_created"].append(material.get("name"))
+            for error in result.get("errors") or []:
+                if isinstance(error, dict) and isinstance(error.get("index"), int):
+                    error = {**error, "index": error["index"] + start}
+                summary["errors"].append(error)
+
+        _report_row_errors(summary, "cifs", raise_on_error, stacklevel=3)
+        if summary["materials_created"]:
+            warnings.warn(
+                f"upsert_autoprism_cifs: created {len(summary['materials_created'])} new MOF "
+                f"record(s) for structure names that matched nothing: {summary['materials_created']}",
+                PrismaNewStructureWarning, stacklevel=2)
+        return summary
+
     def upsert_autoprism_collection(
         self,
         payload: dict[str, Any],
@@ -2941,19 +3121,30 @@ class PrismaAPIv2:
         timeout: int | None = None,
         raise_on_error: bool = False,
         check_ids: bool = True,
+        cif_tags: list[str] | None = None,
     ) -> dict[str, Any]:
         """
         Upsert multiple AutoPrism sections from a single combined payload.
 
         Expected payload shape mirrors the AutoPrism collection mock payload, with
         optional top-level keys:
-            computation_runs, adsorption_singlepoints, heat_capacities,
-            isotherm_H2s, adsorption_isotherms, mofchecker, zeopp_metrics,
-            meta_provenance
+            cifs, computation_runs, adsorption_singlepoints, heat_capacities,
+            adsorption_isotherms, mofchecker, zeopp_metrics, meta_provenance,
+            isotherm_H2s (deprecated)
 
-        An ``isotherms`` key may hold isotherm rows for mixed gases: rows with
-        ``component == "H2"`` are added to ``isotherm_H2s``, the rest to
-        ``adsorption_isotherms``.
+        ``cifs`` holds AutoPrism's CIF files, as items for
+        ``upsert_autoprism_cifs`` (``{"structure", "content", "md5"}``). They
+        are uploaded first, tagged with *cif_tags*, so new MOFs are created
+        with their CIF; the section's ``materials_created`` are added to
+        ``totals["new_structures"]``.
+
+        An ``isotherms`` key may hold isotherm rows for mixed gases, H2
+        included: they are all added to ``adsorption_isotherms``.
+
+        ``isotherm_H2s`` is deprecated (a ``DeprecationWarning`` is emitted):
+        its rows are still written through the H2 alias endpoint, with
+        ``component: "H2"`` added where missing. Send H2 rows in
+        ``adsorption_isotherms`` instead.
 
         Provenance (stamped on every row of the five AutoPrism tables), in
         order of precedence:
@@ -2996,6 +3187,15 @@ class PrismaAPIv2:
         if not isinstance(payload, dict):
             raise TypeError("payload must be a dict matching the AutoPrism collection shape")
         payload = self._split_mixed_isotherms(payload)
+        if payload.get("isotherm_H2s") is not None:
+            warnings.warn(
+                "The isotherm_H2s collection key is deprecated: H2 isotherms are stored in "
+                "adsorption_isotherm; send them in adsorption_isotherms with component='H2'",
+                DeprecationWarning, stacklevel=2)
+            payload = {**payload, "isotherm_H2s": [
+                {"component": "H2", **row} if isinstance(row, dict) and not row.get("component") else row
+                for row in self._payload_to_records(payload["isotherm_H2s"])
+            ]}
 
         if meta_provenance is None:
             meta_provenance = payload.get("meta_provenance")
@@ -3003,6 +3203,7 @@ class PrismaAPIv2:
         meta = self._resolve_meta_provenance(meta_provenance, repo_dir)
 
         section_handlers: list[tuple[str, str]] = [
+            ("cifs", "upsert_autoprism_cifs"),
             ("computation_runs", "upsert_computation_runs"),
             *((key, method) for method, (_, key) in _AUTOPRISM_TABLES.items()),
         ]
@@ -3030,9 +3231,12 @@ class PrismaAPIv2:
                 # the per-table warnings.
                 with warnings.catch_warnings():
                     for category in (PrismaRowErrorWarning, PrismaUnknownFieldsWarning,
-                                     PrismaNewStructureWarning):
+                                     PrismaNewStructureWarning, DeprecationWarning):
                         warnings.simplefilter("ignore", category)
-                    if method_name in _AUTOPRISM_TABLES:
+                    if method_name == "upsert_autoprism_cifs":
+                        result = method(section_payload, tags=cif_tags,
+                                        **({} if timeout is None else {"timeout": timeout}))
+                    elif method_name in _AUTOPRISM_TABLES:
                         result = method(section_payload, meta_provenance=meta,
                                         timeout=timeout, check_ids=check_ids)
                     else:
@@ -3057,13 +3261,15 @@ class PrismaAPIv2:
                         "errors": row_errors[:_ROW_ERROR_PREVIEW],
                     })
                 unknown, created_structures = _upsert_notices(result)
+                if method_name == "upsert_autoprism_cifs":
+                    created_structures = list(result.get("materials_created") or [])
                 if unknown:
                     sections[section_name]["unknown_fields"] = unknown
                     unknown_by_section[section_name] = unknown
                 if created_structures:
                     sections[section_name]["new_structures"] = created_structures
                     new_structures.update(str(n) for n in created_structures)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - any failure is reported per section
                 failed += 1
                 sections[section_name] = {
                     "status": "error",
@@ -3108,17 +3314,16 @@ class PrismaAPIv2:
         return summary
 
     def _split_mixed_isotherms(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Move ``payload["isotherms"]`` rows into isotherm_H2s / adsorption_isotherms by gas."""
+        """Move ``payload["isotherms"]`` rows (every gas, H2 included) into adsorption_isotherms."""
         if payload.get("isotherms") is None:
             return payload
         mixed = self._payload_to_records(payload["isotherms"])
-        h2 = [r for r in mixed if isinstance(r, dict) and r.get("component") == "H2"]
-        other = [r for r in mixed if not (isinstance(r, dict) and r.get("component") == "H2")]
         split = {k: v for k, v in payload.items() if k != "isotherms"}
-        for key, rows in (("isotherm_H2s", h2), ("adsorption_isotherms", other)):
-            if rows:
-                existing = split.get(key)
-                split[key] = (self._payload_to_records(existing) if existing is not None else []) + rows
+        if mixed:
+            existing = split.get("adsorption_isotherms")
+            split["adsorption_isotherms"] = (
+                self._payload_to_records(existing) if existing is not None else []
+            ) + mixed
         return split
 
     def get_autoprism_collection(
@@ -3139,6 +3344,8 @@ class PrismaAPIv2:
         MOFQ: str | None = None,
         limit: int = 500,
         offset: int = 0,
+        match: str | None = None,
+        include_deprecated_h2: bool = True,
     ) -> dict[str, list[dict] | dict[str, str | None]]:
         """
         Gather AutoPrism table records in one call flow.
@@ -3149,6 +3356,17 @@ class PrismaAPIv2:
             adsorption_isotherms, mofchecker, zeopp_metrics
             meta_provenance
 
+        ``adsorption_isotherms`` holds isotherms for every gas, H2 included.
+        ``isotherm_H2s`` is a deprecated subset of it (its
+        ``component == "H2"`` rows, read through the H2 alias endpoint): don't
+        add it to ``adsorption_isotherms``. Pass
+        ``include_deprecated_h2=False`` to leave the key out; that will become
+        the default in the next minor release, after which the key is removed.
+
+        CIFs are not part of the collection: read them with
+        ``get_material_bundles`` / ``get_cifs`` (AutoPrism's are the
+        ``*__autoprism_*.cif`` rows of the material).
+
         Notes:
             - ``workflow_id``, ``step`` and ``status`` filter computation runs.
             - ``structure`` is used for adsorption_singlepoint, heat_capacity,
@@ -3157,12 +3375,17 @@ class PrismaAPIv2:
             - ``mof`` is used for zeopp_metrics.
             - If ``structure`` is omitted and ``mof`` is provided, ``mof`` is
               also used as the structure filter for convenience.
+            - match: ``"exact"`` for an exact (case-insensitive) name match;
+              default is a substring match (``"LAGNAK"`` also returns
+              ``"LAGNAK_clean"``). Applies to the ``structure`` / ``mof``
+              filters; servers without the filter ignore it.
 
         Empty payload handling:
             - If any sub-call returns ``None`` or an unexpected scalar payload,
               this method normalises it to an empty table representation
               (``pd.DataFrame()`` in dataframe mode, ``[]`` in json mode).
         """
+        _check_match(match)
         structure_filter = structure or mof
 
         def _empty_table() -> pd.DataFrame | list[dict]:
@@ -3191,7 +3414,11 @@ class PrismaAPIv2:
 
         def _safe_fetch(section: str, fetcher, **kwargs) -> pd.DataFrame | list[dict]:
             try:
-                return _normalise_table_payload(fetcher(**kwargs))
+                with warnings.catch_warnings():
+                    # The isotherm_H2s key is itself documented as deprecated.
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    payload = fetcher(**kwargs)
+                return _normalise_table_payload(payload)
             except requests.HTTPError as exc:
                 warnings.warn(
                     f"AutoPrism section '{section}' failed ({exc}); returning empty table.",
@@ -3221,6 +3448,7 @@ class PrismaAPIv2:
                 "adsorption_singlepoint",
                 self.get_adsorption_singlepoint,
                 structure=structure_filter,
+                match=match,
                 md5=md5,
                 mixture_id=mixture_id,
                 component=component,
@@ -3231,14 +3459,16 @@ class PrismaAPIv2:
                 "heat_capacity",
                 self.get_heat_capacity,
                 structure=structure_filter,
+                match=match,
                 temperature_K=temperature_K,
                 limit=limit,
                 offset=offset,
             ),
-            "isotherm_H2s": _safe_fetch(
+            "isotherm_H2s": None if not include_deprecated_h2 else _safe_fetch(
                 "isotherm_H2",
                 self.get_isotherm_h2,
                 structure=structure_filter,
+                match=match,
                 isotherm_id=isotherm_id,
                 component=component,
                 temperature_K=temperature_K,
@@ -3250,6 +3480,7 @@ class PrismaAPIv2:
                 "adsorption_isotherm",
                 self.get_adsorption_isotherm,
                 structure=structure_filter,
+                match=match,
                 isotherm_id=isotherm_id,
                 component=component,
                 temperature_K=temperature_K,
@@ -3261,6 +3492,7 @@ class PrismaAPIv2:
                 "mofchecker",
                 self.get_mofchecker,
                 structure=structure_filter,
+                match=match,
                 md5=md5,
                 is_mof=is_mof,
                 MOFQ=MOFQ,
@@ -3271,6 +3503,7 @@ class PrismaAPIv2:
                 "zeopp_metrics",
                 self.get_zeopp_metrics,
                 mof=mof,
+                match=match,
                 md5=md5,
                 probe=probe,
                 limit=limit,
@@ -3281,6 +3514,7 @@ class PrismaAPIv2:
         collection = {
             key: _as_record_list(value)
             for key, value in collection.items()
+            if not (key == "isotherm_H2s" and not include_deprecated_h2)
         }
         collection["meta_provenance"] = meta
 
@@ -3295,7 +3529,10 @@ class PrismaAPIv2:
             "mofchecker",
             "zeopp_metrics",
         ):
-            print(f"  {key:22s}: {_record_count(collection.get(key, []))} records")
+            if key not in collection:
+                continue
+            name = "isotherm_H2s (H2 subset, deprecated)" if key == "isotherm_H2s" else key
+            print(f"  {name:22s}: {_record_count(collection[key])} records")
 
         return collection
 
@@ -3698,7 +3935,6 @@ class PrismaAPIv2:
                 raw = self._get("/scenarios/", {"case_id": case_id, "limit": 1})
                 results = raw.get("results", [])
                 if results:
-                    sid = results[0]["id"]
                     sc  = results[0]
                     scenario_spec = {
                         "scenario_name":       sc.get("name"),
@@ -3745,6 +3981,13 @@ class PrismaAPIv2:
 def _compact(**kwargs) -> dict:
     """Return kwargs dict with None values removed."""
     return {k: v for k, v in kwargs.items() if v is not None}
+
+
+def _check_match(match: str | None) -> str | None:
+    """Validate the AutoPrism name-filter ``match`` mode before any request is sent."""
+    if match not in (None, "exact", "contains"):
+        raise ValueError(f"match must be None, 'exact' or 'contains', got {match!r}")
+    return match
 
 
 def _json_safe(value: Any) -> Any:

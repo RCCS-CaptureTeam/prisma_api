@@ -15,8 +15,8 @@
 # ## 1 · Setup
 
 # %%
+
 import prisma_api
-import pandas as pd
 
 # Initialise — reads API key from config file (~/.config/prisma_api/config.yaml)
 api = prisma_api.init()
@@ -29,7 +29,7 @@ api.set_return_format('json')
 print(f"prisma_api version : {prisma_api.__version__}")
 print(f"API key loaded     : {'yes' if api.key else 'NO KEY FOUND'}")
 print(f"Dev mode           : {api.dev}")
-print(f"Return format      : json (list[dict])")
+print("Return format      : json (list[dict])")
 
 # %% [markdown]
 # ## Latest additions
@@ -335,7 +335,7 @@ if subsystems:
 # %%
 try:
     equipment = api.v2.get_equipment()
-    display(equipment)
+    display(equipment)  # noqa: F821 - IPython builtin
 except Exception as e:
     print(f"get_equipment unavailable: {e}")
     equipment = None
@@ -346,7 +346,7 @@ if equipment is not None:
     print(f"{len(equipment)} equipment items")
     # Filter by name substring
     try:
-        display(api.v2.get_equipment(name='blower'))
+        display(api.v2.get_equipment(name='blower'))  # noqa: F821 - IPython builtin
     except Exception as e:
         print(f"Filter unavailable: {e}")
 
@@ -651,7 +651,7 @@ print("scenario_spec  :", pack['scenario_spec'] is not None)
 
 # Inspect the nested CaseSpec
 cs = pack['case_spec']
-print(f"\nCaseSpec:")
+print("\nCaseSpec:")
 print(f"  case_name  : {cs['case_name']}")
 print(f"  source     : {cs['source']['name'] if cs['source'] else None}")
 print(f"  sink       : {cs['sink']['name'] if cs['sink'] else None}")
@@ -660,7 +660,7 @@ print(f"  transport  : {cs['transport']['name'] if cs['transport'] else None}")
 # Inspect the nested ScenarioSpec (if resolved)
 ss = pack['scenario_spec']
 if ss:
-    print(f"\nScenarioSpec:")
+    print("\nScenarioSpec:")
     print(f"  scenario_name : {ss['scenario_name']}")
     print(f"  process       : {ss['process']}")          # None — YAML-only
 
