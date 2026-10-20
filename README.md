@@ -38,6 +38,12 @@ api = prisma_api.init()
 ```
 
 On first use, the package creates a config file and prompts for an API key.
+Without a terminal (e.g. CI) it raises `RuntimeError` naming the environment
+variables to set instead (see below).
+
+`init()` prints whether it connected to production or a local dev server.
+Production is the default; use `prisma_api.init(local_dev=True)` for a local
+dev server on `localhost:<dev_host_port>`.
 
 ### Upgrades
 
@@ -68,18 +74,25 @@ create_config_file(api_key="YOUR_API_KEY_HERE")
 
 ### Environment-variable mode
 
-If you do not want to use the config file:
+When no config file exists, `init()` reads these environment variables
+instead (nothing is written to disk):
 
 ```bash
 export PRISMA_API_KEY="YOUR_API_KEY_HERE"
-export PRISMA_API_DEV="False"
+export PRISMA_API_DEV_API_KEY="YOUR_DEV_KEY"     # optional; defaults to PRISMA_API_KEY
+export PRISMA_API_DEV_HOST_PORT="8000"           # optional; used with local_dev=True
 ```
+
+To ignore any config file and use only the environment variables:
 
 ```python
-from prisma_api.prisma_api import prisma_api
+import prisma_api
 
-api = prisma_api(use_config_file=False)
+api = prisma_api.init(use_config_file=False)
 ```
+
+The target server is chosen only by `init(local_dev=...)`; there is no
+environment variable for it.
 
 ## Quick start
 
@@ -152,13 +165,13 @@ The main client exposes these v1 methods:
 Configuration helpers on the main client:
 
 - `set_return_format(fmt)`
-- `update_dev_mode(dev)`
+- `update_dev_mode(dev)` — deprecated and no longer changes the target; use `prisma_api.init(local_dev=True|False)`
 
 Module-level helpers exported from the package:
 
 - `prisma_api.init`
 - `prisma_api.PrismaAPIv2`
-- `prisma_api.update_dev_mode`
+- `prisma_api.update_dev_mode` — deprecated, as above
 - `prisma_api.update_dev_host_port`
 - `prisma_api.locate_config`
 - `prisma_api.PrismaUpsertError`, `prisma_api.PrismaRowErrorWarning`, `prisma_api.PrismaUnknownFieldsWarning`, `prisma_api.PrismaNewStructureWarning`
@@ -388,13 +401,22 @@ pytest tests/ -v --cov=prisma_api --cov-report=term-missing
 - [API_REFERENCE_V1.md](API_REFERENCE_V1.md)
 - [API_REFERENCE_V2.md](API_REFERENCE_V2.md)
 - [DEVELOPMENT_SUMMARY.md](DEVELOPMENT_SUMMARY.md)
-- [User Guide.md](User%20Guide.md)
+- [user_guide.md](user_guide.md)
+- Release notes, one file per minor series: [v0.4.x](https://github.com/RCCS-CaptureTeam/prisma_api/blob/main/docs/release_notes/v0.4.x.md), [v0.3.x](https://github.com/RCCS-CaptureTeam/prisma_api/blob/main/docs/release_notes/v0.3.x.md), [v0.2.x](https://github.com/RCCS-CaptureTeam/prisma_api/blob/main/docs/release_notes/v0.2.x.md)
+
+## Release notes
+
+Plain-language notes for every release, newest first, are in
+[docs/release_notes/](https://github.com/RCCS-CaptureTeam/prisma_api/tree/main/docs/release_notes). Each release section links to its
+GitHub release and to the full diff from the previous release. Check them
+before upgrading for breaking changes and deprecations.
 
 ## Notes
 
 - Production v2 base URL: `https://prisma-platform.org/api/v2`
 - Authentication header: `X-API-Key`
 - Local development routing is selected with `prisma_api.init(local_dev=True)`; the default targets production
+- Server compatibility notes for recent releases are below; see [docs/release_notes/](https://github.com/RCCS-CaptureTeam/prisma_api/tree/main/docs/release_notes) for the full history
 - 0.4.4: the `adsorption-isotherm` endpoints and the 400/notice handling need prisma_cloud >= 0.6.16
 - 0.4.5: H2 isotherms go through `upsert_adsorption_isotherm` (prisma_cloud >= 0.6.16); the H2-only methods and the `isotherm_H2s` collection key are deprecated. New `upsert_autoprism_cifs` uses the existing bundle upsert endpoint. AutoPrism getters take `match="exact"`.
 - 0.4.6: case-study library sync methods (`upsert_case_study_library` and the export, sync-run and stale-record readers) for the prisma_cloud `case-study-library` endpoints, which replace ingest pipeline 11.
