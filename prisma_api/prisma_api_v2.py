@@ -127,6 +127,27 @@ _BUNDLE_READONLY_SECTIONS = {
 # Read-bundle keys with no write meaning — dropped silently by the endpoint.
 _BUNDLE_IGNORED_KEYS = ("_schema", "sections", "counts")
 
+# Case-study library bundle (replaces ingest pipeline 11). PrISMa_Platform
+# composes the document; this client only sends it, split into requests.
+_CSL_SCHEMA = "prisma_v2.case_study_library.bundle.v1"
+# Document sections in dependency order: a later section may reference rows an
+# earlier one defines. ``deleted_source_files`` always goes last.
+_CSL_SECTIONS = (
+    "references", "economic_data", "sources", "sinks", "regions", "utilities",
+    "subsystems", "transport_scenarios", "transports", "process_conditions",
+    "contactor_configurations", "process_configurations", "equipment",
+    "cost_indices", "constants", "mea", "mea_kpis", "case_studies",
+    "deleted_source_files",
+)
+# Django's DATA_UPLOAD_MAX_MEMORY_SIZE: larger bodies get an HTML 400.
+_CSL_SERVER_MAX_BYTES = 2_621_440
+_CSL_DEFAULT_MAX_BYTES = 2_400_000
+# Integer totals in each upsert response, summed across requests.
+_CSL_SUMMED = ("m2m_links_changed", "property_sets_replaced",
+               "owned_row_sets_replaced", "commit_links_created")
+_CSL_LISTS = ("case_studies", "renamed", "deleted_source_files",
+              "stale_records", "absent_records")
+
 
 class PrismaAPIv2:
     """
@@ -3667,6 +3688,200 @@ class PrismaAPIv2:
         params = _compact(name=name, limit=limit, offset=offset)
         return self._to_df(self._get("/case-studies/", params))
 
+    # ── Case-study library (PrISMa_Platform sync) ─────────────────────────────
+
+    def upsert_case_study_library(
+        self,
+        document: dict,
+        dry_run: bool = False,
+        max_request_bytes: int = _CSL_DEFAULT_MAX_BYTES,
+        raise_on_error: bool = False,
+        timeout: int = 600,
+    ) -> dict:
+        """
+        Send a ``prisma_v2.case_study_library.bundle.v1`` document, split into
+        requests if needed.
+
+        ``PUT /api/v2/case-study-library/bundle/upsert/``. PrISMa_Platform
+        composes the document; this method doesn't reshape it. Nodes, key order
+        and values are sent as given (NaN/inf become ``null``, which JSON
+        requires).
+
+        Args:
+            document: The bundle document: ``_schema``, ``package`` (with a
+                non-empty ``git_commit``), ``complete`` and any of the
+                sections. ``_schema`` is filled in if missing.
+            dry_run: Validate and apply, report, then roll back
+                (``?dry_run=true``). A dry run split across requests can't see
+                rows an earlier request defines, so references between them may
+                be reported as unknown (a warning says so).
+            max_request_bytes: Largest request body. The server rejects bodies
+                over 2.5 MB before the view runs.
+            raise_on_error: Raise ``PrismaUpsertError`` when a request is
+                rejected. Otherwise a ``PrismaRowErrorWarning`` is emitted and
+                the merged result returned.
+            timeout: Per-request timeout in seconds. Each request is written in
+                one transaction, so allow minutes.
+
+        Returns:
+            The merged result of every request sent::
+
+                {"dry_run": False, "requests": 1, "requests_planned": 1,
+                 "counts": {"CaseStudy": {"created": 1, "updated": 0, "unchanged": 0}, ...},
+                 "case_studies": [{"name": ..., "id": ..., "source_file": ...,
+                                   "missing_links": []}],
+                 "renamed": [], "deleted_source_files": [], "stale_records": [],
+                 "absent_records": [], "m2m_links_changed": 2, ...,
+                 "sync_runs": [1], "errors": [], "failed_request": None}
+
+            ``errors`` is the server's ``[{"at": <path in the document>,
+            "error": <message>}]`` list from the rejected request.
+            ``failed_request`` is that request's 0-based index.
+
+        Splitting:
+            A document that fits is sent as one request. Otherwise sections
+            are grouped into requests in dependency order (``references`` first,
+            ``case_studies`` then ``deleted_source_files`` last). Every request
+            carries the same ``_schema`` and ``complete``. A section is split
+            across requests only when ``complete`` is not true, since with
+            ``complete: true`` each section in a request is the whole table.
+
+            Every request but the last carries ``package.git_commit`` set to
+            ``package.base_commit`` (or ``""`` on a full run), so the sync
+            history only reaches HEAD once the last request is applied. If a
+            sync stops partway, ``latest_case_study_library_sync()`` still
+            points at the base commit and re-running the same sync converges.
+
+            Sending stops at the first rejected request. Requests already sent
+            stay applied; all writes are upserts.
+
+        Raises:
+            TypeError: *document* is not a dict, or a section too large for
+                one request is not a list.
+            ValueError: a wrong ``_schema``, a missing ``package.git_commit``,
+                a *max_request_bytes* over the server limit, a complete section
+                too large for one request (send references instead of nested
+                copies), or a single node too large for one request.
+            PrismaUpsertError: a request was rejected and *raise_on_error*.
+            requests.HTTPError: 403 (bad API key) and other non-400 failures.
+        """
+        if not isinstance(document, dict):
+            raise TypeError("document must be a dict")
+        if max_request_bytes > _CSL_SERVER_MAX_BYTES:
+            raise ValueError(
+                f"max_request_bytes={max_request_bytes} is over the server's "
+                f"{_CSL_SERVER_MAX_BYTES}-byte request limit"
+            )
+        doc = dict(document)
+        if doc.get("_schema") is None:
+            doc = {"_schema": _CSL_SCHEMA, **doc}
+        if doc["_schema"] != _CSL_SCHEMA:
+            raise ValueError(f"_schema must be {_CSL_SCHEMA!r}, got {doc['_schema']!r}")
+        package = doc.get("package")
+        commit = package.get("git_commit") if isinstance(package, dict) else None
+        if not isinstance(commit, str) or not commit.strip():
+            raise ValueError(
+                "package.git_commit must be a non-empty string: it is where the "
+                "next incremental sync starts"
+            )
+
+        bodies = _split_case_study_library(doc, max_request_bytes)
+        planned = len(bodies)
+        if dry_run and planned > 1:
+            warnings.warn(
+                f"Dry run split into {planned} requests. Each is rolled back, so a "
+                "request can't resolve references to rows only an earlier request "
+                "defines; 'unknown reference' errors may be spurious.",
+                UserWarning, stacklevel=2,
+            )
+
+        merged: dict[str, Any] = {
+            "dry_run": dry_run, "requests": 0, "requests_planned": planned,
+            "counts": {}, **{k: [] for k in _CSL_LISTS}, **{k: 0 for k in _CSL_SUMMED},
+            "sync_runs": [], "errors": [], "failed_request": None,
+        }
+        params = {"dry_run": "true"} if dry_run else None
+        headers = self._headers()
+        for index, body in enumerate(bodies):
+            merged["requests"] += 1
+            resp = requests.put(self._url("/case-study-library/bundle/upsert/"),
+                                params=params, data=body, headers=headers,
+                                timeout=timeout)
+            if resp.status_code == 400:
+                merged["errors"] = _csl_errors(resp, len(body))
+                merged["failed_request"] = index
+                break
+            resp.raise_for_status()
+            _merge_csl_result(merged, resp.json())
+
+        if merged["errors"]:
+            _report_csl_errors(merged, raise_on_error)
+        return merged
+
+    def get_case_study_library_bundle(self, sections: list[str] | str | None = None,
+                                      timeout: int = 300) -> dict:
+        """
+        Export the case-study library.
+
+        ``GET /api/v2/case-study-library/bundle/``. Case studies reference
+        shared objects by natural key instead of repeating them. The export can
+        be sent back unchanged with :meth:`upsert_case_study_library`, which
+        reports every row as ``unchanged``.
+
+        Args:
+            sections: Section names to export (list or comma-separated string),
+                e.g. ``['sources', 'sinks']``. Default: all.
+            timeout: Request timeout in seconds.
+        """
+        params = _compact(sections=_join_csl_sections(sections))
+        return self._send("get", "/case-study-library/bundle/", params=params,
+                          timeout=timeout).json()
+
+    def get_case_study_bundle(self, case_id: int, timeout: int = 120) -> dict:
+        """
+        ``GET /api/v2/cases/{case_id}/bundle/``: one case study with its
+        source, sink, region, utilities, transport and subsystems nested in
+        full, as a library bundle document. 404 for an unknown *case_id*.
+        """
+        return self._send("get", f"/cases/{int(case_id)}/bundle/", timeout=timeout).json()
+
+    def latest_case_study_library_sync(self) -> dict | None:
+        """
+        ``GET /api/v2/case-study-library/sync-runs/latest/``: the last applied
+        sync, or ``None`` before the first. Its ``git_commit`` is the base of
+        the next incremental sync; an empty one means do a full run.
+        """
+        try:
+            return self._send("get", "/case-study-library/sync-runs/latest/").json()
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return None
+            raise
+
+    def list_case_study_library_sync_runs(self, status: str | None = None,
+                                          limit: int = 50,
+                                          git_commit: str | None = None,
+                                          offset: int = 0) -> list[dict]:
+        """
+        ``GET /api/v2/case-study-library/sync-runs/``: sync history, newest first.
+
+        Args:
+            status: ``'success'``, ``'partial'`` or ``'failed'``.
+            limit: Maximum number of runs.
+            git_commit: Commit prefix filter.
+            offset: Pagination offset.
+        """
+        params = _compact(status=status, git_commit=git_commit, limit=limit, offset=offset)
+        return self._get("/case-study-library/sync-runs/", params).get("results", [])
+
+    def list_stale_case_study_library_records(self) -> list[dict]:
+        """
+        ``GET /api/v2/case-study-library/stale/``: records whose upstream source
+        files have all been deleted, as ``[{model, id, label, paths}]``. They
+        are kept (scenarios and outputs may depend on them) for review.
+        """
+        return self._get("/case-study-library/stale/").get("results", [])
+
     def get_scenarios(self,
                       case_id: int | None = None,
                       name: str | None = None,
@@ -4436,3 +4651,157 @@ def _filename_from_disposition(disposition: str | None) -> str | None:
         return None
     match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', disposition)
     return match.group(1).strip() if match else None
+
+
+def _join_csl_sections(value: str | list[str] | None) -> str | None:
+    """Validate case-study library section names and join them for ``?sections=``."""
+    if value is None:
+        return None
+    items = value.split(",") if isinstance(value, str) else list(value)
+    names = [str(v).strip() for v in items if str(v).strip()]
+    valid = _CSL_SECTIONS[:-1]  # deleted_source_files is write-only
+    unknown = [n for n in names if n not in valid]
+    if unknown:
+        raise ValueError(f"Unknown case-study library section(s) {unknown}. "
+                         f"Valid sections: {list(valid)}")
+    return ",".join(names) or None
+
+
+def _csl_encode(value: Any) -> bytes:
+    """Compact UTF-8 JSON as sent: key order kept, NaN/inf -> null."""
+    return json.dumps(_json_safe(value), ensure_ascii=False, separators=(",", ":"),
+                      allow_nan=False).encode("utf-8")
+
+
+def _csl_member_size(key: str, value: Any) -> int:
+    """Encoded size of ``"key":value`` inside a JSON object."""
+    return len(_csl_encode(key)) + 1 + len(_csl_encode(value))
+
+
+def _csl_object_size(member_sizes: list[int]) -> int:
+    """Encoded size of a JSON object with members of the given sizes."""
+    return 2 + sum(member_sizes) + max(len(member_sizes) - 1, 0)
+
+
+def _split_case_study_library(doc: dict, max_bytes: int) -> list[bytes]:
+    """
+    Encode a library document as one or more request bodies of at most
+    *max_bytes* each.
+
+    Sections are grouped in dependency order; a section is split across
+    requests only when ``complete`` is not true. Every request but the last
+    carries ``package.git_commit = package.base_commit`` (or ``""``), so the
+    server's sync history reaches HEAD only once the whole document is applied.
+    """
+    whole = _csl_encode(doc)
+    if len(whole) <= max_bytes:
+        return [whole]
+
+    complete = doc.get("complete") is True
+    envelope = {k: v for k, v in doc.items() if k not in _CSL_SECTIONS}
+    package = envelope["package"]
+    interim = {**envelope,
+               "package": {**package, "git_commit": package.get("base_commit") or ""}}
+    env_sizes = [max(_csl_member_size(k, envelope[k]), _csl_member_size(k, interim[k]))
+                 for k in envelope]
+
+    def fits(member_sizes: list[int]) -> bool:
+        return _csl_object_size(env_sizes + member_sizes) <= max_bytes
+
+    # Units: one section, or one slice of a section, small enough to send alone.
+    units: list[tuple[str, Any, int]] = []
+    for name in _CSL_SECTIONS:
+        if name not in doc:
+            continue
+        nodes = doc[name]
+        size = _csl_member_size(name, nodes)
+        if fits([size]):
+            units.append((name, nodes, size))
+            continue
+        if complete:
+            raise ValueError(
+                f"Section '{name}' ({size} bytes) doesn't fit in one request of "
+                f"{max_bytes} bytes, and with complete=true it can't be split: each "
+                "section in a request is treated as the whole table. Send shared "
+                "objects as references instead of nested copies."
+            )
+        if not isinstance(nodes, list):
+            raise TypeError(f"Section '{name}' ({size} bytes) doesn't fit in one "
+                            f"request of {max_bytes} bytes and is not a list.")
+        key_size = len(_csl_encode(name)) + 1
+        chunk: list = []
+        chunk_size = 2  # "[]"
+        for index, node in enumerate(nodes):
+            node_size = len(_csl_encode(node))
+            if not fits([key_size + 2 + node_size]):
+                raise ValueError(f"{name}[{index}] ({node_size} bytes) doesn't fit in "
+                                 f"one request of {max_bytes} bytes.")
+            added = node_size + (1 if chunk else 0)
+            if chunk and not fits([key_size + chunk_size + added]):
+                units.append((name, chunk, key_size + chunk_size))
+                chunk, chunk_size, added = [], 2, node_size
+            chunk.append(node)
+            chunk_size += added
+        if chunk:
+            units.append((name, chunk, key_size + chunk_size))
+
+    # Pack units into requests in order; slices of one section never share one.
+    groups: list[list[tuple[str, Any, int]]] = [[]]
+    for unit in units:
+        current = groups[-1]
+        if current and (any(u[0] == unit[0] for u in current)
+                        or not fits([u[2] for u in current] + [unit[2]])):
+            groups.append(current := [])
+        current.append(unit)
+
+    bodies = []
+    for index, group in enumerate(groups):
+        env = envelope if index == len(groups) - 1 else interim
+        bodies.append(_csl_encode({**env, **{name: nodes for name, nodes, _ in group}}))
+    return bodies
+
+
+def _csl_errors(resp: requests.Response, body_bytes: int) -> list[dict]:
+    """``[{at, error}]`` from a 400 upsert response."""
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        # Django rejects oversized bodies with an HTML 400 before the view runs.
+        return [{"at": None, "error": f"request too large ({body_bytes} bytes); "
+                                      "lower max_request_bytes"}]
+    if isinstance(body.get("errors"), list):
+        return body["errors"]
+    message = body.get("error") or body.get("detail") or json.dumps(body)
+    return [{"at": None, "error": str(message)}]
+
+
+def _merge_csl_result(merged: dict, result: dict) -> None:
+    """Fold one upsert response into the running result."""
+    for model, counts in (result.get("counts") or {}).items():
+        total = merged["counts"].setdefault(model, {"created": 0, "updated": 0, "unchanged": 0})
+        for key, value in counts.items():
+            total[key] = total.get(key, 0) + int(value or 0)
+    for key in _CSL_LISTS:
+        merged[key].extend(result.get(key) or [])
+    for key in _CSL_SUMMED:
+        merged[key] += int(result.get(key) or 0)
+    if result.get("sync_run") is not None:
+        merged["sync_runs"].append(result["sync_run"])
+
+
+def _report_csl_errors(merged: dict, raise_on_error: bool) -> None:
+    """Warn about, or raise for, a rejected case-study library request."""
+    errors, index = merged["errors"], merged["failed_request"]
+    preview = "; ".join(f"{e.get('at') or '-'}: {e.get('error')}" if isinstance(e, dict) else str(e)
+                        for e in errors[:_ROW_ERROR_PREVIEW])
+    message = (f"case-study library upsert: request {index + 1} of "
+               f"{merged['requests_planned']} rejected, nothing in it was written")
+    if index and not merged["dry_run"]:
+        message += (f"; requests 1-{index} stayed applied (re-run the same sync "
+                    "to converge)")
+    message += f". {len(errors)} error(s). First: {preview}"
+    if raise_on_error:
+        raise PrismaUpsertError(message, result=merged)
+    warnings.warn(message, PrismaRowErrorWarning, stacklevel=3)

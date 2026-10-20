@@ -193,6 +193,15 @@ All methods below are available on `api.v2`.
 - `build_case_pack(case_id, scenario_id=None)`
 - `list_case_packs(source=None, sink=None, region=None, study=None, include_scenarios=False, limit=100, offset=0)`
 
+### Case-study library (PrISMa_Platform sync)
+
+- `upsert_case_study_library(document, dry_run=False, max_request_bytes=2_400_000, raise_on_error=False, timeout=600)` — sends a `prisma_v2.case_study_library.bundle.v1` document, split into requests if needed; replaces the pipeline 11 ZIP upload
+- `get_case_study_library_bundle(sections=None, timeout=300)`
+- `get_case_study_bundle(case_id, timeout=120)`
+- `latest_case_study_library_sync()` — `None` before the first sync
+- `list_case_study_library_sync_runs(status=None, limit=50, git_commit=None, offset=0)`
+- `list_stale_case_study_library_records()`
+
 ### Catalog and reference data
 
 - `get_molecules(name=None, limit=500, offset=0)`
@@ -388,3 +397,4 @@ pytest tests/ -v --cov=prisma_api --cov-report=term-missing
 - Local development routing is selected with `prisma_api.init(local_dev=True)`; the default targets production
 - 0.4.4: the `adsorption-isotherm` endpoints and the 400/notice handling need prisma_cloud >= 0.6.16
 - 0.4.5: H2 isotherms go through `upsert_adsorption_isotherm` (prisma_cloud >= 0.6.16); the H2-only methods and the `isotherm_H2s` collection key are deprecated. New `upsert_autoprism_cifs` uses the existing bundle upsert endpoint. AutoPrism getters take `match="exact"`.
+- 0.4.6: case-study library sync methods (`upsert_case_study_library` and the export, sync-run and stale-record readers) for the prisma_cloud `case-study-library` endpoints, which replace ingest pipeline 11.

@@ -3861,3 +3861,269 @@ def test_collection_uploads_cifs_first(no_git_meta):
     assert result["totals"]["created"] == 4
     assert result["totals"]["new_structures"] == ["NEWMOF"]
     assert [w.category for w in caught].count(PrismaNewStructureWarning) == 1
+
+
+# ── 0.4.6: case-study library bundle (PrISMa_Platform sync) ───────────────────
+
+_CSL_URL = f"{PROD_BASE}/case-study-library/bundle/upsert/"
+_CSL_HEAD = "a" * 40
+_CSL_BASE = "b" * 40
+_CSL_FIXTURE = ("reference_data/prisma_cloud/example_payloads/"
+                "case_study_library_bundle_DAC_carbfix_NO_heatpump_80.json")
+
+
+def _csl_doc(complete: bool = False, **sections) -> dict:
+    return {"package": {"name": "PrISMa_Platform@aaaa", "git_repo": "repo",
+                        "git_commit": _CSL_HEAD, "base_commit": _CSL_BASE},
+            "complete": complete, **sections}
+
+
+def _csl_nodes(prefix: str, n: int, pad: int = 200) -> list[dict]:
+    return [{"natural_key": {"slug": f"{prefix}{i}"},
+             "fields": {"slug": f"{prefix}{i}", "notes": "x" * pad, "lat": 1.5}}
+            for i in range(n)]
+
+
+def _csl_response(model: str = "Source", created: int = 1, run: int | None = 1) -> dict:
+    body = {"_schema": "prisma_v2.case_study_library.bundle.upsert.v1", "dry_run": False,
+            "case_studies": [], "renamed": [],
+            "counts": {model: {"created": created, "updated": 0, "unchanged": 0}},
+            "m2m_links_changed": 1, "property_sets_replaced": 2,
+            "owned_row_sets_replaced": 0, "commit_links_created": 3,
+            "deleted_source_files": [], "stale_records": [], "absent_records": []}
+    if run is not None:
+        body["sync_run"] = run
+    return body
+
+
+def _sent(call) -> dict:
+    return json.loads(call.request.body)
+
+
+@resp_lib.activate
+def test_csl_upsert_single_request_fills_schema_and_keeps_document(api):
+    resp_lib.add(resp_lib.PUT, _CSL_URL, json=_csl_response(), status=200)
+    doc = _csl_doc(sources=_csl_nodes("s", 2))
+    original = json.loads(json.dumps(doc))
+
+    result = api.upsert_case_study_library(doc)
+
+    assert len(resp_lib.calls) == 1
+    body = _sent(resp_lib.calls[0])
+    assert body["_schema"] == "prisma_v2.case_study_library.bundle.v1"
+    assert body["package"]["git_commit"] == _CSL_HEAD
+    assert body["sources"] == original["sources"]
+    assert doc == original  # caller's document untouched
+    assert "dry_run" not in resp_lib.calls[0].request.url
+    assert result["requests"] == 1
+    assert result["counts"] == {"Source": {"created": 1, "updated": 0, "unchanged": 0}}
+    assert result["sync_runs"] == [1]
+    assert result["errors"] == [] and result["failed_request"] is None
+
+
+@resp_lib.activate
+def test_csl_upsert_dry_run_param(api):
+    resp_lib.add(resp_lib.PUT, _CSL_URL, json=_csl_response(run=None), status=200,
+                 match=[matchers.query_param_matcher({"dry_run": "true"})])
+    result = api.upsert_case_study_library(_csl_doc(sources=[]), dry_run=True)
+    assert result["dry_run"] is True and result["sync_runs"] == []
+
+
+@pytest.mark.parametrize("change, match", [
+    ({"_schema": "prisma_v2.other.v1"}, "_schema must be"),
+    ({"package": {"name": "x"}}, "git_commit"),
+    ({"package": {"git_commit": "  "}}, "git_commit"),
+    ({"package": None}, "git_commit"),
+])
+def test_csl_upsert_checks_envelope(api, change, match):
+    with pytest.raises(ValueError, match=match):
+        api.upsert_case_study_library({**_csl_doc(), **change})
+
+
+def test_csl_upsert_rejects_limit_over_server_max(api):
+    with pytest.raises(ValueError, match="over the server"):
+        api.upsert_case_study_library(_csl_doc(), max_request_bytes=3_000_000)
+
+
+@resp_lib.activate
+def test_csl_upsert_splits_sections_in_dependency_order(api):
+    resp_lib.add(resp_lib.PUT, _CSL_URL, json=_csl_response(), status=200)
+    doc = _csl_doc(
+        complete=True,
+        case_studies=_csl_nodes("cs", 5),
+        deleted_source_files=[{"natural_key": {"original_filename": "gone.yaml"}}],
+        sinks=_csl_nodes("k", 5),
+        references=_csl_nodes("r", 5),
+    )
+    limit = 2600  # each section fits alone; no two fit together
+    result = api.upsert_case_study_library(doc, max_request_bytes=limit)
+
+    bodies = [_sent(c) for c in resp_lib.calls]
+    sections = [[k for k in b if k not in ("_schema", "package", "complete")] for b in bodies]
+    assert sections == [["references"], ["sinks"], ["case_studies", "deleted_source_files"]]
+    assert all(len(c.request.body) <= limit for c in resp_lib.calls)
+    assert all(b["complete"] is True for b in bodies)
+    # Only the last request moves the sync history to HEAD.
+    assert [b["package"]["git_commit"] for b in bodies] == [_CSL_BASE, _CSL_BASE, _CSL_HEAD]
+    assert result["requests"] == result["requests_planned"] == 3
+    assert result["counts"]["Source"]["created"] == 3
+    assert result["commit_links_created"] == 9
+    assert result["sync_runs"] == [1, 1, 1]
+
+
+@resp_lib.activate
+def test_csl_upsert_interim_commit_empty_on_full_run_without_base(api):
+    resp_lib.add(resp_lib.PUT, _CSL_URL, json=_csl_response(), status=200)
+    doc = _csl_doc(complete=True, sinks=_csl_nodes("k", 5), sources=_csl_nodes("s", 5))
+    del doc["package"]["base_commit"]
+    api.upsert_case_study_library(doc, max_request_bytes=2600)
+    assert [_sent(c)["package"]["git_commit"] for c in resp_lib.calls] == ["", _CSL_HEAD]
+
+
+def test_csl_upsert_complete_section_too_large_raises(api):
+    doc = _csl_doc(complete=True, sources=_csl_nodes("s", 20))
+    with pytest.raises(ValueError, match="complete=true it can't be split"):
+        api.upsert_case_study_library(doc, max_request_bytes=2000)
+
+
+@resp_lib.activate
+def test_csl_upsert_splits_incomplete_section_by_node(api):
+    resp_lib.add(resp_lib.PUT, _CSL_URL, json=_csl_response(), status=200)
+    nodes = _csl_nodes("s", 20)
+    api.upsert_case_study_library(_csl_doc(sources=nodes), max_request_bytes=2000)
+    bodies = [_sent(c) for c in resp_lib.calls]
+    assert len(bodies) > 1
+    assert all(len(c.request.body) <= 2000 for c in resp_lib.calls)
+    assert [n for b in bodies for n in b["sources"]] == nodes
+
+
+def test_csl_upsert_single_node_too_large_raises(api):
+    doc = _csl_doc(sources=_csl_nodes("s", 1, pad=5000))
+    with pytest.raises(ValueError, match=r"sources\[0\]"):
+        api.upsert_case_study_library(doc, max_request_bytes=2000)
+
+
+@resp_lib.activate
+def test_csl_upsert_stops_at_first_rejected_request(api):
+    from prisma_api import PrismaRowErrorWarning
+    errors = [{"at": "sinks[0].fields", "error": "Unknown field 'colour'"}]
+    resp_lib.add(resp_lib.PUT, _CSL_URL, json=_csl_response(), status=200)
+    resp_lib.add(resp_lib.PUT, _CSL_URL, status=400,
+                 json={"_schema": "prisma_v2.case_study_library.bundle.upsert.v1", "errors": errors})
+    doc = _csl_doc(complete=True, references=_csl_nodes("r", 5), sinks=_csl_nodes("k", 5),
+                   case_studies=_csl_nodes("cs", 5))
+
+    with pytest.warns(PrismaRowErrorWarning, match="request 2 of 3 rejected.*requests 1-1 stayed applied"):
+        result = api.upsert_case_study_library(doc, max_request_bytes=2600)
+
+    assert len(resp_lib.calls) == 2
+    assert result["errors"] == errors
+    assert result["failed_request"] == 1
+    assert result["requests"] == 2 and result["requests_planned"] == 3
+    assert result["sync_runs"] == [1]
+
+
+@resp_lib.activate
+def test_csl_upsert_raise_on_error(api):
+    from prisma_api import PrismaUpsertError
+    resp_lib.add(resp_lib.PUT, _CSL_URL, status=400,
+                 json={"errors": [{"at": "case_studies[0]", "error": "unknown reference"}]})
+    with pytest.raises(PrismaUpsertError, match="unknown reference") as info:
+        api.upsert_case_study_library(_csl_doc(case_studies=[]), raise_on_error=True)
+    assert info.value.result["failed_request"] == 0
+
+
+@resp_lib.activate
+def test_csl_upsert_html_400_is_request_too_large(api):
+    resp_lib.add(resp_lib.PUT, _CSL_URL, status=400, body="<html>Bad Request</html>",
+                 content_type="text/html")
+    with pytest.warns(UserWarning, match="request too large"):
+        result = api.upsert_case_study_library(_csl_doc())
+    assert result["errors"][0]["at"] is None
+
+
+@resp_lib.activate
+def test_csl_upsert_write_failure_error_string(api):
+    resp_lib.add(resp_lib.PUT, _CSL_URL, status=400, json={"error": "deadlock"})
+    with pytest.warns(UserWarning, match="deadlock"):
+        result = api.upsert_case_study_library(_csl_doc())
+    assert result["errors"] == [{"at": None, "error": "deadlock"}]
+
+
+@resp_lib.activate
+def test_csl_upsert_403_raises(api):
+    resp_lib.add(resp_lib.PUT, _CSL_URL, status=403, json={"detail": "bad key"})
+    with pytest.raises(requests.HTTPError):
+        api.upsert_case_study_library(_csl_doc())
+
+
+@resp_lib.activate
+def test_csl_dry_run_split_warns(api):
+    resp_lib.add(resp_lib.PUT, _CSL_URL, json=_csl_response(run=None), status=200)
+    doc = _csl_doc(sinks=_csl_nodes("k", 5), sources=_csl_nodes("s", 5))
+    with pytest.warns(UserWarning, match="Dry run split into 2 requests"):
+        api.upsert_case_study_library(doc, dry_run=True, max_request_bytes=2600)
+
+
+@resp_lib.activate
+def test_csl_get_library_bundle_sections(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/case-study-library/bundle/",
+                 json={"_schema": "prisma_v2.case_study_library.bundle.v1"},
+                 match=[matchers.query_param_matcher({"sections": "sources,sinks"})])
+    assert api.get_case_study_library_bundle(["sources", "sinks"])["_schema"]
+    with pytest.raises(ValueError, match="Unknown case-study library section"):
+        api.get_case_study_library_bundle("sources,deleted_source_files")
+
+
+@resp_lib.activate
+def test_csl_get_case_study_bundle(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/cases/7/bundle/", json={"case_studies": [{}]})
+    assert api.get_case_study_bundle(7) == {"case_studies": [{}]}
+
+
+@resp_lib.activate
+def test_csl_latest_sync(api):
+    url = f"{PROD_BASE}/case-study-library/sync-runs/latest/"
+    resp_lib.add(resp_lib.GET, url, status=404, json={"detail": "none"})
+    assert api.latest_case_study_library_sync() is None
+    resp_lib.replace(resp_lib.GET, url, json={"id": 3, "git_commit": _CSL_HEAD})
+    assert api.latest_case_study_library_sync()["git_commit"] == _CSL_HEAD
+    resp_lib.replace(resp_lib.GET, url, status=403, json={"detail": "bad key"})
+    with pytest.raises(requests.HTTPError):
+        api.latest_case_study_library_sync()
+
+
+@resp_lib.activate
+def test_csl_list_sync_runs_and_stale(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/case-study-library/sync-runs/",
+                 json={"count": 1, "results": [{"id": 1}]},
+                 match=[matchers.query_param_matcher(
+                     {"status": "success", "limit": "5", "offset": "0"})])
+    assert api.list_case_study_library_sync_runs(status="success", limit=5) == [{"id": 1}]
+    stale = [{"model": "Sink", "id": 4, "label": "Old", "paths": ["case_studies/sinks/old.yaml"]}]
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/case-study-library/stale/",
+                 json={"count": 1, "results": stale})
+    assert api.list_stale_case_study_library_records() == stale
+
+
+@pytest.mark.skipif(not os.path.exists(_CSL_FIXTURE),
+                    reason=f"Local fixture {_CSL_FIXTURE} not available")
+@resp_lib.activate
+def test_csl_reference_payload_split_reassembles(api):
+    with open(_CSL_FIXTURE, encoding="utf-8") as f:
+        doc = json.load(f)
+    resp_lib.add(resp_lib.PUT, _CSL_URL, json=_csl_response(), status=200)
+
+    api.upsert_case_study_library(doc)
+    assert len(resp_lib.calls) == 1
+    assert _sent(resp_lib.calls[0]) == doc
+
+    resp_lib.calls.reset()
+    api.upsert_case_study_library(doc, max_request_bytes=55_000)  # compact: ~76 kB
+    bodies = [_sent(c) for c in resp_lib.calls]
+    assert len(bodies) > 1
+    rebuilt = {k: v for b in bodies for k, v in b.items()
+               if k not in ("_schema", "package", "complete")}
+    assert rebuilt == {k: v for k, v in doc.items()
+                       if k not in ("_schema", "package", "complete")}
+    assert bodies[-1]["package"] == doc["package"]

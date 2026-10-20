@@ -1,6 +1,6 @@
 # PrISMa API — Python Client Reference (v2)
 
-> **Package:** `prisma_api` v0.4.5  
+> **Package:** `prisma_api` v0.4.6  
 > **v2 Base URL:** `https://prisma-platform.org/api/v2/`  
 > **Authentication:** `X-API-Key` header (set via config file or `PRISMA_API_KEY` env var)
 
@@ -1124,6 +1124,134 @@ api.v2.get_screening_analysis_bundle(1)
 api.v2.get_screening_summaries(scenario_id=830)
 api.v2.get_screening_summary(1)
 ```
+
+---
+
+### Case-Study Library (PrISMa_Platform sync)
+
+PrISMa_Platform syncs its case-study library (case studies, sources, sinks,
+regions, utilities, subsystems, transport, process configurations, equipment
+and the TEA tables) through these methods. This replaces uploading a `data/`
+ZIP to ingest pipeline 11. PrISMa_Platform composes the
+`prisma_v2.case_study_library.bundle.v1` document; the client only sends it,
+splits it into requests and reports errors. prisma_cloud validates and writes
+it. The document format is specified in prisma_cloud's
+`docs/case_study_bundle_brief.md`.
+
+```python
+last = api.v2.latest_case_study_library_sync()          # None before the first sync
+base = (last or {}).get("git_commit") or None           # "" or None -> full run
+document = compose_case_study_library(repo=".", since=base)   # PrISMa_Platform side
+result = api.v2.upsert_case_study_library(document, dry_run=True)   # optional check
+result = api.v2.upsert_case_study_library(document)
+for cs in result["case_studies"]:
+    if cs["missing_links"]:
+        print(cs["name"], "unresolved:", cs["missing_links"])
+```
+
+---
+
+#### `api.v2.upsert_case_study_library(document, dry_run=False, max_request_bytes=2_400_000, raise_on_error=False, timeout=600)`
+
+`PUT /api/v2/case-study-library/bundle/upsert/`. Checks the envelope:
+`_schema` is filled in if missing and must be the bundle schema, and
+`package.git_commit` must be non-empty. Everything else goes through
+unchanged. Nodes, key order and numbers are sent as given; NaN/inf become
+`null`.
+
+**Splitting.** A document that serialises to at most `max_request_bytes` goes
+in one request. A larger one is split by section, in dependency order:
+`references`, `economic_data`, `sources`, `sinks`, `regions`, `utilities`,
+`subsystems`, `transport_scenarios`, `transports`, `process_conditions`,
+`contactor_configurations`, `process_configurations`, `equipment`,
+`cost_indices`, `constants`, `mea`, `mea_kpis`, `case_studies`, then
+`deleted_source_files`. Small sections share a request.
+
+- With `"complete": true`, each section in a request is treated as the whole
+  table, so a section is never split. One that won't fit raises `ValueError`;
+  send shared objects as references rather than nested copies.
+- With `"complete": false`, a large section is split between nodes.
+- Every request but the last has `package.git_commit` set to
+  `package.base_commit`, or `""` on a full run. The server's sync history
+  therefore reaches HEAD only once the last request is applied. If a sync
+  stops partway, `latest_case_study_library_sync()` still points at the base
+  and re-running the same sync converges.
+
+**Failures.** Each request is its own transaction, all-or-nothing. Sending
+stops at the first rejected request (HTTP 400); earlier requests stay applied
+(every write is an upsert). The server's `errors` list,
+`[{"at": "<path in the document>", "error": "<message>"}]`, is returned
+unchanged, and a `PrismaRowErrorWarning` is emitted. With `raise_on_error=True`,
+`PrismaUpsertError` is raised instead, with the merged result on `.result`. An
+HTML 400 (body over the server's 2.5 MB limit) is reported as "request too
+large". Don't retry a 400 unchanged.
+
+A dry run split across requests warns that a request can't see rows only an
+earlier one defines, so "unknown reference" errors may be spurious.
+
+```python
+# merged result
+{'dry_run': False, 'requests': 1, 'requests_planned': 1,
+ 'counts': {'Reference': {'created': 32, 'updated': 0, 'unchanged': 0}, ...},
+ 'case_studies': [{'name': 'DAC_carbfix_NO_heatpump_80', 'id': 1,
+                   'source_file': 11, 'missing_links': []}],
+ 'renamed': [], 'deleted_source_files': [], 'stale_records': [], 'absent_records': [],
+ 'm2m_links_changed': 2, 'property_sets_replaced': 12,
+ 'owned_row_sets_replaced': 2, 'commit_links_created': 70,
+ 'sync_runs': [1], 'errors': [], 'failed_request': None}
+```
+
+`counts` and the integer totals are summed across requests; the lists are
+concatenated. `failed_request` is the 0-based index of the rejected request.
+
+---
+
+#### `api.v2.get_case_study_library_bundle(sections=None, timeout=300)`
+
+`GET /api/v2/case-study-library/bundle/`: the whole library, or the named
+sections (`['sources', 'sinks']` or `'sources,sinks'`). Case studies reference
+shared objects instead of repeating them. Any export can be sent back
+unchanged; every row then reports `unchanged`.
+
+```python
+lib = api.v2.get_case_study_library_bundle()
+api.v2.upsert_case_study_library(lib, dry_run=True)["counts"]   # all 'unchanged'
+```
+
+---
+
+#### `api.v2.get_case_study_bundle(case_id, timeout=120)`
+
+`GET /api/v2/cases/{case_id}/bundle/`: one case study, fully nested, as a
+library document. `requests.HTTPError` (404) for an unknown id.
+
+---
+
+#### `api.v2.latest_case_study_library_sync()`
+
+`GET /api/v2/case-study-library/sync-runs/latest/`: the last applied sync
+(`id`, `status`, `package_name`, `git_repo`, `git_commit`, `base_commit`,
+`complete`, `started_at`, `finished_at`, `created_by`, `summary`, `error`), or
+`None` before the first. Its `git_commit` is where the next incremental sync
+starts. An empty `git_commit` means the last split full run stopped partway;
+do a full run.
+
+---
+
+#### `api.v2.list_case_study_library_sync_runs(status=None, limit=50, git_commit=None, offset=0)`
+
+`GET /api/v2/case-study-library/sync-runs/`: sync history as `list[dict]`.
+`status` is `'success'`, `'partial'` or `'failed'`; `git_commit` matches a
+prefix.
+
+---
+
+#### `api.v2.list_stale_case_study_library_records()`
+
+`GET /api/v2/case-study-library/stale/`: records whose upstream source files
+have all been deleted, as
+`[{'model': 'Sink', 'id': 4, 'label': '...', 'paths': ['case_studies/sinks/old.yaml']}]`.
+They are kept for review, never deleted.
 
 ---
 
