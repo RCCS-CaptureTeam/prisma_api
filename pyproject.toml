@@ -20,6 +20,9 @@ dependencies = [
     "requests>=2.27.0",
 ]
 
+[project.scripts]
+prisma-dataset = "prisma_api.dataset_package:main"
+
 [tool.setuptools]
 packages = ["prisma_api"]
 include-package-data = true

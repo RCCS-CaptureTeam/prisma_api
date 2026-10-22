@@ -1,0 +1,276 @@
+# PrISMa dataset package manifest for the Hydrogen_v2 repository
+# (MOF hydrogen storage, Ashna Nizar, Heriot-Watt).
+#
+# Pack and check with prisma_api:
+#   prisma-dataset validate ../Hydrogen_v2 --manifest integration/datasets/hydrogen_v2/prisma_manifest.yaml
+#   prisma-dataset pack     ../Hydrogen_v2 --manifest ... --out hydrogen_v2.zip
+#   prisma-dataset upload   hydrogen_v2.zip            # dry run; add --apply to write
+#
+# Reference: prisma_cloud docs/dataset_manifest_brief.md
+# Data reviewed at Hydrogen_v2 20f2d3569 (see DATA_CHANGES_since_8903194.md there).
+
+_schema: prisma.dataset.ingest.v1
+
+dataset:
+  slug: h2-storage-dataset
+  name: MOF hydrogen storage (Hydrogen_v2)
+  tag: H2 Storage
+  version: "2.0"
+  description: >
+    H2 adsorption features for 8,331 MOFs, tank sizing (Edens) and levelised
+    cost of storage (LCOS) for four storage cases and their 2-cycle, 8-lane
+    and 44-cycle variants, with compressed-gas, empty-tank and Ni-MOF benchmarks.
+
+package:
+  name: Hydrogen_v2
+  git_repo: https://github.com/ashnaniz/Hydrogen_v2.git
+
+material_id:
+  strip_suffixes: [".cif"]
+  on_missing: create
+
+reference_systems:
+  - name: Ni-MOF
+    kind: adsorbent
+    aliases: [Ni_MOF]
+    description: Reference adsorbent benchmark (Ni-MOF).
+  - name: Comp_H2_170
+    kind: compressed_gas
+    description: Compressed H2 at 170 bar, no adsorbent.
+  - name: Comp_H2_350
+    kind: compressed_gas
+    description: Compressed H2 at 350 bar, no adsorbent.
+  - name: EmptyTank
+    kind: empty_vessel
+    aliases: [Empty_tank, empty_tank]
+    description: The same cryo tank at storage conditions with no adsorbent.
+
+parameter_sets:
+  - key: h2-tea-inputs
+    name: H2 storage TEA inputs
+    description: >
+      TEA defaults, region prices and cost indices used by every H2 run.
+      Since 8903194: electricity 60.9 -> 73.9 EUR/MWh (US EIA 2024 industrial
+      price), OperatorPerShift 1 -> 2, NumberShifts unused, and UStoEUR_FX now
+      holds US->EUR for every year (2014-2023 were EUR->US before).
+
+case_studies:
+  - name: Case_1
+    description: H2 storage Case 1 (223.15 K, 170/10 bar, 3.93 m3 tanks).
+  - name: Case_2
+    description: H2 storage Case 2 (223.15 K, 170/10 bar, 3.93 m3 tanks; land-cost study).
+  - name: Case_3
+    description: H2 storage Case 3 (223.15 K, 170/10 bar, 3.93 m3 tanks).
+  - name: Case_4
+    description: H2 storage Case 4, data-centre storage (223.15 K, 30/5 bar, 3.93 m3 tanks).
+
+runs:
+  # Keys follow h2-case{N}-{folder variant}, so result folders bind by name.
+  - {key: h2-case1-2_cycle, name: "Case 1 · 2 cycles", case: Case_1, parameter_set: h2-tea-inputs, replaces_legacy: true,
+     conditions: {temperature_K: 223.15, p_high_bar: 170, p_low_bar: 10, tank_volume_m3: 3.93, cycles: 2}}
+  - {key: h2-case1-2_cycle_8Lanes, name: "Case 1 · 2 cycles · 8 lanes", case: Case_1, parameter_set: h2-tea-inputs,
+     conditions: {temperature_K: 223.15, p_high_bar: 170, p_low_bar: 10, tank_volume_m3: 3.93, cycles: 2, lanes: 8}}
+  - {key: h2-case1-44_cycle, name: "Case 1 · 44 cycles", case: Case_1, parameter_set: h2-tea-inputs,
+     description: "5,514 MOFs; read from per-MOF JSON (no All_MOF_results.csv in this folder).",
+     conditions: {temperature_K: 223.15, p_high_bar: 170, p_low_bar: 10, tank_volume_m3: 3.93, cycles: 44}}
+  - {key: h2-case2-2_cycle, name: "Case 2 · 2 cycles", case: Case_2, parameter_set: h2-tea-inputs, replaces_legacy: true,
+     conditions: {temperature_K: 223.15, p_high_bar: 170, p_low_bar: 10, tank_volume_m3: 3.93, cycles: 2}}
+  - {key: h2-case2-44_cycle, name: "Case 2 · 44 cycles", case: Case_2, parameter_set: h2-tea-inputs,
+     description: "2,525 MOFs (the LCOS input feature set).",
+     conditions: {temperature_K: 223.15, p_high_bar: 170, p_low_bar: 10, tank_volume_m3: 3.93, cycles: 44}}
+  - {key: h2-case3-2_cycle, name: "Case 3 · 2 cycles", case: Case_3, parameter_set: h2-tea-inputs, replaces_legacy: true,
+     conditions: {temperature_K: 223.15, p_high_bar: 170, p_low_bar: 10, tank_volume_m3: 3.93, cycles: 2}}
+  - {key: h2-case3-2_cycle_8Lanes, name: "Case 3 · 2 cycles · 8 lanes", case: Case_3, parameter_set: h2-tea-inputs,
+     conditions: {temperature_K: 223.15, p_high_bar: 170, p_low_bar: 10, tank_volume_m3: 3.93, cycles: 2, lanes: 8}}
+  - {key: h2-case3-44_cycle, name: "Case 3 · 44 cycles", case: Case_3, parameter_set: h2-tea-inputs,
+     conditions: {temperature_K: 223.15, p_high_bar: 170, p_low_bar: 10, tank_volume_m3: 3.93, cycles: 44}}
+  - {key: h2-case4-2_cycle, name: "Case 4 · 2 cycles", case: Case_4, parameter_set: h2-tea-inputs, replaces_legacy: true,
+     conditions: {temperature_K: 223.15, p_high_bar: 30, p_low_bar: 5, tank_volume_m3: 3.93, cycles: 2}}
+  - {key: h2-case4-2_cycle_8Lanes, name: "Case 4 · 2 cycles · 8 lanes", case: Case_4, parameter_set: h2-tea-inputs,
+     conditions: {temperature_K: 223.15, p_high_bar: 30, p_low_bar: 5, tank_volume_m3: 3.93, cycles: 2, lanes: 8}}
+  - {key: h2-case4-44_cycle, name: "Case 4 · 44 cycles (partial)", case: Case_4, parameter_set: h2-tea-inputs,
+     description: "Only ~118 MOFs were run; read from per-MOF JSON (the folder's All_MOF_results.csv has 49 rows).",
+     conditions: {temperature_K: 223.15, p_high_bar: 30, p_low_bar: 5, tank_volume_m3: 3.93, cycles: 44}}
+
+sources:
+  # ── Material features (was pipeline 6) ─────────────────────────────────────
+  - id: features
+    path: Data_files/Train_test_8331_MOF_Features_with_Edens.csv
+    target: mof_h2
+    match_field_names: true
+    columns:
+      "LP_uptake (mol/kg)": LP_uptake
+      "HP_uptake (mol/kg)": HP_uptake
+      "Density (g/cm$^3$)": Density
+      "POAVF (cm$^3$ H2/cm$^3$ MOF)": POAVF
+      "ASA (Å$^2$)": ASA
+      "Di (Å)": Di
+      "Df (Å)": Df
+      "vdw interaction density (J/mol cm³)": vdw_interaction_density
+    json_columns: [heat]
+    # Energy density is a sizing result (H2_Results); the rest are name copies
+    # and a cif path outside the repo.
+    ignore_columns: [MOF_norm, MOF_train, cif_file, Energy_density_kWh_m3]
+
+  # ── Benchmark properties ───────────────────────────────────────────────────
+  - id: benchmark_properties
+    path: Data_files/TEA_data/*_properties*.csv
+    target: mof_h2
+    match_field_names: true
+    columns:
+      "LP_uptake (mol/kg)": LP_uptake
+      "HP_uptake (mol/kg)": HP_uptake
+      "Density (g/cm$^3$)": Density
+    json_columns: [heat]
+    properties_columns: {MOF_Qh: MOF_Qh_kJ_mol}
+    ignore_columns: ["density (kg/m3)"]       # Ni_MOF only: a copy of Density_kg_m3
+
+  # ── Case 4 inputs: 30/5 bar uptakes, not the 170/10 bar ones on MOF_h2 ─────
+  - id: case4_inputs
+    path: Data_files/Train_test_Top_6457_features_only.csv
+    target: run_inputs
+    runs_where: {case: Case_4}
+    rows: supplement              # only for MOFs each Case 4 run has results for
+    columns:
+      henry: henry
+      heat: heat
+      "LP_uptake (mol/kg)": LP_uptake
+      "HP_uptake (mol/kg)": HP_uptake
+      Actual_DC: Actual_DC
+      "Density (g/cm$^3$)": Density
+      "POAVF (cm$^3$ H2/cm$^3$ MOF)": POAVF
+      "ASA (Å$^2$)": ASA
+      "Di (Å)": Di
+      "Df (Å)": Df
+      "vdw interaction density (J/mol cm³)": vdw_interaction_density
+      Density_kg_m3: Density_kg_m3
+    json_columns: [heat]
+    units: {henry: mol/kg/Pa, heat: kJ/mol, LP_uptake: mol/kg, HP_uptake: mol/kg, Actual_DC: mol/kg,
+            Density: g/cm3, POAVF: cm3 H2/cm3 MOF, ASA: Å2, Di: Å, Df: Å,
+            vdw_interaction_density: J/mol cm3, Density_kg_m3: kg/m3}
+
+  # ── Tank sizing, "Edens" (was pipeline 7); one file per case, every run ────
+  - id: sizing
+    path: TEA_files/Case {case}/Edens_results/All_MOF_results.csv
+    exclude: ["TEA_files/Case 4/**"]
+    target: h2_results
+    runs_where: {case: "Case_{case}"}
+    rows: supplement            # sizing joins onto the MOFs each run's LCOS covers
+    match_field_names: true
+  - id: sizing_case4
+    path: TEA_files/Case 4/Edens_results/Train_test_Top_6457_results_only.csv
+    target: h2_results
+    runs_where: {case: Case_4}
+    rows: supplement            # sizing joins onto the MOFs each run's LCOS covers
+    match_field_names: true
+  - id: sizing_benchmarks
+    path: TEA_files/Case {case}/Edens_results/{benchmark}.csv
+    exclude: ["**/All_MOF_results.csv", "**/Train_test_*.csv"]
+    target: h2_results
+    runs_where: {case: "Case_{case}"}
+    rows: supplement            # sizing joins onto the MOFs each run's LCOS covers
+    match_field_names: true
+
+  # ── LCOS (was pipeline 8), per run folder ──────────────────────────────────
+  - id: lcos
+    path: TEA_files/Case {case}/LCOS_Results_tank_vol_{tank}_{variant}/All_MOF_individual_results/All_MOF_results.csv
+    exclude: ["TEA_files/Case 4/LCOS_Results_tank_vol_3.93_44_cycle/**"]
+    target: h2_results
+    run: h2-case{case}-{variant}
+    match_field_names: true
+    json_columns: [Scenarios, CAPEX_breakdown_EUR]
+  - id: lcos_per_mof_json
+    path: TEA_files/Case {case}/LCOS_Results_tank_vol_{tank}_44_cycle/All_MOF_individual_results/*.json
+    exclude: ["TEA_files/Case 2/**", "TEA_files/Case 3/**"]
+    target: h2_results
+    run: h2-case{case}-44_cycle
+    match_field_names: true
+  - id: lcos_benchmarks
+    path: TEA_files/Case {case}/LCOS_Results_tank_vol_{tank}_{variant}/Benchmark_*.json
+    target: h2_results
+    run: h2-case{case}-{variant}
+    match_field_names: true
+
+  # ── TEA inputs ─────────────────────────────────────────────────────────────
+  - id: tea_defaults
+    path: Data_files/TEA_data/TEA_defaults.yaml
+    target: parameters
+    parameter_set: h2-tea-inputs
+    category: tea_defaults
+    layout: mapping
+  - id: region_data
+    path: Data_files/TEA_data/region_data.yaml
+    target: parameters
+    parameter_set: h2-tea-inputs
+    category: region
+    layout: records
+    records_key: General
+  - id: cost_indices
+    path: Data_files/TEA_data/Cost_Indices_and_FX.csv
+    target: parameters
+    parameter_set: h2-tea-inputs
+    category: cost_indices
+    layout: table
+    key_column: Year
+    units: {HIPC: index (2015=100), CEPCI: index, UStoEUR_FX: EUR per USD}
+
+  # ── Deliberately not ingested ──────────────────────────────────────────────
+  - id: skip_case4_sizing_subset
+    path: TEA_files/Case 4/Edens_results/All_MOF_results.csv
+    target: skip
+    reason: Cut to 2,525 rows at 20f2d35 (flagged in DATA_CHANGES); Case 4 sizing comes from Train_test_Top_6457_results_only.csv.
+  - id: skip_case4_44_rollup
+    path: TEA_files/Case 4/LCOS_Results_tank_vol_3.93_44_cycle/All_MOF_individual_results/All_MOF_results.csv
+    target: skip
+    reason: Holds 49 of the ~118 MOFs whose per-MOF JSON are present; the JSON are read instead.
+  - id: skip_per_mof_json
+    path: TEA_files/**/All_MOF_individual_results/*.json
+    target: skip
+    reason: Same records as each folder's All_MOF_results.csv (read instead), except the Case 1 and Case 4 44-cycle runs.
+  - id: skip_detailed_benchmarks
+    path: TEA_files/**/Detailed_results_*.csv
+    target: skip
+    reason: A subset of Benchmark_*.json (no Scenarios), which is read instead.
+  - id: skip_cost_scenarios
+    path: TEA_files/**/Mof_cost_scenarios/**
+    target: skip
+    reason: LCOS swept over MOF price (EUR/kg); no existing pipeline covered it. Deferred.
+  - id: skip_merged
+    path: TEA_files/Case 1/merged_*.csv
+    target: skip
+    reason: Joins of sizing and LCOS already read from their own files; one has no MOF column.
+  - id: skip_isotherms
+    path: Data_files/*isotherm*.csv
+    target: skip
+    reason: Isotherms belong in adsorption_isotherm via the AutoPrism route (the low-pressure batch is AutoPrism output); the rescaled file is marked temporary. Deferred.
+  - id: skip_isotherms_lowp
+    path: Data_files/*_ISOTHERMS_*.csv
+    target: skip
+    reason: AutoPrism low-pressure H2 isotherm batch (partial); see skip_isotherms.
+  - id: skip_isotherms_wide
+    path: Data_files/Isotherms.csv
+    target: skip
+    reason: Wide 223 K isotherm points; see skip_isotherms.
+  - id: skip_other_feature_files
+    path: Data_files/{name}.csv
+    exclude:
+      - Data_files/Train_test_8331_MOF_Features_with_Edens.csv
+      - Data_files/Train_test_Top_6457_features_only.csv
+      - Data_files/Isotherms.csv
+      - Data_files/*isotherm*.csv
+      - Data_files/*_ISOTHERMS_*.csv
+    target: skip
+    reason: ML training/test splits, the feature file without Edens, hashes and bootstrap uncertainty; not platform data.
+  - id: skip_tea_config
+    path: Data_files/TEA_data/**/*.yaml
+    exclude: [Data_files/TEA_data/TEA_defaults.yaml, Data_files/TEA_data/region_data.yaml]
+    target: skip
+    reason: Equipment design and utility definitions are unchanged since 8903194 and were never ingested for H2. Deferred.
+  - id: skip_results
+    path: Results/**
+    target: skip
+    reason: Plot-ready extracts and figures derived from the files above.
+  - id: skip_notebooks
+    path: "**/*.ipynb*"
+    target: skip
+    reason: Analysis notebooks and their .bak copies.

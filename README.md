@@ -209,6 +209,8 @@ All methods below are available on `api.v2`.
 ### Case-study library (PrISMa_Platform sync)
 
 - `upsert_case_study_library(document, dry_run=False, max_request_bytes=2_400_000, raise_on_error=False, timeout=600)` — sends a `prisma_v2.case_study_library.bundle.v1` document, split into requests if needed; replaces the pipeline 11 ZIP upload
+- `ingest_dataset(zip_path, dry_run=True, timeout=1800)` — sends a third-party dataset package (files + `prisma_manifest.yaml`, built with `prisma-dataset pack`) to `POST /api/v2/datasets/ingest/`; returns the server report, including on rejection. Dry run unless `dry_run=False`. See `reference_data/prisma_cloud/dataset_manifest_brief.md`
+- `list_analysis_runs(dataset=None)` — runs loaded from dataset packages, with conditions, parameter set and row counts
 - `get_case_study_library_bundle(sections=None, timeout=300)`
 - `get_case_study_bundle(case_id, timeout=120)`
 - `latest_case_study_library_sync()` — `None` before the first sync

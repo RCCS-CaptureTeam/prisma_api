@@ -3882,6 +3882,59 @@ class PrismaAPIv2:
         """
         return self._get("/case-study-library/stale/").get("results", [])
 
+    # ── Third-party dataset packages (server ingest pipeline 15) ──────────────
+
+    def ingest_dataset(self, zip_path: str, dry_run: bool = True,
+                       timeout: int = 1800) -> dict:
+        """
+        Send a dataset package zip (files + ``prisma_manifest.yaml``).
+
+        ``POST /api/v2/datasets/ingest/?dry_run=…``. Build the zip with
+        ``prisma_api.dataset_package.pack``. The server checks the whole
+        package and applies it in one transaction; runs and parameter sets
+        are mirrored, so rows missing from the package are deleted.
+
+        Args:
+            zip_path: The package zip.
+            dry_run: Apply and roll back (default), returning the same report
+                an apply would. Pass ``False`` to write.
+            timeout: Seconds; a full package can take minutes to apply.
+
+        Returns:
+            The ``prisma.dataset.ingest.report.v1`` report: ``ok``, ``counts``
+            per table, ``runs``, ``warnings`` and ``errors``. A rejected
+            package (HTTP 400) returns its report with ``ok: false`` rather
+            than raising, so the errors can be shown; other failures raise.
+        """
+        with open(zip_path, "rb") as fh:
+            resp = requests.post(
+                self._url("/datasets/ingest/"),
+                params={"dry_run": "true" if dry_run else "false"},
+                files={"file": (Path(zip_path).name, fh, "application/zip")},
+                headers={"X-API-Key": self._key}, timeout=timeout,
+            )
+        if resp.status_code == 400:
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict) and "errors" in body:
+                return body
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_analysis_runs(self, dataset: str | None = None,
+                           limit: int = 500, offset: int = 0) -> pd.DataFrame | list:
+        """
+        ``GET /api/v2/analysis-runs/``: runs loaded from dataset packages, with
+        conditions, parameter set and row counts.
+
+        Args:
+            dataset: Dataset slug filter, e.g. ``'h2-storage-dataset'``.
+        """
+        params = _compact(dataset=dataset, limit=limit, offset=offset)
+        return self._to_df(self._get("/analysis-runs/", params))
+
     def get_scenarios(self,
                       case_id: int | None = None,
                       name: str | None = None,
