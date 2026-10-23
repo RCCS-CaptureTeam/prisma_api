@@ -3885,7 +3885,7 @@ class PrismaAPIv2:
     # ── Third-party dataset packages (server ingest pipeline 15) ──────────────
 
     def ingest_dataset(self, zip_path: str, dry_run: bool = True,
-                       timeout: int = 1800) -> dict:
+                       timeout: int = 1800, tags: list[str] | None = None) -> dict:
         """
         Send a dataset package zip (files + ``prisma_manifest.yaml``).
 
@@ -3899,6 +3899,8 @@ class PrismaAPIv2:
             dry_run: Apply and roll back (default), returning the same report
                 an apply would. Pass ``False`` to write.
             timeout: Seconds; a full package can take minutes to apply.
+            tags: Tag names added to the manifest's ``dataset.tag``; the server
+                tags everything the package writes with all of them.
 
         Returns:
             The ``prisma.dataset.ingest.report.v1`` report: ``ok``, ``counts``
@@ -3909,7 +3911,8 @@ class PrismaAPIv2:
         with open(zip_path, "rb") as fh:
             resp = requests.post(
                 self._url("/datasets/ingest/"),
-                params={"dry_run": "true" if dry_run else "false"},
+                params=_compact(dry_run="true" if dry_run else "false",
+                                tags=",".join(tags) if tags else None),
                 files={"file": (Path(zip_path).name, fh, "application/zip")},
                 headers={"X-API-Key": self._key}, timeout=timeout,
             )
@@ -3923,6 +3926,15 @@ class PrismaAPIv2:
         resp.raise_for_status()
         return resp.json()
 
+    def get_dataset_targets(self) -> dict:
+        """
+        ``GET /api/v2/datasets/targets/``: what a dataset manifest may write on
+        this server. Each target has a description, a ``kind`` (``rows``,
+        ``run_rows``, ``parameters`` or ``skip``), its allowed source keys and
+        its ``fields`` (type and help text; ``None`` means names you choose).
+        """
+        return self._get("/datasets/targets/")
+
     def list_analysis_runs(self, dataset: str | None = None,
                            limit: int = 500, offset: int = 0) -> pd.DataFrame | list:
         """
@@ -3934,6 +3946,32 @@ class PrismaAPIv2:
         """
         params = _compact(dataset=dataset, limit=limit, offset=offset)
         return self._to_df(self._get("/analysis-runs/", params))
+
+    def get_analysis_run_rows(self, run_key: str, table: str = "results",
+                              limit: int = 500, offset: int = 0) -> pd.DataFrame | list:
+        """
+        ``GET /api/v2/analysis-runs/{run_key}/rows/``: a run's free-form rows.
+
+        Args:
+            run_key: The run's key, e.g. ``'h2-case4-2_cycle'``.
+            table: ``'results'`` (AnalysisResult, the catch-all for metrics
+                with no typed table) or ``'inputs'`` (AnalysisRunInput).
+
+        Returns:
+            Rows of ``{subject, subject_type, values}``; ``subject_type`` is
+            ``'material'`` or ``'reference_system'``. With the DataFrame
+            format, ``values`` is spread into one column per name. Units are
+            on the run (``list_analysis_runs``: ``result_units`` /
+            ``input_units``).
+        """
+        body = self._get(f"/analysis-runs/{run_key}/rows/",
+                         _compact(table=table, limit=limit, offset=offset))
+        rows = body.get("results", [])
+        if self._return_format == "json":
+            return rows
+        flat = [{"subject": r["subject"], "subject_type": r["subject_type"], **(r.get("values") or {})}
+                for r in rows]
+        return pd.DataFrame(flat)
 
     def get_scenarios(self,
                       case_id: int | None = None,

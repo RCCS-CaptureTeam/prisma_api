@@ -122,6 +122,47 @@ flowsheet = api.v2.get_flowsheet(name="dac_min")
 ```
 
 
+## Bring your own dataset
+
+Send a folder of your own results (CSV, JSON or YAML, organised any way) to the platform as one zip. Your files stay as they are; you add one file, `prisma_manifest.yaml`, that says what each file is and where its data goes.
+
+1. **Install and connect.** You need your API key from your platform profile page.
+   ```bash
+   pip install prisma_api
+   python -c "import prisma_api; prisma_api.init()"
+   ```
+2. **Go to your folder** and read the format:
+   ```bash
+   cd my_dataset_folder
+   prisma-dataset guide
+   ```
+3. **See what the platform can store:**
+   ```bash
+   prisma-dataset targets --prod
+   ```
+4. **Write `prisma_manifest.yaml`** in the folder, following the guide. Optionally, a Claude Code skill can draft it with you: run `prisma-dataset install-skill .`, then type `/prisma-dataset` in Claude Code.
+5. **Check it:**
+   ```bash
+   prisma-dataset validate . --prod
+   ```
+6. **Pack it.** Write the zip next to the folder, not inside it. Records are tagged with `dataset.tag` from the manifest; add more tags with `--tag "Name"` (repeatable):
+   ```bash
+   prisma-dataset pack . --out ../my_dataset.zip
+   ```
+7. **Dry run.** The platform checks everything and writes nothing:
+   ```bash
+   prisma-dataset upload ../my_dataset.zip --prod
+   ```
+   Fix any errors and repeat steps 5–7 until it prints `OK`.
+8. **Send it** (agree this with the platform team first):
+   ```bash
+   prisma-dataset upload ../my_dataset.zip --prod --apply
+   ```
+
+When your results change, edit the manifest if needed and repeat steps 5–8. The platform updates the dataset to match.
+
+The same steps are available in Python: `prisma_api.dataset_package.validate`, `pack`, `upload` and `load_targets`.
+
 ## Return formats
 
 All v2 list endpoints support two formats:
@@ -209,8 +250,10 @@ All methods below are available on `api.v2`.
 ### Case-study library (PrISMa_Platform sync)
 
 - `upsert_case_study_library(document, dry_run=False, max_request_bytes=2_400_000, raise_on_error=False, timeout=600)` — sends a `prisma_v2.case_study_library.bundle.v1` document, split into requests if needed; replaces the pipeline 11 ZIP upload
-- `ingest_dataset(zip_path, dry_run=True, timeout=1800)` — sends a third-party dataset package (files + `prisma_manifest.yaml`, built with `prisma-dataset pack`) to `POST /api/v2/datasets/ingest/`; returns the server report, including on rejection. Dry run unless `dry_run=False`. See `reference_data/prisma_cloud/dataset_manifest_brief.md`
+- `ingest_dataset(zip_path, dry_run=True, timeout=1800)` — sends a third-party dataset package (files + `prisma_manifest.yaml`, built with `prisma-dataset pack`) to `POST /api/v2/datasets/ingest/`; returns the server report, including on rejection. Dry run unless `dry_run=False`. The format: `prisma-dataset guide`
+- `get_dataset_targets()` — what a dataset manifest may write on the server: targets, kinds, allowed keys and fields
 - `list_analysis_runs(dataset=None)` — runs loaded from dataset packages, with conditions, parameter set and row counts
+- `get_analysis_run_rows(run_key, table='results')` — a run's free-form rows (`results`: metrics with no typed table; `inputs`: per-run inputs), each with its material or reference-system subject
 - `get_case_study_library_bundle(sections=None, timeout=300)`
 - `get_case_study_bundle(case_id, timeout=120)`
 - `latest_case_study_library_sync()` — `None` before the first sync
