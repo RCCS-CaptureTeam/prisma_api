@@ -109,10 +109,18 @@ Each source matches files with a `path` pattern and sends them to one `target`.
 ## 4. Choose the files on the platform
 
 ```bash
-prisma-dataset tree . --prod
+prisma-dataset tree . --prod --dataset <slug> --tag "<tag>"   # the first time: the dataset page gives this command
+prisma-dataset tree . --prod                                  # later: refresh the dataset's tree, keeping its ticks
 ```
 
-This sends only the folder's file listing, no data. Files your `.gitignore` excludes are left out, as are `.venv` folders. The command prints a link to the platform's uploads page. There, the tree icon on the new row opens the folder, with two checkboxes per file:
+This sends only the folder's file listing, no data. The dataset must already exist on the platform; create it on the web portal first if it doesn't. A tag already used by another dataset is refused, since its records would show in both.
+
+The listing leaves out `.venv`, `.git` and cache folders, and the files your `.gitignore` excludes. Two optional files in `.gitignore` syntax apply to the platform only:
+
+- `.prisma_ignore`: also leave these files out.
+- `.prisma_include`: the dataset is exactly the files this matches, even ones git ignores. `.prisma_ignore` still applies on top.
+
+The command prints a link to the dataset's page. There, **View folder tree** opens the folder, with two checkboxes per file:
 
 - **In dataset:** only ticked files are packed and sent. Files the manifest reads start ticked; you can untick any of them, or tick others.
 - **By others:** the data is not yours to republish, so it stays out of the platform's Zenodo publications.
@@ -120,6 +128,12 @@ This sends only the folder's file listing, no data. Files your `.gitignore` excl
 Ticks save as you click.
 
 ## 5. Check, pack, send
+
+```bash
+prisma-dataset send . --prod --package <id>
+```
+
+`send` validates and packs the ticked files, asks the platform for a dry run, prints the report and asks before writing (`--apply` writes without asking). The command, with the tree's id, is shown above the folder tree on the platform. It does the steps below in one go:
 
 ```bash
 prisma-dataset validate . --prod                   # local check of the ticked files against the platform's targets
@@ -142,5 +156,7 @@ Writing is `upload ... --apply`. It is all or nothing: one error and nothing is 
 Re-sending a newer version of the same dataset updates it:
 - Records that changed are updated.
 - Records missing from the new package are removed from the runs.
+
+**Versions.** If an upload changes records, the dataset goes up a minor version (1.0 → 1.1); an upload that changes nothing leaves the version as it is. If you resend the tree with files added or removed after data was sent, the platform makes a new major version, `<slug>-v2` at 2.0 and tagged `"<tag> v2"`, and later uploads go to it. The manifest may keep the original slug. Each version records what its upload changed. `prisma-dataset versions <slug> --prod` lists them; the dry run reports the version an upload would make.
 
 Ask the platform team before your first `--apply`.

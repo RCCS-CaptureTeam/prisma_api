@@ -59,19 +59,26 @@ Write `prisma_manifest.yaml` with these sections, in this order:
 ## 4. Send the tree, then let the user choose files
 
 ```bash
-prisma-dataset tree . --prod          # file listing only: respects .gitignore, leaves out .venv
+prisma-dataset tree . --prod --package <id>   # refresh the user's tree, if they already sent one
+prisma-dataset tree . --prod                  # otherwise: a new tree for the manifest's dataset
 ```
 
-Give the user the printed link. They tick the files to include in the platform's
-tree view (tree icon on the new upload row); wait for them to say they are done.
-`pack` sends only ticked files.
+The tree is the file listing only. It follows `.gitignore`, `.prisma_ignore` and
+`.prisma_include`, and leaves out `.venv`. If files that should be in the dataset are
+missing, or junk is listed, suggest lines for `.prisma_ignore` or `.prisma_include`
+rather than moving files. The dataset slug must exist on the platform; if the
+server refuses it, ask the user to create the dataset on the web portal or to
+give an existing slug. Don't invent one.
+
+Give the user the printed link. They tick the files to include in the dataset
+page's **View folder tree**; wait for them to say they are done. Only ticked files
+are sent.
 
 ## 5. Check until clean
 
 ```bash
 prisma-dataset validate . --prod
-prisma-dataset pack . --prod --out ../<slug>.zip
-prisma-dataset upload ../<slug>.zip --prod          # dry run: writes nothing
+prisma-dataset send . --prod --json          # pack the ticked files and dry run: writes nothing
 ```
 
 Fix every error and repeat. Then read the dry-run counts critically:
@@ -89,5 +96,5 @@ Summarise for the user:
 - what was skipped and why
 - data problems the authors should check: outliers, files that shrank, partial runs
 
-Never run `upload --apply` unless the user explicitly asks. It writes to the
+Never run `send --apply` or `upload --apply` unless the user explicitly asks. It writes to the
 platform and removes records that are no longer in the package.

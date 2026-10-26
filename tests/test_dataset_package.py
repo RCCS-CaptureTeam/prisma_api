@@ -381,3 +381,113 @@ def test_upload_attaches_to_the_tree_it_was_packed_from(package, tmp_path):
     resp_lib.add(resp_lib.POST, f"{_BASE_PROD}/datasets/ingest/", json={"ok": True},
                  match=[resp_lib.matchers.query_param_matcher({"dry_run": "true", "package": "9"})])
     assert dp.upload(out, api=PrismaAPIv2(key="k")) == {"ok": True}
+
+
+def test_prisma_ignore_and_include_choose_files_for_the_platform(tmp_path):
+    files = ["a.csv", "notes.txt", "data/big.h5", "data/tmp.csv", "data/keep.csv", "scratch/x.csv"]
+    _write_tree(tmp_path, files, {".gitignore": "*.h5\n", dp.IGNORE_FILE: "scratch/\nnotes.txt\n"})
+    assert dp.list_files(tmp_path) == ["a.csv", "data/keep.csv", "data/tmp.csv"]       # .gitignore, then .prisma_ignore
+    # .prisma_include picks the files instead of .gitignore (so it can bring in *.h5); .prisma_ignore still applies.
+    (tmp_path / dp.INCLUDE_FILE).write_text("data/\n!data/tmp.csv\nscratch/*.csv\n")
+    assert dp.list_files(tmp_path) == ["data/big.h5", "data/keep.csv"]
+    (tmp_path / dp.IGNORE_FILE).unlink()
+    assert dp.list_files(tmp_path) == ["data/big.h5", "data/keep.csv", "scratch/x.csv"]
+    assert not {dp.IGNORE_FILE, dp.INCLUDE_FILE} & set(dp.list_files(tmp_path, gitignore=False))
+
+
+def test_send_without_a_manifest_says_how_to_write_one(tmp_path):
+    (tmp_path / "a.csv").write_text("x")
+    with pytest.raises(ValueError, match="install-skill"):
+        dp.send(tmp_path, api=PrismaAPIv2(key="k"))
+
+
+def _tree_responses(dataset="h2-test"):
+    resp_lib.add(resp_lib.GET, f"{_BASE_PROD}/datasets/trees/", json={"count": 1, "results": [{"package": 9}]})
+    resp_lib.add(resp_lib.GET, f"{_BASE_PROD}/datasets/trees/9/", json={
+        "package": 9, "dataset": dataset, "columns": ["path", "integrated"],
+        "files": [["Data/features.csv", True], ["Data/tea.yaml", True]]})
+    resp_lib.add(resp_lib.GET, f"{_BASE_PROD}/datasets/targets/", json=CATALOGUE)
+
+
+@resp_lib.activate
+def test_send_packs_the_ticked_files_dry_runs_then_writes_on_confirm(package, tmp_path):
+    root, manifest = package
+    _tree_responses()
+    dry = resp_lib.add(resp_lib.POST, f"{_BASE_PROD}/datasets/ingest/", json={"ok": True, "warnings": ["w"]},
+                       match=[resp_lib.matchers.query_param_matcher({"dry_run": "true", "package": "9"})])
+    write = resp_lib.add(resp_lib.POST, f"{_BASE_PROD}/datasets/ingest/", json={"ok": True, "sync_run": 3},
+                         match=[resp_lib.matchers.query_param_matcher({"dry_run": "false", "package": "9"})])
+    seen = []
+    report = dp.send(root, PrismaAPIv2(key="k"), manifest=manifest, confirm=lambda r: seen.append(r) or False)
+    assert not report["applied"] and report["tree"] == 9 and report["files_packed"] == 2
+    assert "w" in report["warnings"] and seen and (dry.call_count, write.call_count) == (1, 0)
+    report = dp.send(root, PrismaAPIv2(key="k"), manifest=manifest, confirm=lambda r: True)
+    assert report["applied"] and report["sync_run"] == 3 and write.call_count == 1
+
+
+@resp_lib.activate
+def test_send_refuses_a_tree_of_another_dataset(package):
+    root, manifest = package
+    _tree_responses(dataset="other-set")
+    with pytest.raises(ValueError, match="tree #9 is for dataset 'other-set'"):
+        dp.send(root, PrismaAPIv2(key="k"), manifest=manifest, package=9)
+
+
+@resp_lib.activate
+def test_tree_command_prints_the_send_command_and_the_manifest_step(tmp_path, capsys, monkeypatch):
+    (tmp_path / "a.csv").write_text("x")
+    monkeypatch.setattr(dp, "_client", lambda dev, prod: PrismaAPIv2(key="k"))
+    resp_lib.add(resp_lib.POST, f"{_BASE_PROD}/datasets/trees/", status=201, json={
+        "package": 5, "dataset": "new-set", "files": 1, "selected": 0, "has_zip": False, "url": "https://x/dataset/new-set/"})
+    assert dp.main(["tree", str(tmp_path), "--prod", "--dataset", "new-set"]) == 0
+    out = capsys.readouterr().out
+    assert f"prisma-dataset send {tmp_path} --prod --package 5" in out
+    assert "install-skill" in out and f"prisma-dataset tree {tmp_path} --prod --package 5" in out
+
+
+@resp_lib.activate
+def test_send_accepts_a_tree_of_a_newer_version_and_prints_the_version(package, capsys, monkeypatch):
+    root, manifest = package
+    resp_lib.add(resp_lib.GET, f"{_BASE_PROD}/datasets/trees/", json={"count": 1, "results": [{"package": 9}]})
+    resp_lib.add(resp_lib.GET, f"{_BASE_PROD}/datasets/trees/9/", json={
+        "package": 9, "dataset": "h2-test-v2", "lineage": ["h2-test", "h2-test-v2"],
+        "columns": ["path", "integrated"], "files": [["Data/features.csv", True]]})
+    resp_lib.add(resp_lib.GET, f"{_BASE_PROD}/datasets/targets/", json=CATALOGUE)
+    resp_lib.add(resp_lib.POST, f"{_BASE_PROD}/datasets/ingest/", json={"ok": True, "version": {
+        "dataset": "h2-test-v2", "version": "2.1", "kind": "minor", "bumped": True, "dry_run": True,
+        "summary": "files +0 -0 ~1; AnalysisResult updated 4"}})
+    monkeypatch.setattr(dp, "_client", lambda dev, prod: PrismaAPIv2(key="k"))
+    assert dp.main(["send", str(root), "--prod", "--manifest", str(manifest), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["tree"] == 9 and not report["applied"]
+    dp._print_report(report)
+    assert "version: would make h2-test-v2 v2.1 (minor): files +0 -0 ~1" in capsys.readouterr().out
+
+
+@resp_lib.activate
+def test_tree_command_explains_a_new_major_version(tmp_path, capsys, monkeypatch):
+    (tmp_path / "a.csv").write_text("x")
+    (tmp_path / dp.MANIFEST_NAME).write_text(yaml.safe_dump(MANIFEST))
+    monkeypatch.setattr(dp, "_client", lambda dev, prod: PrismaAPIv2(key="k"))
+    resp_lib.add(resp_lib.POST, f"{_BASE_PROD}/datasets/trees/", status=201, json={
+        "package": 6, "dataset": "h2-test-v2", "files": 1, "selected": 1, "has_zip": False,
+        "bumped": {"from": {"dataset": "h2-test", "version": "1.2"}, "to": {"dataset": "h2-test-v2", "version": "2.0"},
+                   "tags": ["H2 Test v2"], "files_added": 1, "files_removed": 3}})
+    assert dp.main(["tree", str(tmp_path), "--prod"]) == 0
+    out = capsys.readouterr().out
+    assert "new major version: dataset 'h2-test-v2' v2.0 (after 'h2-test' v1.2), tagged H2 Test v2" in out
+    assert "--package 6" in out and "install-skill" not in out
+
+
+@resp_lib.activate
+def test_versions_command_lists_what_each_upload_changed(capsys, monkeypatch):
+    monkeypatch.setattr(dp, "_client", lambda dev, prod: PrismaAPIv2(key="k"))
+    resp_lib.add(resp_lib.GET, f"{_BASE_PROD}/datasets/h2-test/versions/", json={
+        "count": 2, "dataset": "h2-test", "latest": "h2-test-v2", "results": [
+            {"version": "2.0", "dataset": "h2-test-v2", "kind": "major", "created_at": "2026-10-26T10:00:00Z",
+             "summary": "files +1 -3 ~0"},
+            {"version": "1.0", "dataset": "h2-test", "kind": "initial", "created_at": "2026-10-20T10:00:00Z",
+             "summary": "files +4 -0 ~0"}]})
+    assert dp.main(["versions", "h2-test", "--prod"]) == 0
+    out = capsys.readouterr().out
+    assert "newest version: h2-test-v2" in out and "v2.0" in out and "files +1 -3 ~0" in out

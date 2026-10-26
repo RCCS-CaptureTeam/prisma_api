@@ -131,42 +131,47 @@ Send a folder of your own results (CSV, JSON or YAML, organised any way) to the 
    pip install prisma_api
    python -c "import prisma_api; prisma_api.init()"
    ```
-2. **Go to your folder** and read the format:
+2. **Find the dataset on the platform.** Data always goes to a dataset that already exists there. If yours doesn't, create it first on the web portal (from its project's page). On the dataset's page, **Add un-managed dataset** gives you the command for step 4, with the dataset's slug and a tag for its records.
+3. **Choose which files belong to the dataset** (optional). The listing follows your `.gitignore` and always leaves out `.venv`, `.git` and cache folders. Two more files, in `.gitignore` syntax, apply to the platform only:
+   - `.prisma_ignore`: also leave these out.
+   - `.prisma_include`: the dataset is exactly the files this matches, even ones git ignores; `.prisma_ignore` still applies.
+4. **Send the folder tree.** This is only the list of files, no data. In your folder, paste the command from step 2:
    ```bash
    cd my_dataset_folder
-   prisma-dataset guide
+   prisma-dataset tree . --prod --dataset my-dataset --tag "My dataset"
    ```
-3. **See what the platform can store:**
+5. **Write `prisma_manifest.yaml`.** It says what each file holds and where its data goes; nothing can be sent without it. The easiest way is the Claude Code skill: run `prisma-dataset install-skill .`, start `claude` in the folder and type `/prisma-dataset`. To write it yourself, read `prisma-dataset guide` and `prisma-dataset targets --prod`. Then resend the tree, so the platform shows what each file is for (your ticks are kept):
    ```bash
-   prisma-dataset targets --prod
+   prisma-dataset tree . --prod --package <id>
    ```
-4. **Write `prisma_manifest.yaml`** in the folder, following the guide. Optionally, a Claude Code skill can draft it with you: run `prisma-dataset install-skill .`, then type `/prisma-dataset` in Claude Code.
-5. **Send the folder tree.** This is only the list of files, no data. It respects your `.gitignore` and leaves out `.venv` folders:
+6. **Tick the files.** On the dataset's page, open **View folder tree** and tick the files to send. Ticks save automatically.
+7. **Send them.** Copy the command shown above the folder tree. It checks and packs the ticked files, asks the platform for a dry run (nothing is written), shows the report and asks before writing:
    ```bash
-   prisma-dataset tree . --prod
+   prisma-dataset send . --prod --package <id>
    ```
-6. **Choose the files.** On the platform's uploads page, open the tree icon on the new row and tick the files to include. Ticks save automatically.
-7. **Check it.** This uses the ticked files:
-   ```bash
-   prisma-dataset validate . --prod
-   ```
-8. **Pack the ticked files.** Write the zip next to the folder, not inside it. Records are tagged with `dataset.tag` from the manifest; add more tags with `--tag "Name"` (repeatable):
-   ```bash
-   prisma-dataset pack . --prod --out ../my_dataset.zip
-   ```
-9. **Dry run.** The platform checks everything and writes nothing:
-   ```bash
-   prisma-dataset upload ../my_dataset.zip --prod
-   ```
-   Fix any errors and repeat steps 7–9 until it prints `OK`.
-10. **Send it** (agree this with the platform team first):
-    ```bash
-    prisma-dataset upload ../my_dataset.zip --prod --apply
-    ```
+   Fix any errors and repeat until the dry run prints `OK`. Agree your first write with the platform team.
 
-When your results change, edit the manifest if needed, resend the tree to the same record (`prisma-dataset tree . --prod --package <id>`; your ticks are kept, new files start unticked), tick any new files, and repeat steps 7–10. The platform updates the dataset to match.
+When your results change, edit the manifest if needed, resend the tree (`prisma-dataset tree . --prod`), tick any new files, and run `send` again. The platform updates the dataset to match and keeps a version history:
 
-The same steps are available in Python: `prisma_api.dataset_package.send_tree`, `fetch_selection`, `validate`, `pack`, `upload` and `load_targets`.
+- **Same files, new data:** the tree is refreshed with your ticks kept. If the upload changes any records, the dataset goes up a minor version (1.0 → 1.1). If it changes nothing, the version stays as it is.
+- **Files added or removed:** if the dataset already has data, the platform makes a new major version: a copy of the dataset called `<slug>-v2`, at version 2.0 and tagged `"<tag> v2"`. Its authors, project links and Zenodo record are copied, and your ticks are carried over. The command prints the new tree's id; `send` uploads to it. Your manifest can keep the original slug.
+
+Each version records what its upload changed against the one before it: files added, removed or modified, and records created, updated or deleted per table and per run. A dry run reports the version it would make. To list a dataset's versions:
+```bash
+prisma-dataset versions my-dataset --prod
+```
+Older versions' values are not kept, only this record of the changes.
+
+`send` does these steps in one go; you can also run them one at a time:
+```bash
+prisma-dataset validate . --prod                         # local check of the ticked files
+prisma-dataset pack . --prod --out ../my_dataset.zip     # write the zip next to the folder, not inside it
+prisma-dataset upload ../my_dataset.zip --prod           # dry run
+prisma-dataset upload ../my_dataset.zip --prod --apply   # write
+```
+`pack` and `upload` take `--tag "Name"` (repeatable) to tag the records with more names than `dataset.tag`.
+
+The same steps are available in Python: `prisma_api.dataset_package.send_tree`, `send`, `fetch_selection`, `validate`, `pack`, `upload` and `load_targets`.
 
 ## Return formats
 

@@ -18,13 +18,15 @@ Command line, from your dataset folder::
     prisma-dataset guide                       # the manifest format
     prisma-dataset install-skill .             # a Claude Code skill that drafts the manifest with you
     prisma-dataset targets --prod              # what the platform can store, with fields and units
-    prisma-dataset tree . --prod               # send the file listing; tick files on the platform
+    prisma-dataset tree . --prod --dataset <slug>   # send the file listing; tick files on the platform
+    prisma-dataset send . --prod --package <id>     # pack the ticked files, dry run, then write on confirm
     prisma-dataset validate . --prod           # check the manifest against the ticked files and the targets
     prisma-dataset pack . --prod --out ../my_dataset.zip   # only the ticked files
     prisma-dataset upload ../my_dataset.zip --prod           # dry run: nothing is written
     prisma-dataset upload ../my_dataset.zip --prod --apply   # write
 
-``--dev`` instead of ``--prod`` uses a local development server.
+``--dev`` instead of ``--prod`` uses a local development server. ``send`` does
+the pack and upload steps in one go.
 
 Path patterns: ``{name}`` captures part of one path segment (and may be reused
 in run keys), ``*`` matches within a segment, ``**/`` any number of folders.
@@ -40,6 +42,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import zipfile
 from collections import Counter
 from datetime import datetime, timezone
@@ -59,8 +62,14 @@ SKIP = "skip"
 ROW_KINDS = {"rows", "run_rows"}
 DOCS = Path(__file__).resolve().parent / "dataset_docs"
 FORMATS = {".csv": "csv", ".json": "json", ".yaml": "yaml", ".yml": "yaml"}
+#: Extra ignore rules for the platform only, in .gitignore syntax (on top of .gitignore).
+IGNORE_FILE = ".prisma_ignore"
+#: When present, the dataset is exactly the files it matches (.gitignore syntax),
+#: whether or not git ignores them; .prisma_ignore still applies on top.
+INCLUDE_FILE = ".prisma_include"
 _SKIP_DIR_NAMES = {".git", ".venv", "__pycache__", "__MACOSX", ".ipynb_checkpoints"}
-_SKIP_FILE_NAMES = {".DS_Store", "Thumbs.db", ".gitignore"}   # .gitignore: folder housekeeping, not data
+# Folder housekeeping, not data.
+_SKIP_FILE_NAMES = {".DS_Store", "Thumbs.db", ".gitignore", IGNORE_FILE, INCLUDE_FILE}
 _TOKEN = re.compile(r"(\{\w+\}|\*\*/|\*\*|\*|\?)")
 
 csv.field_size_limit(min(sys.maxsize, 2 ** 31 - 1))
@@ -116,10 +125,10 @@ def _git_files(root: Path) -> list[str] | None:
     return [p for p in kept if p not in drop and (root / p).is_file()]
 
 
-def _gitignore_rules(root: Path) -> list[tuple[str, re.Pattern, bool, bool]]:
-    """(base dir, regex, negated, dir_only) for every .gitignore line under root, outermost first."""
+def _gitignore_rules(root: Path, name: str = ".gitignore") -> list[tuple[str, re.Pattern, bool, bool]]:
+    """(base dir, regex, negated, dir_only) for every line of the ``name`` files under root, outermost first."""
     rules = []
-    for gi in sorted(root.rglob(".gitignore"), key=lambda p: len(p.parts)):
+    for gi in sorted(root.rglob(name), key=lambda p: len(p.parts)):
         if any(part in _SKIP_DIR_NAMES for part in gi.relative_to(root).parts[:-1]):
             continue
         base = gi.parent.relative_to(root).as_posix()
@@ -159,6 +168,22 @@ def _ignored_by_rules(path: str, rules) -> bool:
     return False
 
 
+def _included_by_rules(path: str, rules) -> bool:
+    """Whether a .prisma_include matches path: the deepest matching line wins, so
+    ``data/`` then ``!data/tmp.csv`` takes every file in data/ except tmp.csv."""
+    parts = PurePosixPath(path).parts
+    verdict = False
+    for depth in range(1, len(parts) + 1):
+        candidate, is_dir = "/".join(parts[:depth]), depth < len(parts)
+        for base, regex, negated, dir_only in rules:
+            if base and not candidate.startswith(base + "/"):
+                continue
+            rel = candidate[len(base) + 1:] if base else candidate
+            if (is_dir or not dir_only) and regex.match(rel):
+                verdict = not negated
+    return verdict
+
+
 def list_files(root: Path, gitignore: bool = True) -> list[str]:
     """
     Every file of the dataset folder (POSIX paths relative to root).
@@ -168,8 +193,15 @@ def list_files(root: Path, gitignore: bool = True) -> list[str]:
     .gitignore files exclude: through git in a repository (so nested and
     global ignore files count, and tracked files that are now ignored drop
     out), otherwise by reading the .gitignore files directly.
+
+    Two optional files, in .gitignore syntax, choose files for the platform
+    only: ``.prisma_include`` makes the dataset exactly the files it matches
+    (instead of .gitignore, so it can bring in data git ignores), and
+    ``.prisma_ignore`` then leaves out what it matches.
     """
     root = Path(root)
+    include = _gitignore_rules(root, INCLUDE_FILE)
+    gitignore = gitignore and not include
     files = _git_files(root) if gitignore else None
     if files is None:
         files = []
@@ -181,6 +213,11 @@ def list_files(root: Path, gitignore: bool = True) -> list[str]:
             rules = _gitignore_rules(root)
             if rules:
                 files = [f for f in files if not _ignored_by_rules(f, rules)]
+    if include:
+        files = [f for f in files if _included_by_rules(f, include)]
+    ignore = _gitignore_rules(root, IGNORE_FILE)
+    if ignore:
+        files = [f for f in files if not _ignored_by_rules(f, ignore)]
     return sorted(f for f in files if not _clutter(f))
 
 
@@ -642,14 +679,73 @@ def packed_tree(zip_path: str | Path) -> int | None:
     return ((data or {}).get("package") or {}).get("tree_package")
 
 
+def manifest_help() -> str:
+    """What to do when the folder has no manifest yet."""
+    return (f"This folder has no {MANIFEST_NAME} yet. The manifest says what each file holds and where it goes "
+            "on the platform; no data can be sent without it.\n"
+            "  Draft it with Claude Code:  prisma-dataset install-skill .   then run 'claude' in this folder "
+            "and type /prisma-dataset\n"
+            "  Or write it yourself:       prisma-dataset guide   (the format)")
+
+
+def send(root: str | Path, api: Any, manifest: str | Path | None = None, package: int | None = None,
+         out: str | Path | None = None, apply: bool = False, confirm=None) -> dict:
+    """
+    Step 2: pack the files ticked in the platform's tree and upload them, in one go.
+
+    Validates and packs into ``out`` (default: a temporary zip, removed
+    afterwards), uploads it as a dry run and, when the dry run is clean,
+    writes it if ``apply`` is true or ``confirm(report)`` returns true.
+    ``package`` is the tree to use (default: the dataset's latest). Returns
+    the last server report, with ``applied`` and ``tree``. Raises ValueError
+    saying what to do when there is no manifest or tree yet, or the package
+    does not validate.
+    """
+    root = Path(root)
+    path, data = manifest_or_none(root, manifest)
+    if data is None:
+        raise ValueError(manifest_help())
+    slug = (data.get("dataset") or {}).get("slug")
+    selection = fetch_selection(api, slug, package)
+    if selection is None:
+        raise ValueError(f"no folder tree for dataset '{slug}' on the platform yet: send one first with "
+                         f"'prisma-dataset tree .' (the dataset page's 'Add un-managed dataset' button gives it)")
+    if selection.get("dataset") not in (None, slug) and slug not in (selection.get("lineage") or []):
+        raise ValueError(f"tree #{selection['package']} is for dataset '{selection['dataset']}', but "
+                         f"{path.name} says '{slug}'. Use that dataset's slug in the manifest, or send a tree "
+                         f"for '{slug}' from its own page on the platform.")
+    tmp = tempfile.TemporaryDirectory() if out is None else None
+    try:
+        zip_path = Path(tmp.name) / f"{slug}.zip" if tmp else Path(out)
+        packed = pack(root, path, zip_path, targets=load_targets(api=api), selection=selection)
+        report = upload(zip_path, dry_run=True, api=api)
+        report.update(applied=False, tree=selection["package"], files_packed=packed["files_packed"],
+                      warnings=packed["warnings"] + list(report.get("warnings") or []))
+        if report.get("ok") and (apply or (confirm is not None and confirm(report))):
+            report = {**upload(zip_path, dry_run=False, api=api), "applied": True, "tree": selection["package"]}
+    finally:
+        if tmp:
+            tmp.cleanup()
+    return report
+
+
 def _print_report(report: dict) -> None:
-    for key in ("package", "zip", "zip_bytes", "files_packed", "files_read", "dry_run", "tags", "sync_run"):
+    for key in ("package", "tree", "zip", "zip_bytes", "files_packed", "files_read", "dry_run", "applied", "tags",
+                "sync_run"):
         if key in report:
             print(f"{key}: {report[key]}")
     for src in report.get("sources") or []:
         print(f"  {src['id']:<28} {src['target']:<11} files {src['files']:>6}  records {src.get('records', 0)}")
     for model, counts in (report.get("counts") or {}).items():
         print(f"  {model:<18} " + "  ".join(f"{k} {v}" for k, v in counts.items()))
+    version = report.get("version")
+    if isinstance(version, dict):
+        verb = "would make" if version.get("dry_run") else "made"
+        if version.get("bumped"):
+            print(f"version: {verb} {version.get('dataset')} v{version.get('version')} ({version.get('kind')}): "
+                  f"{version.get('summary')}")
+        else:
+            print(f"version: no data changed, so {version.get('dataset')} stays v{version.get('version')}")
     for w in report.get("warnings") or []:
         print(f"  warning: {w}")
     for e in report.get("errors") or []:
@@ -733,11 +829,23 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--package", type=int, metavar="ID", help="Refresh this registered tree, keeping its ticks")
     server_flags(p, required=True)
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("send", help="Step 2: pack the ticked files and upload them (dry run, then write on confirm)")
+    p.add_argument("root", help="The dataset folder")
+    p.add_argument("--manifest", help=f"Manifest file (default: <root>/{MANIFEST_NAME})")
+    p.add_argument("--package", type=int, metavar="ID", help="The registered tree to use (default: the dataset's latest)")
+    p.add_argument("--out", help="Keep the zip here (default: a temporary file)")
+    p.add_argument("--apply", action="store_true", help="Write without asking once the dry run is clean")
+    server_flags(p, required=True)
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("upload", help="Send a packed zip (a dry run unless --apply)")
     p.add_argument("zip")
     p.add_argument("--apply", action="store_true", help="Write (default: dry run)")
     p.add_argument("--tag", action="append", default=[], metavar="NAME",
                    help="Also tag the records with NAME (adds to the packed manifest's tags; repeatable)")
+    server_flags(p, required=True)
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("versions", help="A dataset's versions on the platform and what each upload changed")
+    p.add_argument("dataset", help="The dataset slug")
     server_flags(p, required=True)
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("targets", help="What the platform can store: targets, fields and units")
@@ -761,6 +869,18 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"installed: {dest}\nIn that folder, run Claude Code and type /prisma-dataset.")
         return 0
+    if args.command == "versions":
+        api = _client(args.dev, args.prod)
+        listing = getattr(api, "v2", api).list_dataset_versions(args.dataset)
+        if args.json:
+            print(json.dumps(listing, indent=2, default=str))
+            return 0
+        if listing.get("latest") and listing["latest"] != args.dataset:
+            print(f"newest version: {listing['latest']}")
+        for v in listing.get("results") or []:
+            print(f"v{v['version']:<6} {v['dataset']:<30} {v['kind']:<8} {str(v.get('created_at', ''))[:16]}  "
+                  f"{v.get('summary', '')}")
+        return 0
     if args.command == "targets":
         catalogue = load_targets(api=_client(args.dev, args.prod))
         if args.save:
@@ -771,6 +891,7 @@ def main(argv: list[str] | None = None) -> int:
             _print_targets(catalogue)
         return 0
 
+    flag = "--dev" if getattr(args, "dev", False) else "--prod"
     if args.command == "tree":
         try:
             report = send_tree(args.root, _client(args.dev, args.prod), args.manifest, args.dataset,
@@ -779,12 +900,41 @@ def main(argv: list[str] | None = None) -> int:
             print(exc, file=sys.stderr)
             return 1
         if report.get("ok") and not args.json:
+            bumped = report.get("bumped")
+            if bumped:
+                print(f"The folder's file list changed since the last upload ({bumped.get('files_added', 0)} added, "
+                      f"{bumped.get('files_removed', 0)} removed), so this is a new major version: dataset "
+                      f"'{bumped['to']['dataset']}' v{bumped['to']['version']} (after '{bumped['from']['dataset']}' "
+                      f"v{bumped['from']['version']}), tagged {', '.join(bumped.get('tags') or [])}. "
+                      f"Your ticks were carried over.\n")
             print(f"tree #{report['package']} for dataset '{report['dataset']}': {report['files']} files, "
                   f"{report['selected']} ticked.\n"
-                  f"Tick the files to include at {report.get('url', 'the uploads page')} (tree icon on that row), "
-                  f"then:\n  prisma-dataset pack {args.root} {'--dev' if args.dev else '--prod'} "
-                  f"--out ../{report['dataset']}.zip")
+                  f"Check and tick the files at {report.get('url', 'the platform')} (View folder tree), then send them:\n"
+                  f"  prisma-dataset send {args.root} {flag} --package {report['package']}")
+            if manifest_or_none(Path(args.root), args.manifest)[1] is None:
+                print("\n" + manifest_help() + "\n"
+                      f"Then resend the tree to show what each file is for (ticks are kept):\n"
+                      f"  prisma-dataset tree {args.root} {flag} --package {report['package']}")
             return 0
+    elif args.command == "send":
+        shown = []
+
+        def confirm(dry_run: dict) -> bool:
+            _print_report(dry_run)
+            shown.append(True)
+            if not sys.stdin.isatty():
+                print("Dry run only: nothing was written. Add --apply to write.")
+                return False
+            target = "the dev server" if args.dev else "PRODUCTION"
+            return input(f"Write this to {target}? [y/N] ").strip().lower() in ("y", "yes")
+        try:
+            report = send(args.root, _client(args.dev, args.prod), args.manifest, args.package, args.out,
+                          apply=args.apply, confirm=None if args.json else confirm)
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        if shown and not report.get("applied"):
+            return 0 if report.get("ok") else 1
     elif args.command == "upload":
         package = packed_tree(args.zip)
         report = upload(args.zip, dry_run=not args.apply, local_dev=args.dev, tags=args.tag)

@@ -3980,6 +3980,16 @@ class PrismaAPIv2:
         """
         return self._get(f"/datasets/trees/{package}/")
 
+    def list_dataset_versions(self, dataset: str, limit: int = 50) -> dict:
+        """
+        ``GET /api/v2/datasets/{slug}/versions/``: the recorded versions of a
+        dataset and of its other major versions, newest first, each with
+        ``changes``, what that upload changed against the version before it
+        (files added/removed/modified, records per table, runs), and a
+        one-line ``summary``. ``latest`` is the slug of the newest version.
+        """
+        return self._get(f"/datasets/{dataset}/versions/", _compact(limit=limit))
+
     def get_dataset_targets(self) -> dict:
         """
         ``GET /api/v2/datasets/targets/``: what a dataset manifest may write on
