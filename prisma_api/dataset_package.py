@@ -18,8 +18,9 @@ Command line, from your dataset folder::
     prisma-dataset guide                       # the manifest format
     prisma-dataset install-skill .             # a Claude Code skill that drafts the manifest with you
     prisma-dataset targets --prod              # what the platform can store, with fields and units
-    prisma-dataset validate . --prod           # check the manifest against your files and the targets
-    prisma-dataset pack . --out ../my_dataset.zip
+    prisma-dataset tree . --prod               # send the file listing; tick files on the platform
+    prisma-dataset validate . --prod           # check the manifest against the ticked files and the targets
+    prisma-dataset pack . --prod --out ../my_dataset.zip   # only the ticked files
     prisma-dataset upload ../my_dataset.zip --prod           # dry run: nothing is written
     prisma-dataset upload ../my_dataset.zip --prod --apply   # write
 
@@ -58,8 +59,8 @@ SKIP = "skip"
 ROW_KINDS = {"rows", "run_rows"}
 DOCS = Path(__file__).resolve().parent / "dataset_docs"
 FORMATS = {".csv": "csv", ".json": "json", ".yaml": "yaml", ".yml": "yaml"}
-_SKIP_DIR_NAMES = {".git", "__pycache__", "__MACOSX", ".ipynb_checkpoints"}
-_SKIP_FILE_NAMES = {".DS_Store", "Thumbs.db"}
+_SKIP_DIR_NAMES = {".git", ".venv", "__pycache__", "__MACOSX", ".ipynb_checkpoints"}
+_SKIP_FILE_NAMES = {".DS_Store", "Thumbs.db", ".gitignore"}   # .gitignore: folder housekeeping, not data
 _TOKEN = re.compile(r"(\{\w+\}|\*\*/|\*\*|\*|\?)")
 
 csv.field_size_limit(min(sys.maxsize, 2 ** 31 - 1))
@@ -88,19 +89,99 @@ def compile_pattern(pattern: str) -> re.Pattern:
     return re.compile("^" + "".join(parts) + "$")
 
 
-def list_files(root: Path) -> list[str]:
-    """Every file under root (POSIX, relative), minus VCS/OS clutter and the manifest itself."""
-    out = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_NAMES]
-        rel = Path(dirpath).relative_to(root)
-        for name in filenames:
-            if name in _SKIP_FILE_NAMES or name.startswith("._"):
+_MANIFEST_NAMES = (MANIFEST_NAME, "prisma_manifest.yml", "prisma_manifest.json")
+
+
+def _clutter(path: str) -> bool:
+    parts = PurePosixPath(path).parts
+    return any(p in _SKIP_DIR_NAMES for p in parts[:-1]) or parts[-1] in _SKIP_FILE_NAMES \
+        or parts[-1].startswith("._") or (len(parts) == 1 and parts[0] in _MANIFEST_NAMES)
+
+
+def _git_files(root: Path) -> list[str] | None:
+    """Files git would keep under root (tracked or untracked, minus .gitignore'd); None outside a repo."""
+    def git(*args: str) -> list[str] | None:
+        try:
+            out = subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=True, timeout=300).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return [p for p in out.decode("utf-8", "surrogateescape").split("\0") if p]
+    if git("rev-parse", "--is-inside-work-tree") is None:
+        return None
+    kept = git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    ignored = git("ls-files", "-z", "--cached", "--ignored", "--exclude-standard")   # tracked, but ignored now
+    if kept is None:
+        return None
+    drop = set(ignored or [])
+    return [p for p in kept if p not in drop and (root / p).is_file()]
+
+
+def _gitignore_rules(root: Path) -> list[tuple[str, re.Pattern, bool, bool]]:
+    """(base dir, regex, negated, dir_only) for every .gitignore line under root, outermost first."""
+    rules = []
+    for gi in sorted(root.rglob(".gitignore"), key=lambda p: len(p.parts)):
+        if any(part in _SKIP_DIR_NAMES for part in gi.relative_to(root).parts[:-1]):
+            continue
+        base = gi.parent.relative_to(root).as_posix()
+        base = "" if base == "." else base
+        for line in gi.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.rstrip()
+            if not line or line.startswith("#"):
                 continue
-            if not rel.parts and name in (MANIFEST_NAME, "prisma_manifest.yml", "prisma_manifest.json"):
+            negated = line.startswith("!")
+            line = line[1:] if negated else line
+            dir_only = line.endswith("/")
+            line = line.rstrip("/")
+            anchored = "/" in line
+            line = line.lstrip("/")
+            body = compile_pattern(line).pattern[1:-1]
+            regex = re.compile(("^" if anchored else "^(?:.*/)?") + body + "$")
+            rules.append((base, regex, negated, dir_only))
+    return rules
+
+
+def _ignored_by_rules(path: str, rules) -> bool:
+    """Git's rule: the last matching line wins; a match on a parent folder ignores everything in it."""
+    parts = PurePosixPath(path).parts
+    for depth in range(1, len(parts) + 1):
+        candidate, is_dir = "/".join(parts[:depth]), depth < len(parts)
+        verdict = None
+        for base, regex, negated, dir_only in rules:
+            if base and not candidate.startswith(base + "/"):
                 continue
-            out.append(str(PurePosixPath(*rel.parts, name)))
-    return sorted(out)
+            rel = candidate[len(base) + 1:] if base else candidate
+            if dir_only and not is_dir:
+                continue
+            if regex.match(rel):
+                verdict = not negated
+        if verdict:
+            return True
+    return False
+
+
+def list_files(root: Path, gitignore: bool = True) -> list[str]:
+    """
+    Every file of the dataset folder (POSIX paths relative to root).
+
+    Leaves out VCS, virtualenv (.venv) and cache folders, OS clutter, the
+    manifest itself and, with ``gitignore`` (default), whatever the folder's
+    .gitignore files exclude: through git in a repository (so nested and
+    global ignore files count, and tracked files that are now ignored drop
+    out), otherwise by reading the .gitignore files directly.
+    """
+    root = Path(root)
+    files = _git_files(root) if gitignore else None
+    if files is None:
+        files = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_NAMES]
+            rel = Path(dirpath).relative_to(root)
+            files += [str(PurePosixPath(*rel.parts, name)) for name in filenames]
+        if gitignore:
+            rules = _gitignore_rules(root)
+            if rules:
+                files = [f for f in files if not _ignored_by_rules(f, rules)]
+    return sorted(f for f in files if not _clutter(f))
 
 
 def load_manifest(path: str | Path) -> dict:
@@ -130,8 +211,13 @@ def _run_matches(run: dict, where: dict, captures: dict) -> bool:
     return True
 
 
-def resolve(manifest: dict, files: list[str]) -> tuple[list[dict], list[str]]:
-    """[{source, files: [{path, captures, runs}]}] plus binding errors."""
+def resolve(manifest: dict, files: list[str], excluded=frozenset()) -> tuple[list[dict], list[str]]:
+    """
+    [{source, files: [{path, captures, runs}], excluded: n}] plus binding errors.
+
+    ``excluded`` files (not ticked in the platform's source tree) are left
+    out, as on the server; a source whose files are all excluded is no error.
+    """
     errors: list[str] = []
     runs = {r.get("key"): r for r in manifest.get("runs") or [] if isinstance(r, dict)}
     claimed: dict[str, str] = {}
@@ -141,9 +227,13 @@ def resolve(manifest: dict, files: list[str]) -> tuple[list[dict], list[str]]:
         rx = compile_pattern(str(src.get("path", "")))
         excludes = [compile_pattern(str(p)) for p in src.get("exclude") or []]
         bound = []
-        for path in files:
+        n_excluded = 0
+        for path in sorted(set(files) | set(excluded)):
             m = rx.match(path)
             if not m or any(x.match(path) for x in excludes):
+                continue
+            if path in excluded:
+                n_excluded += 1         # matched, but not ticked: not an empty source
                 continue
             captures = m.groupdict()
             if src.get("target") != "skip":
@@ -163,9 +253,9 @@ def resolve(manifest: dict, files: list[str]) -> tuple[list[dict], list[str]]:
             except (KeyError, IndexError) as exc:
                 errors.append(f"source '{sid}': placeholder {exc} is not captured by path '{src.get('path')}'")
             bound.append({"path": path, "captures": captures, "runs": run_keys})
-        if not bound:
+        if not bound and not n_excluded:
             errors.append(f"source '{sid}': no file matches '{src.get('path')}'")
-        out.append({"source": src, "files": bound})
+        out.append({"source": src, "files": bound, "excluded": n_excluded})
     return out, errors
 
 
@@ -209,7 +299,7 @@ def _row_shaped(src: dict, targets: dict | None) -> bool:
 
 
 def validate(root: str | Path, manifest: str | Path | None = None,
-             targets: str | Path | dict | None = None) -> dict:
+             targets: str | Path | dict | None = None, excluded=frozenset()) -> dict:
     """
     Check a dataset folder against its manifest, before sending anything.
 
@@ -264,7 +354,7 @@ def validate(root: str | Path, manifest: str | Path | None = None,
     errors += [f"duplicate source id '{k}'" for k, n in ids_seen.items() if n > 1]
 
     files = list_files(root)
-    resolved, bind_errors = resolve(data, files)
+    resolved, bind_errors = resolve(data, files, excluded)
     errors += bind_errors
 
     strip = [str(s) for s in (data.get("material_id") or {}).get("strip_suffixes") or []]
@@ -332,7 +422,7 @@ def validate(root: str | Path, manifest: str | Path | None = None,
         if orphans:
             warnings.append(f"{len(orphans)} id(s) have run rows but no per-material row, e.g. {orphans[:5]} "
                             f"(material_id.on_missing: {(data.get('material_id') or {}).get('on_missing', 'create')})")
-    unmentioned = [f for f in files if f not in mentioned]
+    unmentioned = [f for f in files if f not in mentioned and f not in excluded]
     if unmentioned:
         warnings.append(f"{len(unmentioned)} file(s) are not mentioned by any source (not packed), "
                         f"e.g. {unmentioned[:5]}")
@@ -359,6 +449,60 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def manifest_or_none(root: Path, manifest: str | Path | None = None) -> tuple[Path | None, dict | None]:
+    """The folder's manifest, or (None, None) when it has none yet."""
+    try:
+        path = _manifest_path(Path(root), manifest)
+    except FileNotFoundError:
+        return None, None
+    return path, load_manifest(path)
+
+
+def send_tree(root: str | Path, api: Any, manifest: str | Path | None = None, dataset: str | None = None,
+              tags: list[str] | str | None = None, package: int | None = None) -> dict:
+    """
+    Step 1: send the folder's file listing (no data) to the platform.
+
+    The platform shows it on its uploads page, where you tick the files to
+    include; ``pack`` then sends only those. The listing respects .gitignore
+    and leaves out .venv. The manifest, if the folder has one yet, shows what
+    each file is for. ``dataset`` is the slug when there is no manifest yet.
+    ``package`` refreshes an earlier tree, keeping its ticks.
+    """
+    root = Path(root)
+    _, data = manifest_or_none(root, manifest)
+    slug = dataset or ((data or {}).get("dataset") or {}).get("slug")
+    if not slug:
+        raise ValueError("no manifest yet: give the dataset slug (--dataset my-dataset)")
+    files = list_files(root)
+    resolved = resolve(data, files)[0] if data else []
+    tree = source_tree(root, files, resolved, {})
+    result = getattr(api, "v2", api).register_dataset_tree(
+        tree, slug, manifest=data, tags=_tag_list(tags), package=package)
+    result.setdefault("ok", "errors" not in result)
+    return result
+
+
+def fetch_selection(api: Any, dataset: str | None = None, package: int | None = None) -> dict | None:
+    """The ticks of a registered tree: ``package``, or the dataset's latest one. None if none exists."""
+    v2 = getattr(api, "v2", api)
+    if package is None:
+        trees = v2.list_dataset_trees(dataset=dataset) if dataset else []
+        if not trees:
+            return None
+        package = trees[0]["package"]
+    return v2.get_dataset_tree(package)
+
+
+def selection_paths(selection: dict | None) -> tuple[set[str] | None, set[str]]:
+    """(ticked paths, all paths in the tree) of a selection, or (None, empty) without one."""
+    if not selection:
+        return None, set()
+    ix = {c: i for i, c in enumerate(selection["columns"])}
+    rows = selection["files"]
+    return ({r[ix["path"]] for r in rows if r[ix["integrated"]]}, {r[ix["path"]] for r in rows})
+
+
 def _tag_list(tag: Any) -> list[str]:
     names = [tag] if isinstance(tag, str) else list(tag or [])
     return [str(n).strip() for n in names if str(n).strip()]
@@ -366,7 +510,7 @@ def _tag_list(tag: Any) -> list[str]:
 
 def pack(root: str | Path, manifest: str | Path | None = None, out: str | Path = "package.zip",
          allow_errors: bool = False, targets: str | Path | dict | None = None,
-         tags: list[str] | str | None = None) -> dict:
+         tags: list[str] | str | None = None, selection: dict | None = None) -> dict:
     """
     Validate, then zip the manifest and every file a non-skip source reads
     (plus skip sources with ``pack: true``) under their package paths.
@@ -378,20 +522,40 @@ def pack(root: str | Path, manifest: str | Path | None = None, out: str | Path =
 
     ``tags`` adds tag names to the manifest's ``dataset.tag``; the platform
     tags everything the package writes with all of them.
+
+    ``selection`` (from :func:`fetch_selection`) limits the zip to the files
+    ticked in the platform's source tree; it is recorded in the zip so the
+    upload attaches to that tree.
     """
     root = Path(root)
-    report = validate(root, manifest, targets)
+    all_files = list_files(root)
+    ticked, in_tree = selection_paths(selection)
+    excluded = (set(all_files) - ticked) if ticked is not None else set()
+    report = validate(root, manifest, targets, excluded)
     if Path(out).resolve().parent == root.resolve() or root.resolve() in Path(out).resolve().parents:
         report["warnings"].append("the zip is written inside the dataset folder; it will show up in the "
                                   "next pack's file listing (write it next to the folder instead)")
     if not report["ok"] and not allow_errors:
         raise ValueError("package does not validate:\n  " + "\n  ".join(report["errors"][:20]))
     data = load_manifest(report["manifest"])
-    all_files = list_files(root)
-    resolved, _ = resolve(data, all_files)
+    resolved, _ = resolve(data, all_files, excluded)
     paths = sorted({f["path"] for item in resolved
                     if item["source"].get("target") != "skip" or item["source"].get("pack")
                     for f in item["files"]})
+    if ticked is not None:
+        pid = selection["package"]
+        new = sorted(set(all_files) - in_tree)
+        unread = sorted((ticked & set(all_files)) - set(paths))
+        gone = sorted(ticked - set(all_files))
+        report["warnings"].append(f"tree #{pid}: {len(paths)} ticked file(s) packed, {len(excluded)} left out")
+        if new:
+            report["warnings"].append(f"{len(new)} file(s) are newer than tree #{pid} and were left out, e.g. "
+                                      f"{new[:3]}; resend it with: prisma-dataset tree . --package {pid}")
+        if unread:
+            report["warnings"].append(f"{len(unread)} ticked file(s) are not read by any manifest source, so "
+                                      f"they are not sent, e.g. {unread[:3]}")
+        if gone:
+            report["warnings"].append(f"{len(gone)} ticked file(s) are no longer in the folder, e.g. {gone[:3]}")
     package = dict(data.get("package") or {})
     commit = _git(root, "rev-parse", "HEAD")
     if commit:
@@ -400,6 +564,8 @@ def pack(root: str | Path, manifest: str | Path | None = None, out: str | Path =
         package.setdefault("git_repo", _git(root, "config", "--get", "remote.origin.url"))
     package["packed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     package["packed_by"] = getpass.getuser()
+    if selection:
+        package["tree_package"] = selection["package"]
     data["package"] = package
     all_tags = list(dict.fromkeys(_tag_list((data.get("dataset") or {}).get("tag")) + _tag_list(tags)))
     if all_tags:
@@ -462,11 +628,22 @@ def upload(zip_path: str | Path, dry_run: bool = True, api: Any = None, timeout:
         from . import init
         api = init(local_dev=local_dev)
     v2 = getattr(api, "v2", api)
-    return v2.ingest_dataset(str(zip_path), dry_run=dry_run, timeout=timeout, tags=_tag_list(tags))
+    return v2.ingest_dataset(str(zip_path), dry_run=dry_run, timeout=timeout, tags=_tag_list(tags),
+                             package=packed_tree(zip_path))
+
+
+def packed_tree(zip_path: str | Path) -> int | None:
+    """The registered tree a zip was packed from (its ``package.tree_package``), if any."""
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            data = yaml.safe_load(zf.read(MANIFEST_NAME))
+    except (OSError, KeyError, zipfile.BadZipFile, yaml.YAMLError):
+        return None
+    return ((data or {}).get("package") or {}).get("tree_package")
 
 
 def _print_report(report: dict) -> None:
-    for key in ("zip", "zip_bytes", "files_packed", "files_read", "dry_run", "tags", "sync_run"):
+    for key in ("package", "zip", "zip_bytes", "files_packed", "files_read", "dry_run", "tags", "sync_run"):
         if key in report:
             print(f"{key}: {report[key]}")
     for src in report.get("sources") or []:
@@ -540,10 +717,22 @@ def main(argv: list[str] | None = None) -> int:
         server_flags(p, required=False).add_argument(
             "--targets", help="A target catalogue saved with 'prisma-dataset targets --save' (works offline)")
         p.add_argument("--json", action="store_true", help="Print the report as JSON")
+        p.add_argument("--package", type=int, metavar="ID",
+                       help="Use the files ticked in this registered tree (default: the dataset's latest tree)")
+        p.add_argument("--all-files", action="store_true",
+                       help="Ignore the platform's tree: every file the manifest reads")
         if name == "pack":
             p.add_argument("--out", default="package.zip", help="Zip to write (put it next to the folder, not in it)")
             p.add_argument("--tag", action="append", default=[], metavar="NAME",
                            help="Tag the dataset's records with NAME (adds to dataset.tag; repeatable)")
+    p = sub.add_parser("tree", help="Step 1: send the folder's file listing (no data) to tick files on the platform")
+    p.add_argument("root", help="The dataset folder")
+    p.add_argument("--manifest", help=f"Manifest file (default: <root>/{MANIFEST_NAME}, if there is one)")
+    p.add_argument("--dataset", metavar="SLUG", help="The dataset slug (needed when there is no manifest yet)")
+    p.add_argument("--tag", action="append", default=[], metavar="NAME", help="Tag the upload record (repeatable)")
+    p.add_argument("--package", type=int, metavar="ID", help="Refresh this registered tree, keeping its ticks")
+    server_flags(p, required=True)
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("upload", help="Send a packed zip (a dry run unless --apply)")
     p.add_argument("zip")
     p.add_argument("--apply", action="store_true", help="Write (default: dry run)")
@@ -582,16 +771,45 @@ def main(argv: list[str] | None = None) -> int:
             _print_targets(catalogue)
         return 0
 
-    if args.command == "upload":
+    if args.command == "tree":
+        try:
+            report = send_tree(args.root, _client(args.dev, args.prod), args.manifest, args.dataset,
+                               args.tag, args.package)
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        if report.get("ok") and not args.json:
+            print(f"tree #{report['package']} for dataset '{report['dataset']}': {report['files']} files, "
+                  f"{report['selected']} ticked.\n"
+                  f"Tick the files to include at {report.get('url', 'the uploads page')} (tree icon on that row), "
+                  f"then:\n  prisma-dataset pack {args.root} {'--dev' if args.dev else '--prod'} "
+                  f"--out ../{report['dataset']}.zip")
+            return 0
+    elif args.command == "upload":
+        package = packed_tree(args.zip)
         report = upload(args.zip, dry_run=not args.apply, local_dev=args.dev, tags=args.tag)
-        print(f"target: {'dev server' if args.dev else 'PRODUCTION'}")
+        print(f"target: {'dev server' if args.dev else 'PRODUCTION'}"
+              + (f" · files ticked in tree #{package}" if package else ""))
     else:
-        targets = load_targets(args.targets, api=_client(args.dev, args.prod))
+        api = _client(args.dev, args.prod)
+        targets = load_targets(args.targets, api=api)
+        selection = None
+        if args.package and api is None:
+            print("--package needs --dev or --prod", file=sys.stderr)
+            return 1
+        if api is not None and not args.all_files:
+            _, data = manifest_or_none(Path(args.root), args.manifest)
+            selection = fetch_selection(api, ((data or {}).get("dataset") or {}).get("slug"), args.package)
+            print(f"files: those ticked in tree #{selection['package']}" if selection else
+                  "files: every file the manifest reads (no tree registered; run 'prisma-dataset tree' to choose)")
         if args.command == "validate":
-            report = validate(args.root, args.manifest, targets)
+            ticked, _ = selection_paths(selection)
+            excluded = set(list_files(Path(args.root))) - ticked if ticked is not None else set()
+            report = validate(args.root, args.manifest, targets, excluded)
         else:
             try:
-                report = pack(args.root, args.manifest, args.out, targets=targets, tags=args.tag)
+                report = pack(args.root, args.manifest, args.out, targets=targets, tags=args.tag,
+                              selection=selection)
             except ValueError as exc:
                 print(exc, file=sys.stderr)
                 return 1

@@ -106,13 +106,30 @@ Each source matches files with a `path` pattern and sends them to one `target`.
     - `records`: a list of Name/Value/Units/Reference/Description, under `records_key`
     - `table`: a CSV with a `key_column` such as Year
 
-## 4. Check, pack, send
+## 4. Choose the files on the platform
 
 ```bash
-prisma-dataset validate . --prod                   # local check against your files and the platform's targets
-prisma-dataset pack . --out ../my_dataset.zip      # write the zip next to the folder, not inside it
+prisma-dataset tree . --prod
+```
+
+This sends only the folder's file listing, no data. Files your `.gitignore` excludes are left out, as are `.venv` folders. The command prints a link to the platform's uploads page. There, the tree icon on the new row opens the folder, with two checkboxes per file:
+
+- **In dataset:** only ticked files are packed and sent. Files the manifest reads start ticked; you can untick any of them, or tick others.
+- **By others:** the data is not yours to republish, so it stays out of the platform's Zenodo publications.
+
+Ticks save as you click.
+
+## 5. Check, pack, send
+
+```bash
+prisma-dataset validate . --prod                   # local check of the ticked files against the platform's targets
+prisma-dataset pack . --prod --out ../my_dataset.zip   # only the ticked files; write the zip next to the folder
 prisma-dataset upload ../my_dataset.zip --prod     # DRY RUN: the platform checks everything, writes nothing
 ```
+
+`pack` uses the dataset's latest tree. To choose another tree, use `--package <id>`; to ignore the ticks and pack every file the manifest reads, use `--all-files`. The zip records which tree it came from, so the upload joins that tree on the platform.
+
+When files change, send the tree again with `prisma-dataset tree . --prod --package <id>`. Your ticks are kept, and new files start unticked.
 
 The dry run's report lists every problem at once, then the records it *would* create, update or delete per table and per run. Fix and repeat until it says `OK` and the counts look right.
 

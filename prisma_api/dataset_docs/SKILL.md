@@ -56,11 +56,21 @@ Write `prisma_manifest.yaml` with these sections, in this order:
 - Ask the user which tag (or tags) the records should carry (`dataset.tag`); platform datasets group records by tag. Don't invent one.
 - Ask the user before setting `dataset.by_others`. It decides whether the data may appear in the platform's Zenodo publications.
 
-## 4. Check until clean
+## 4. Send the tree, then let the user choose files
+
+```bash
+prisma-dataset tree . --prod          # file listing only: respects .gitignore, leaves out .venv
+```
+
+Give the user the printed link. They tick the files to include in the platform's
+tree view (tree icon on the new upload row); wait for them to say they are done.
+`pack` sends only ticked files.
+
+## 5. Check until clean
 
 ```bash
 prisma-dataset validate . --prod
-prisma-dataset pack . --out ../<slug>.zip
+prisma-dataset pack . --prod --out ../<slug>.zip
 prisma-dataset upload ../<slug>.zip --prod          # dry run: writes nothing
 ```
 
@@ -70,7 +80,7 @@ Fix every error and repeat. Then read the dry-run counts critically:
 - Unexpected "materials created" usually mean id spellings need `strip_suffixes` or reference-system `aliases`.
 - Any deletions should be explained.
 
-## 5. Hand over
+## 6. Hand over
 
 Summarise for the user:
 

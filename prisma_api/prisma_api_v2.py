@@ -3885,7 +3885,8 @@ class PrismaAPIv2:
     # ── Third-party dataset packages (server ingest pipeline 15) ──────────────
 
     def ingest_dataset(self, zip_path: str, dry_run: bool = True,
-                       timeout: int = 1800, tags: list[str] | None = None) -> dict:
+                       timeout: int = 1800, tags: list[str] | None = None,
+                       package: int | None = None) -> dict:
         """
         Send a dataset package zip (files + ``prisma_manifest.yaml``).
 
@@ -3901,6 +3902,10 @@ class PrismaAPIv2:
             timeout: Seconds; a full package can take minutes to apply.
             tags: Tag names added to the manifest's ``dataset.tag``; the server
                 tags everything the package writes with all of them.
+            package: The source tree registered with :meth:`register_dataset_tree`.
+                Files not ticked there are left out, and an applied zip is kept
+                on that upload. ``prisma_api.dataset_package.upload`` reads it
+                from the zip.
 
         Returns:
             The ``prisma.dataset.ingest.report.v1`` report: ``ok``, ``counts``
@@ -3912,7 +3917,7 @@ class PrismaAPIv2:
             resp = requests.post(
                 self._url("/datasets/ingest/"),
                 params=_compact(dry_run="true" if dry_run else "false",
-                                tags=",".join(tags) if tags else None),
+                                tags=",".join(tags) if tags else None, package=package),
                 files={"file": (Path(zip_path).name, fh, "application/zip")},
                 headers={"X-API-Key": self._key}, timeout=timeout,
             )
@@ -3925,6 +3930,55 @@ class PrismaAPIv2:
                 return body
         resp.raise_for_status()
         return resp.json()
+
+    def register_dataset_tree(self, tree: dict, dataset: str, manifest: dict | None = None,
+                              tags: list[str] | None = None, package: int | None = None,
+                              timeout: int = 600) -> dict:
+        """
+        ``POST /api/v2/datasets/trees/``: send a dataset folder's file listing,
+        before any data, so files can be ticked on the platform's uploads page.
+
+        Args:
+            tree: A ``prisma.dataset.source_tree.v1`` listing
+                (``prisma_api.dataset_package.source_tree``).
+            dataset: The dataset slug.
+            manifest: The folder's manifest, if it has one yet (shows what each
+                file is for).
+            tags: Tag names for the upload record.
+            package: Refresh this registered tree, keeping its ticks.
+
+        Returns:
+            ``{package, dataset, files, selected, has_zip, url}``, or the
+            server's report with ``ok: false`` and ``errors`` on HTTP 400.
+        """
+        import gzip
+
+        body = gzip.compress(json.dumps(tree).encode("utf-8"))
+        meta = json.dumps({"dataset": dataset, "manifest": manifest, "tags": tags or [], "package": package},
+                          default=str)
+        resp = requests.post(self._url("/datasets/trees/"), data={"meta": meta},
+                             files={"tree": ("tree.json.gz", body, "application/gzip")},
+                             headers={"X-API-Key": self._key}, timeout=timeout)
+        if resp.status_code == 400:
+            try:
+                report = resp.json()
+            except ValueError:
+                report = None
+            if isinstance(report, dict) and "errors" in report:
+                return report
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_dataset_trees(self, dataset: str | None = None, limit: int = 50) -> list[dict]:
+        """``GET /api/v2/datasets/trees/``: registered source trees, newest first."""
+        return self._get("/datasets/trees/", _compact(dataset=dataset, limit=limit)).get("results", [])
+
+    def get_dataset_tree(self, package: int) -> dict:
+        """
+        ``GET /api/v2/datasets/trees/{package}/``: a registered tree's files and
+        their ticks (``columns``: path, integrated, exclude_from_zenodo, status).
+        """
+        return self._get(f"/datasets/trees/{package}/")
 
     def get_dataset_targets(self) -> dict:
         """

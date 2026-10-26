@@ -283,3 +283,101 @@ def test_upload_sends_extra_tags(tmp_path):
     resp_lib.add(resp_lib.POST, f"{_BASE_PROD}/datasets/ingest/", json={"ok": True},
                  match=[resp_lib.matchers.query_param_matcher({"dry_run": "true", "tags": "A,B"})])
     assert dp.upload(zip_path, api=PrismaAPIv2(key="k"), tags=["A", "B"]) == {"ok": True}
+
+
+def test_virtualenvs_are_not_part_of_the_dataset(package):
+    root, _ = package
+    for path in (".venv/lib/python3.11/site.py", "Data/.venv/bin/python"):
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text("x")
+    files = dp.list_files(root)
+    assert not [f for f in files if ".venv" in f]
+
+
+GITIGNORE_CASES = {
+    ".gitignore": "*.log\nbuild/\n/secret.txt\n!keep.log\ndata/raw/**\n",
+    "sub/.gitignore": "local_*.csv\n",
+}
+GITIGNORE_FILES = ["a.csv", "x.log", "keep.log", "build/out.bin", "sub/build/y.bin", "secret.txt", "sub/secret.txt",
+                   "data/raw/r1.csv", "data/clean.csv", "sub/local_1.csv", "sub/global.csv", ".venv/lib/z.py"]
+
+
+def _write_tree(root, files, ignores):
+    for path in files:
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text("x")
+    for path, text in ignores.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+
+
+def test_gitignore_is_respected_with_and_without_git(tmp_path):
+    import shutil
+    import subprocess
+    plain, repo = tmp_path / "plain", tmp_path / "repo"
+    for root in (plain, repo):
+        _write_tree(root, GITIGNORE_FILES, GITIGNORE_CASES)
+    expected = ["a.csv", "data/clean.csv", "keep.log", "sub/global.csv", "sub/secret.txt"]   # no .gitignore files
+    assert sorted(dp.list_files(plain)) == sorted(expected)                 # .gitignore parsed directly
+    if shutil.which("git"):
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        assert sorted(dp.list_files(repo)) == sorted(expected)              # the same through git
+    assert ".venv/lib/z.py" not in dp.list_files(plain, gitignore=False)    # .venv is always left out
+    assert "x.log" in dp.list_files(plain, gitignore=False)
+
+
+@resp_lib.activate
+def test_send_tree_posts_the_listing_gzipped(package):
+    import gzip
+    root, manifest = package
+    (root / ".gitignore").write_text("README.md\n")
+    resp_lib.add(resp_lib.POST, f"{_BASE_PROD}/datasets/trees/",
+                 json={"package": 7, "dataset": "h2-test", "files": 4, "selected": 3, "has_zip": False}, status=201)
+    result = dp.send_tree(root, PrismaAPIv2(key="k"), manifest=manifest, tags="T")
+    assert result["package"] == 7 and result["ok"]
+    request = resp_lib.calls[0].request
+    body = request.body
+    tree = json.loads(gzip.decompress(body[body.index(b"\x1f\x8b"):body.rindex(b"\r\n--")]))
+    paths = {f["path"] for f in tree["files"]}
+    assert "README.md" not in paths and ".gitignore" not in paths and "Data/features.csv" in paths
+    assert b'"dataset": "h2-test"' in body and b'"tags": ["T"]' in body
+
+
+def test_send_tree_without_a_manifest_needs_a_slug(tmp_path):
+    (tmp_path / "a.csv").write_text("x")
+    with pytest.raises(ValueError, match="--dataset"):
+        dp.send_tree(tmp_path, api=PrismaAPIv2(key="k"))
+
+
+def test_pack_sends_only_ticked_files(package, tmp_path):
+    root, manifest = package
+    (root / "Data/new.csv").write_text("MOF\n")                     # appeared after the tree was sent
+    selection = {"package": 42, "columns": ["path", "integrated", "exclude_from_zenodo", "status"],
+                 "files": [["Data/features.csv", True, False, "read"],
+                           ["TEA/Case 1/2_cycle/results.csv", False, False, "read"],     # unticked
+                           ["Data/tea.yaml", True, False, "read"],
+                           ["README.md", True, False, "unmentioned"],                    # ticked, but unread
+                           ["Results/fig.pdf", False, False, "skipped"]]}
+    out = tmp_path / "pkg.zip"
+    report = dp.pack(root, manifest, out, selection=selection)
+    assert report["ok"], report["errors"]                           # an all-unticked source is no error
+    with zipfile.ZipFile(out) as zf:
+        names = set(zf.namelist())
+        packed = yaml.safe_load(zf.read(dp.MANIFEST_NAME))
+    assert names == {dp.MANIFEST_NAME, dp.SOURCE_TREE_NAME, "Data/features.csv", "Data/tea.yaml"}
+    assert packed["package"]["tree_package"] == 42
+    text = "\n".join(report["warnings"])
+    assert "newer than tree #42" in text and "Data/new.csv" in text
+    assert "not read by any manifest source" in text and "README.md" in text
+    assert dp.packed_tree(out) == 42
+
+
+@resp_lib.activate
+def test_upload_attaches_to_the_tree_it_was_packed_from(package, tmp_path):
+    root, manifest = package
+    out = tmp_path / "pkg.zip"
+    dp.pack(root, manifest, out, selection={"package": 9, "columns": ["path", "integrated"],
+                                            "files": [["Data/features.csv", True]]})
+    resp_lib.add(resp_lib.POST, f"{_BASE_PROD}/datasets/ingest/", json={"ok": True},
+                 match=[resp_lib.matchers.query_param_matcher({"dry_run": "true", "package": "9"})])
+    assert dp.upload(out, api=PrismaAPIv2(key="k")) == {"ok": True}
