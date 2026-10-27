@@ -18,7 +18,7 @@ Command line, from your dataset folder::
     prisma-dataset guide                       # the manifest format
     prisma-dataset install-skill .             # a Claude Code skill that drafts the manifest with you
     prisma-dataset targets --prod              # what the platform can store, with fields and units
-    prisma-dataset tree . --prod --dataset <slug>   # send the file listing; tick files on the platform
+    prisma-dataset tree . --prod --dataset <slug>   # send the folder structure; tick files on the platform
     prisma-dataset send . --prod --package <id>     # pack the ticked files, dry run, then write on confirm
     prisma-dataset validate . --prod           # check the manifest against the ticked files and the targets
     prisma-dataset pack . --prod --out ../my_dataset.zip   # only the ticked files
@@ -62,14 +62,11 @@ SKIP = "skip"
 ROW_KINDS = {"rows", "run_rows"}
 DOCS = Path(__file__).resolve().parent / "dataset_docs"
 FORMATS = {".csv": "csv", ".json": "json", ".yaml": "yaml", ".yml": "yaml"}
-#: Extra ignore rules for the platform only, in .gitignore syntax (on top of .gitignore).
-IGNORE_FILE = ".prisma_ignore"
-#: When present, the dataset is exactly the files it matches (.gitignore syntax),
-#: whether or not git ignores them; .prisma_ignore still applies on top.
+#: Platform settings file of a dataset folder; housekeeping, never listed as data.
 INCLUDE_FILE = ".prisma_include"
 _SKIP_DIR_NAMES = {".git", ".venv", "__pycache__", "__MACOSX", ".ipynb_checkpoints"}
 # Folder housekeeping, not data.
-_SKIP_FILE_NAMES = {".DS_Store", "Thumbs.db", ".gitignore", IGNORE_FILE, INCLUDE_FILE}
+_SKIP_FILE_NAMES = {".DS_Store", "Thumbs.db", ".gitignore", INCLUDE_FILE}
 _TOKEN = re.compile(r"(\{\w+\}|\*\*/|\*\*|\*|\?)")
 
 csv.field_size_limit(min(sys.maxsize, 2 ** 31 - 1))
@@ -108,7 +105,11 @@ def _clutter(path: str) -> bool:
 
 
 def _git_files(root: Path) -> list[str] | None:
-    """Files git would keep under root (tracked or untracked, minus .gitignore'd); None outside a repo."""
+    """Files under root that no .gitignore excludes (tracked or untracked); None outside a repo.
+
+    Only .gitignore files count, not .git/info/exclude or a global excludes
+    file, so a folder lists the same inside a repository as outside one.
+    """
     def git(*args: str) -> list[str] | None:
         try:
             out = subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=True, timeout=300).stdout
@@ -117,18 +118,18 @@ def _git_files(root: Path) -> list[str] | None:
         return [p for p in out.decode("utf-8", "surrogateescape").split("\0") if p]
     if git("rev-parse", "--is-inside-work-tree") is None:
         return None
-    kept = git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
-    ignored = git("ls-files", "-z", "--cached", "--ignored", "--exclude-standard")   # tracked, but ignored now
+    kept = git("ls-files", "-z", "--cached", "--others", "--exclude-per-directory=.gitignore")
+    ignored = git("ls-files", "-z", "--cached", "--ignored", "--exclude-per-directory=.gitignore")   # tracked, but ignored now
     if kept is None:
         return None
     drop = set(ignored or [])
     return [p for p in kept if p not in drop and (root / p).is_file()]
 
 
-def _gitignore_rules(root: Path, name: str = ".gitignore") -> list[tuple[str, re.Pattern, bool, bool]]:
-    """(base dir, regex, negated, dir_only) for every line of the ``name`` files under root, outermost first."""
+def _gitignore_rules(root: Path) -> list[tuple[str, re.Pattern, bool, bool]]:
+    """(base dir, regex, negated, dir_only) for every .gitignore line under root, outermost first."""
     rules = []
-    for gi in sorted(root.rglob(name), key=lambda p: len(p.parts)):
+    for gi in sorted(root.rglob(".gitignore"), key=lambda p: len(p.parts)):
         if any(part in _SKIP_DIR_NAMES for part in gi.relative_to(root).parts[:-1]):
             continue
         base = gi.parent.relative_to(root).as_posix()
@@ -168,40 +169,18 @@ def _ignored_by_rules(path: str, rules) -> bool:
     return False
 
 
-def _included_by_rules(path: str, rules) -> bool:
-    """Whether a .prisma_include matches path: the deepest matching line wins, so
-    ``data/`` then ``!data/tmp.csv`` takes every file in data/ except tmp.csv."""
-    parts = PurePosixPath(path).parts
-    verdict = False
-    for depth in range(1, len(parts) + 1):
-        candidate, is_dir = "/".join(parts[:depth]), depth < len(parts)
-        for base, regex, negated, dir_only in rules:
-            if base and not candidate.startswith(base + "/"):
-                continue
-            rel = candidate[len(base) + 1:] if base else candidate
-            if (is_dir or not dir_only) and regex.match(rel):
-                verdict = not negated
-    return verdict
-
-
 def list_files(root: Path, gitignore: bool = True) -> list[str]:
     """
     Every file of the dataset folder (POSIX paths relative to root).
 
     Leaves out VCS, virtualenv (.venv) and cache folders, OS clutter, the
-    manifest itself and, with ``gitignore`` (default), whatever the folder's
-    .gitignore files exclude: through git in a repository (so nested and
-    global ignore files count, and tracked files that are now ignored drop
-    out), otherwise by reading the .gitignore files directly.
-
-    Two optional files, in .gitignore syntax, choose files for the platform
-    only: ``.prisma_include`` makes the dataset exactly the files it matches
-    (instead of .gitignore, so it can bring in data git ignores), and
-    ``.prisma_ignore`` then leaves out what it matches.
+    manifest and .prisma_include themselves and, with ``gitignore`` (default),
+    whatever the folder's .gitignore files exclude (nested ones too): through
+    git in a repository (tracked files that are now ignored drop out),
+    otherwise by reading the .gitignore files directly.  No other ignore file
+    counts.
     """
     root = Path(root)
-    include = _gitignore_rules(root, INCLUDE_FILE)
-    gitignore = gitignore and not include
     files = _git_files(root) if gitignore else None
     if files is None:
         files = []
@@ -213,11 +192,6 @@ def list_files(root: Path, gitignore: bool = True) -> list[str]:
             rules = _gitignore_rules(root)
             if rules:
                 files = [f for f in files if not _ignored_by_rules(f, rules)]
-    if include:
-        files = [f for f in files if _included_by_rules(f, include)]
-    ignore = _gitignore_rules(root, IGNORE_FILE)
-    if ignore:
-        files = [f for f in files if not _ignored_by_rules(f, ignore)]
     return sorted(f for f in files if not _clutter(f))
 
 
@@ -495,27 +469,33 @@ def manifest_or_none(root: Path, manifest: str | Path | None = None) -> tuple[Pa
     return path, load_manifest(path)
 
 
-def send_tree(root: str | Path, api: Any, manifest: str | Path | None = None, dataset: str | None = None,
-              tags: list[str] | str | None = None, package: int | None = None) -> dict:
-    """
-    Step 1: send the folder's file listing (no data) to the platform.
+def folder_tree(root: str | Path) -> dict:
+    """The folder's structure: the path and size of every file list_files keeps, nothing else."""
+    root = Path(root)
+    entries = [{"path": path, "size": (root / path).stat().st_size} for path in list_files(root)]
+    return {"_schema": SOURCE_TREE_SCHEMA, "root": root.resolve().name, "files": entries,
+            "total_files": len(entries), "total_bytes": sum(e["size"] for e in entries)}
 
-    The platform shows it on its uploads page, where you tick the files to
-    include; ``pack`` then sends only those. The listing respects .gitignore
-    and leaves out .venv. The manifest, if the folder has one yet, shows what
-    each file is for. ``dataset`` is the slug when there is no manifest yet.
-    ``package`` refreshes an earlier tree, keeping its ticks.
+
+def send_tree(root: str | Path, api: Any, dataset: str | None = None, tags: list[str] | str | None = None,
+              package: int | None = None, manifest: str | Path | None = None) -> dict:
+    """
+    Step 1: send the folder's structure to the platform: file paths and sizes only.
+
+    No file contents, zip or manifest are sent. The listing follows the
+    folder's .gitignore files and leaves out .venv (see list_files). The
+    platform shows it on the dataset page, where you tick the files to
+    include. ``dataset`` is the slug (else the local manifest's, if there is
+    one; it is only read for that). ``package`` refreshes an earlier tree,
+    keeping its ticks.
     """
     root = Path(root)
-    _, data = manifest_or_none(root, manifest)
-    slug = dataset or ((data or {}).get("dataset") or {}).get("slug")
+    slug = dataset or ((manifest_or_none(root, manifest)[1] or {}).get("dataset") or {}).get("slug")
     if not slug:
-        raise ValueError("no manifest yet: give the dataset slug (--dataset my-dataset)")
-    files = list_files(root)
-    resolved = resolve(data, files)[0] if data else []
-    tree = source_tree(root, files, resolved, {})
-    result = getattr(api, "v2", api).register_dataset_tree(
-        tree, slug, manifest=data, tags=_tag_list(tags), package=package)
+        raise ValueError("give the dataset slug: --dataset my-dataset (the dataset page's "
+                         "'Add un-managed dataset' button gives the whole command)")
+    result = getattr(api, "v2", api).register_dataset_tree(folder_tree(root), slug, tags=_tag_list(tags),
+                                                           package=package)
     result.setdefault("ok", "errors" not in result)
     return result
 
@@ -821,10 +801,9 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--out", default="package.zip", help="Zip to write (put it next to the folder, not in it)")
             p.add_argument("--tag", action="append", default=[], metavar="NAME",
                            help="Tag the dataset's records with NAME (adds to dataset.tag; repeatable)")
-    p = sub.add_parser("tree", help="Step 1: send the folder's file listing (no data) to tick files on the platform")
+    p = sub.add_parser("tree", help="Step 1: send the folder's structure (paths and sizes; no data) to the platform")
     p.add_argument("root", help="The dataset folder")
-    p.add_argument("--manifest", help=f"Manifest file (default: <root>/{MANIFEST_NAME}, if there is one)")
-    p.add_argument("--dataset", metavar="SLUG", help="The dataset slug (needed when there is no manifest yet)")
+    p.add_argument("--dataset", metavar="SLUG", help="The dataset slug (from the dataset page's command)")
     p.add_argument("--tag", action="append", default=[], metavar="NAME", help="Tag the upload record (repeatable)")
     p.add_argument("--package", type=int, metavar="ID", help="Refresh this registered tree, keeping its ticks")
     server_flags(p, required=True)
@@ -894,8 +873,7 @@ def main(argv: list[str] | None = None) -> int:
     flag = "--dev" if getattr(args, "dev", False) else "--prod"
     if args.command == "tree":
         try:
-            report = send_tree(args.root, _client(args.dev, args.prod), args.manifest, args.dataset,
-                               args.tag, args.package)
+            report = send_tree(args.root, _client(args.dev, args.prod), args.dataset, args.tag, args.package)
         except ValueError as exc:
             print(exc, file=sys.stderr)
             return 1
@@ -911,10 +889,8 @@ def main(argv: list[str] | None = None) -> int:
                   f"{report['selected']} ticked.\n"
                   f"Check and tick the files at {report.get('url', 'the platform')} (View folder tree), then send them:\n"
                   f"  prisma-dataset send {args.root} {flag} --package {report['package']}")
-            if manifest_or_none(Path(args.root), args.manifest)[1] is None:
-                print("\n" + manifest_help() + "\n"
-                      f"Then resend the tree to show what each file is for (ticks are kept):\n"
-                      f"  prisma-dataset tree {args.root} {flag} --package {report['package']}")
+            if manifest_or_none(Path(args.root))[1] is None:
+                print("\n" + manifest_help())
             return 0
     elif args.command == "send":
         shown = []

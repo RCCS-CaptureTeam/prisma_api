@@ -333,20 +333,25 @@ def test_send_tree_posts_the_listing_gzipped(package):
     (root / ".gitignore").write_text("README.md\n")
     resp_lib.add(resp_lib.POST, f"{_BASE_PROD}/datasets/trees/",
                  json={"package": 7, "dataset": "h2-test", "files": 4, "selected": 3, "has_zip": False}, status=201)
-    result = dp.send_tree(root, PrismaAPIv2(key="k"), manifest=manifest, tags="T")
+    (root / dp.MANIFEST_NAME).write_text(yaml.safe_dump(MANIFEST))
+    result = dp.send_tree(root, PrismaAPIv2(key="k"), dataset="h2-test", tags="T")
     assert result["package"] == 7 and result["ok"]
     request = resp_lib.calls[0].request
     body = request.body
     tree = json.loads(gzip.decompress(body[body.index(b"\x1f\x8b"):body.rindex(b"\r\n--")]))
     paths = {f["path"] for f in tree["files"]}
     assert "README.md" not in paths and ".gitignore" not in paths and "Data/features.csv" in paths
+    assert dp.MANIFEST_NAME not in paths
+    # The structure only: path and size per file, and no manifest or file content.
+    assert {tuple(sorted(f)) for f in tree["files"]} == {("path", "size")}
     assert b'"dataset": "h2-test"' in body and b'"tags": ["T"]' in body
+    assert b"H2 Test" not in body and b'"manifest": null' in body
 
 
 def test_send_tree_without_a_manifest_needs_a_slug(tmp_path):
     (tmp_path / "a.csv").write_text("x")
     with pytest.raises(ValueError, match="--dataset"):
-        dp.send_tree(tmp_path, api=PrismaAPIv2(key="k"))
+        dp.send_tree(tmp_path, PrismaAPIv2(key="k"))
 
 
 def test_pack_sends_only_ticked_files(package, tmp_path):
@@ -383,16 +388,18 @@ def test_upload_attaches_to_the_tree_it_was_packed_from(package, tmp_path):
     assert dp.upload(out, api=PrismaAPIv2(key="k")) == {"ok": True}
 
 
-def test_prisma_ignore_and_include_choose_files_for_the_platform(tmp_path):
-    files = ["a.csv", "notes.txt", "data/big.h5", "data/tmp.csv", "data/keep.csv", "scratch/x.csv"]
-    _write_tree(tmp_path, files, {".gitignore": "*.h5\n", dp.IGNORE_FILE: "scratch/\nnotes.txt\n"})
-    assert dp.list_files(tmp_path) == ["a.csv", "data/keep.csv", "data/tmp.csv"]       # .gitignore, then .prisma_ignore
-    # .prisma_include picks the files instead of .gitignore (so it can bring in *.h5); .prisma_ignore still applies.
-    (tmp_path / dp.INCLUDE_FILE).write_text("data/\n!data/tmp.csv\nscratch/*.csv\n")
-    assert dp.list_files(tmp_path) == ["data/big.h5", "data/keep.csv"]
-    (tmp_path / dp.IGNORE_FILE).unlink()
-    assert dp.list_files(tmp_path) == ["data/big.h5", "data/keep.csv", "scratch/x.csv"]
-    assert not {dp.IGNORE_FILE, dp.INCLUDE_FILE} & set(dp.list_files(tmp_path, gitignore=False))
+def test_only_gitignore_files_choose_the_listing(tmp_path):
+    import shutil
+    import subprocess
+    files = ["a.csv", "notes.txt", "data/big.h5", "scratch/x.csv", ".prisma_ignore", ".prisma_include"]
+    _write_tree(tmp_path, files, {".gitignore": "*.h5\n", ".prisma_ignore": "scratch/\n", ".prisma_include": "data/\n"})
+    expected = [".prisma_ignore", "a.csv", "notes.txt", "scratch/x.csv"]     # .prisma_ignore is just a file now
+    assert dp.list_files(tmp_path) == expected
+    if shutil.which("git"):
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        (tmp_path / ".git/info").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".git/info/exclude").write_text("notes.txt\n")             # not a .gitignore: no effect
+        assert dp.list_files(tmp_path) == expected
 
 
 def test_send_without_a_manifest_says_how_to_write_one(tmp_path):
@@ -442,7 +449,7 @@ def test_tree_command_prints_the_send_command_and_the_manifest_step(tmp_path, ca
     assert dp.main(["tree", str(tmp_path), "--prod", "--dataset", "new-set"]) == 0
     out = capsys.readouterr().out
     assert f"prisma-dataset send {tmp_path} --prod --package 5" in out
-    assert "install-skill" in out and f"prisma-dataset tree {tmp_path} --prod --package 5" in out
+    assert "install-skill" in out
 
 
 @resp_lib.activate

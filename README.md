@@ -132,18 +132,13 @@ Send a folder of your own results (CSV, JSON or YAML, organised any way) to the 
    python -c "import prisma_api; prisma_api.init()"
    ```
 2. **Find the dataset on the platform.** Data always goes to a dataset that already exists there. If yours doesn't, create it first on the web portal (from its project's page). On the dataset's page, **Add un-managed dataset** gives you the command for step 4, with the dataset's slug and a tag for its records.
-3. **Choose which files belong to the dataset** (optional). The listing follows your `.gitignore` and always leaves out `.venv`, `.git` and cache folders. Two more files, in `.gitignore` syntax, apply to the platform only:
-   - `.prisma_ignore`: also leave these out.
-   - `.prisma_include`: the dataset is exactly the files this matches, even ones git ignores; `.prisma_ignore` still applies.
-4. **Send the folder tree.** This is only the list of files, no data. In your folder, paste the command from step 2:
+3. **Leave files out** (optional). The listing skips whatever your `.gitignore` files match, and always leaves out `.venv`, `.git` and cache folders. No other ignore file counts.
+4. **Send the folder tree.** This sends only the folder structure: each file's path and size. No file contents, zip or manifest are sent. In your folder, paste the command from step 2:
    ```bash
    cd my_dataset_folder
    prisma-dataset tree . --prod --dataset my-dataset --tag "My dataset"
    ```
-5. **Write `prisma_manifest.yaml`.** It says what each file holds and where its data goes; nothing can be sent without it. The easiest way is the Claude Code skill: run `prisma-dataset install-skill .`, start `claude` in the folder and type `/prisma-dataset`. To write it yourself, read `prisma-dataset guide` and `prisma-dataset targets --prod`. Then resend the tree, so the platform shows what each file is for (your ticks are kept):
-   ```bash
-   prisma-dataset tree . --prod --package <id>
-   ```
+5. **Write `prisma_manifest.yaml`.** It says what each file holds and where its data goes; nothing can be sent without it. The easiest way is the Claude Code skill: run `prisma-dataset install-skill .`, start `claude` in the folder and type `/prisma-dataset`. To write it yourself, read `prisma-dataset guide` and `prisma-dataset targets --prod`.
 6. **Tick the files.** On the dataset's page, open **View folder tree** and tick the files to send. Ticks save automatically.
 7. **Send them.** Copy the command shown above the folder tree. It checks and packs the ticked files, asks the platform for a dry run (nothing is written), shows the report and asks before writing:
    ```bash

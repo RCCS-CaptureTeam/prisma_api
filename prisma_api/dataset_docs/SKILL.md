@@ -63,10 +63,10 @@ prisma-dataset tree . --prod --package <id>   # refresh the user's tree, if they
 prisma-dataset tree . --prod                  # otherwise: a new tree for the manifest's dataset
 ```
 
-The tree is the file listing only. It follows `.gitignore`, `.prisma_ignore` and
-`.prisma_include`, and leaves out `.venv`. If files that should be in the dataset are
-missing, or junk is listed, suggest lines for `.prisma_ignore` or `.prisma_include`
-rather than moving files. The dataset slug must exist on the platform; if the
+The tree is the folder structure only: paths and sizes, no contents or manifest.
+It follows the folder's `.gitignore` files and leaves out `.venv`. If junk is
+listed, suggest `.gitignore` lines rather than moving files; if files that should
+be in the dataset are missing, check whether a `.gitignore` pattern matches them. The dataset slug must exist on the platform; if the
 server refuses it, ask the user to create the dataset on the web portal or to
 give an existing slug. Don't invent one.
 

@@ -113,12 +113,9 @@ prisma-dataset tree . --prod --dataset <slug> --tag "<tag>"   # the first time: 
 prisma-dataset tree . --prod                                  # later: refresh the dataset's tree, keeping its ticks
 ```
 
-This sends only the folder's file listing, no data. The dataset must already exist on the platform; create it on the web portal first if it doesn't. A tag already used by another dataset is refused, since its records would show in both.
+This sends only the folder structure: each file's path and size. No file contents, zip or manifest are sent. The dataset must already exist on the platform; create it on the web portal first if it doesn't. A tag already used by another dataset is refused, since its records would show in both.
 
-The listing leaves out `.venv`, `.git` and cache folders, and the files your `.gitignore` excludes. Two optional files in `.gitignore` syntax apply to the platform only:
-
-- `.prisma_ignore`: also leave these files out.
-- `.prisma_include`: the dataset is exactly the files this matches, even ones git ignores. `.prisma_ignore` still applies on top.
+The listing leaves out `.venv`, `.git` and cache folders, and whatever the folder's `.gitignore` files match. No other ignore file counts.
 
 The command prints a link to the dataset's page. There, **View folder tree** opens the folder, with two checkboxes per file:
 
