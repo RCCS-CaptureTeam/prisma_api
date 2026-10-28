@@ -132,21 +132,24 @@ Send a folder of your own results (CSV, JSON or YAML, organised any way) to the 
    python -c "import prisma_api; prisma_api.init()"
    ```
 2. **Find the dataset on the platform.** Data always goes to a dataset that already exists there. If yours doesn't, create it first on the web portal (from its project's page). On the dataset's page, **Add un-managed dataset** gives you the command for step 4, with the dataset's slug and a tag for its records.
-3. **Leave files out** (optional). The listing skips whatever your `.gitignore` files match, and always leaves out `.venv`, `.git` and cache folders. No other ignore file counts.
+3. **Leave files out** (optional). The listing skips whatever your `.gitignore` files match, and always leaves out `.git` and cache folders and anything named `*.claude`, `*.venv` or `*.DS_Store` (such as the `.claude` folder the skill is installed in), even if `.gitignore` doesn't list them. No other ignore file counts.
 4. **Send the folder tree.** This sends only the folder structure: each file's path and size. No file contents, zip or manifest are sent. In your folder, paste the command from step 2:
    ```bash
    cd my_dataset_folder
    prisma-dataset tree . --prod --dataset my-dataset --tag "My dataset"
    ```
-5. **Write `prisma_manifest.yaml`.** It says what each file holds and where its data goes; nothing can be sent without it. The easiest way is the Claude Code skill: run `prisma-dataset install-skill .`, start `claude` in the folder and type `/prisma-dataset`. To write it yourself, read `prisma-dataset guide` and `prisma-dataset targets --prod`.
-6. **Tick the files.** On the dataset's page, open **View folder tree** and tick the files to send. Ticks save automatically.
-7. **Send them.** Copy the command shown above the folder tree. It checks and packs the ticked files, asks the platform for a dry run (nothing is written), shows the report and asks before writing:
+5. **Tick the files.** On the dataset's page, open **View folder tree** and tick the files to send. Every file starts unticked; ticks save automatically.
+6. **Build the manifest and send, with Claude Code.** Copy the command shown above the folder tree, which has the dataset's slug and tag. In your folder:
    ```bash
-   prisma-dataset send . --prod --package <id>
+   prisma-dataset install-skill .      # once
+   claude                              # then paste the command, e.g.:
+   /prisma-dataset my-dataset --tag "My dataset" --prod
    ```
-   Fix any errors and repeat until the dry run prints `OK`. Agree your first write with the platform team.
+   Claude writes (or updates) `prisma_manifest.yaml` for the ticked files: what each file holds and where its data goes. It checks the manifest with the platform's dry run (nothing is written) until it is clean, summarises what would be written, and sends the data once you say yes. Agree your first write with the platform team.
 
-When your results change, edit the manifest if needed, resend the tree (`prisma-dataset tree . --prod`), tick any new files, and run `send` again. The platform updates the dataset to match and keeps a version history:
+   To write the manifest yourself, read `prisma-dataset guide` and `prisma-dataset targets --prod`; `prisma-dataset ticked . --prod --dataset my-dataset` lists the ticked files it must cover. Then `prisma-dataset send . --prod` checks and packs the ticked files, shows the dry run and asks before writing.
+
+When your results change, resend the tree if files were added or removed (`prisma-dataset tree . --prod`), tick any new files, and run the Claude Code command (or `send`) again. The platform updates the dataset to match and keeps a version history:
 
 - **Same files, new data:** the tree is refreshed with your ticks kept. If the upload changes any records, the dataset goes up a minor version (1.0 → 1.1). If it changes nothing, the version stays as it is.
 - **Files added or removed:** if the dataset already has data, the platform makes a new major version: a copy of the dataset called `<slug>-v2`, at version 2.0 and tagged `"<tag> v2"`. Its authors, project links and Zenodo record are copied, and your ticks are carried over. The command prints the new tree's id; `send` uploads to it. Your manifest can keep the original slug.
@@ -166,7 +169,7 @@ prisma-dataset upload ../my_dataset.zip --prod --apply   # write
 ```
 `pack` and `upload` take `--tag "Name"` (repeatable) to tag the records with more names than `dataset.tag`.
 
-The same steps are available in Python: `prisma_api.dataset_package.send_tree`, `send`, `fetch_selection`, `validate`, `pack`, `upload` and `load_targets`.
+The same steps are available in Python: `prisma_api.dataset_package.send_tree`, `ticked_files`, `send`, `fetch_selection`, `validate`, `pack`, `upload` and `load_targets`.
 
 ## Return formats
 

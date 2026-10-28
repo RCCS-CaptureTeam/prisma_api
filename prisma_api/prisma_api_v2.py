@@ -3935,8 +3935,10 @@ class PrismaAPIv2:
                               tags: list[str] | None = None, package: int | None = None,
                               timeout: int = 600) -> dict:
         """
-        ``POST /api/v2/datasets/trees/``: send a dataset folder's file listing,
-        before any data, so files can be ticked on the platform's uploads page.
+        ``POST /api/v2/datasets/trees/``: send a dataset folder's structure
+        (paths and sizes), before any data, so files can be ticked on the
+        dataset's page. The platform stores it as a folder tree; no upload
+        record is made until data is sent.
 
         Args:
             tree: A ``prisma.dataset.source_tree.v1`` listing
@@ -3944,11 +3946,11 @@ class PrismaAPIv2:
             dataset: The dataset slug.
             manifest: The folder's manifest, if it has one yet (shows what each
                 file is for).
-            tags: Tag names for the upload record.
+            tags: Tag names for the dataset's records.
             package: Refresh this registered tree, keeping its ticks.
 
         Returns:
-            ``{package, dataset, files, selected, has_zip, url}``, or the
+            ``{package (the tree's id), dataset, files, selected, has_zip, url}``, or the
             server's report with ``ok: false`` and ``errors`` on HTTP 400.
         """
         import gzip

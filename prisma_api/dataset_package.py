@@ -16,9 +16,10 @@ every package in full, is the authority on whether one applies.
 Command line, from your dataset folder::
 
     prisma-dataset guide                       # the manifest format
-    prisma-dataset install-skill .             # a Claude Code skill that drafts the manifest with you
+    prisma-dataset install-skill .             # a Claude Code skill that builds the manifest and sends the data
     prisma-dataset targets --prod              # what the platform can store, with fields and units
     prisma-dataset tree . --prod --dataset <slug>   # send the folder structure; tick files on the platform
+    prisma-dataset ticked . --prod --dataset <slug> # the files ticked on the platform (what the manifest covers)
     prisma-dataset send . --prod --package <id>     # pack the ticked files, dry run, then write on confirm
     prisma-dataset validate . --prod           # check the manifest against the ticked files and the targets
     prisma-dataset pack . --prod --out ../my_dataset.zip   # only the ticked files
@@ -26,7 +27,9 @@ Command line, from your dataset folder::
     prisma-dataset upload ../my_dataset.zip --prod --apply   # write
 
 ``--dev`` instead of ``--prod`` uses a local development server. ``send`` does
-the pack and upload steps in one go.
+the pack and upload steps in one go. With the skill installed, Claude Code does
+the manifest and the send in one command: ``/prisma-dataset <slug> --tag "<tag>" --prod``
+(the dataset page shows it above the folder tree).
 
 Path patterns: ``{name}`` captures part of one path segment (and may be reused
 in run keys), ``*`` matches within a segment, ``**/`` any number of folders.
@@ -35,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fnmatch
 import getpass
 import hashlib
 import json
@@ -53,7 +57,7 @@ import yaml
 
 MANIFEST_SCHEMA = "prisma.dataset.ingest.v1"
 MANIFEST_NAME = "prisma_manifest.yaml"
-#: Listing of the whole source folder (packed or not), shown on the platform's uploads page.
+#: Listing of the whole source folder (packed or not), shown with the upload on the platform.
 SOURCE_TREE_NAME = "prisma_source_tree.json"
 SOURCE_TREE_SCHEMA = "prisma.dataset.source_tree.v1"
 #: Format-level target: files deliberately not ingested. Every other target name
@@ -67,6 +71,9 @@ INCLUDE_FILE = ".prisma_include"
 _SKIP_DIR_NAMES = {".git", ".venv", "__pycache__", "__MACOSX", ".ipynb_checkpoints"}
 # Folder housekeeping, not data.
 _SKIP_FILE_NAMES = {".DS_Store", "Thumbs.db", ".gitignore", INCLUDE_FILE}
+#: Folder and file names always left out, whatever .gitignore says (Claude Code
+#: settings and skills, virtualenvs, macOS metadata). Mirrors prisma_cloud's dataset_ingest.
+ALWAYS_SKIP = ("*.claude", "*.venv", "*.DS_Store")
 _TOKEN = re.compile(r"(\{\w+\}|\*\*/|\*\*|\*|\?)")
 
 csv.field_size_limit(min(sys.maxsize, 2 ** 31 - 1))
@@ -98,10 +105,15 @@ def compile_pattern(pattern: str) -> re.Pattern:
 _MANIFEST_NAMES = (MANIFEST_NAME, "prisma_manifest.yml", "prisma_manifest.json")
 
 
+def _always_skipped(name: str) -> bool:
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in ALWAYS_SKIP)
+
+
 def _clutter(path: str) -> bool:
     parts = PurePosixPath(path).parts
     return any(p in _SKIP_DIR_NAMES for p in parts[:-1]) or parts[-1] in _SKIP_FILE_NAMES \
-        or parts[-1].startswith("._") or (len(parts) == 1 and parts[0] in _MANIFEST_NAMES)
+        or parts[-1].startswith("._") or (len(parts) == 1 and parts[0] in _MANIFEST_NAMES) \
+        or any(_always_skipped(p) for p in parts)
 
 
 def _git_files(root: Path) -> list[str] | None:
@@ -174,7 +186,9 @@ def list_files(root: Path, gitignore: bool = True) -> list[str]:
     Every file of the dataset folder (POSIX paths relative to root).
 
     Leaves out VCS, virtualenv (.venv) and cache folders, OS clutter, the
-    manifest and .prisma_include themselves and, with ``gitignore`` (default),
+    manifest and .prisma_include themselves, every folder or file whose name
+    matches ALWAYS_SKIP (``*.claude``, ``*.venv``, ``*.DS_Store``, even if
+    .gitignore lists none of them) and, with ``gitignore`` (default),
     whatever the folder's .gitignore files exclude (nested ones too): through
     git in a repository (tracked files that are now ignored drop out),
     otherwise by reading the .gitignore files directly.  No other ignore file
@@ -185,7 +199,7 @@ def list_files(root: Path, gitignore: bool = True) -> list[str]:
     if files is None:
         files = []
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_NAMES]
+            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_NAMES and not _always_skipped(d)]
             rel = Path(dirpath).relative_to(root)
             files += [str(PurePosixPath(*rel.parts, name)) for name in filenames]
         if gitignore:
@@ -511,6 +525,51 @@ def fetch_selection(api: Any, dataset: str | None = None, package: int | None = 
     return v2.get_dataset_tree(package)
 
 
+def ticked_files(root: str | Path, api: Any, dataset: str | None = None, package: int | None = None) -> dict:
+    """
+    The files ticked "in dataset" in the platform's folder tree: what the manifest must cover.
+
+    ``dataset`` is the slug (else the local manifest's); ``package`` picks a
+    tree (default: the dataset's latest). Returns the tree's id, dataset,
+    title and lineage, ``ticked`` (ticked files present in the folder),
+    ``by_others`` (those of them marked as data by others), ``missing``
+    (ticked but no longer in the folder), ``not_in_tree`` (in the folder but
+    newer than the tree) and ``files`` (the tree's file count). Raises
+    ValueError when there is no tree yet.
+    """
+    root = Path(root)
+    slug = dataset or ((manifest_or_none(root)[1] or {}).get("dataset") or {}).get("slug")
+    if not slug and package is None:
+        raise ValueError("give the dataset slug: --dataset my-dataset")
+    selection = fetch_selection(api, slug, package)
+    if selection is None:
+        raise ValueError(f"no folder tree for dataset '{slug}' on the platform yet: send one first with "
+                         f"'prisma-dataset tree . --dataset {slug} --tag \"<tag>\"' (the dataset page's "
+                         f"'Add un-managed dataset' button gives it), then tick the files to send")
+    ix = {c: i for i, c in enumerate(selection["columns"])}
+    rows = selection["files"]
+    local = set(list_files(root))
+    ticked = sorted(r[ix["path"]] for r in rows if r[ix["integrated"]])
+    zenodo = {r[ix["path"]] for r in rows if r[ix["exclude_from_zenodo"]]}
+    in_tree = {r[ix["path"]] for r in rows}
+    return {
+        "package": selection["package"], "dataset": selection.get("dataset"), "title": selection.get("title"),
+        "note": nothing_ticked(selection) if not ticked else None,
+        "tags": selection.get("tags") or [], "lineage": selection.get("lineage") or [], "files": len(rows),
+        "ticked": [p for p in ticked if p in local],
+        "by_others": [p for p in ticked if p in local and p in zenodo],
+        "missing": [p for p in ticked if p not in local],
+        "not_in_tree": sorted(local - in_tree),
+    }
+
+
+def nothing_ticked(selection: dict) -> str:
+    """What to do when no file of a folder tree is ticked."""
+    return (f"no files are ticked in tree #{selection['package']} (dataset '{selection.get('dataset')}'), so there "
+            f"is nothing to describe or send. Tick the files to send on the dataset's page, in View folder tree, "
+            f"then run this again.")
+
+
 def selection_paths(selection: dict | None) -> tuple[set[str] | None, set[str]]:
     """(ticked paths, all paths in the tree) of a selection, or (None, empty) without one."""
     if not selection:
@@ -547,6 +606,8 @@ def pack(root: str | Path, manifest: str | Path | None = None, out: str | Path =
     root = Path(root)
     all_files = list_files(root)
     ticked, in_tree = selection_paths(selection)
+    if ticked is not None and not ticked:
+        raise ValueError(nothing_ticked(selection))
     excluded = (set(all_files) - ticked) if ticked is not None else set()
     report = validate(root, manifest, targets, excluded)
     if Path(out).resolve().parent == root.resolve() or root.resolve() in Path(out).resolve().parents:
@@ -659,13 +720,19 @@ def packed_tree(zip_path: str | Path) -> int | None:
     return ((data or {}).get("package") or {}).get("tree_package")
 
 
-def manifest_help() -> str:
+def skill_command(dataset: str, tags: list[str] | str | None, flag: str) -> str:
+    """The Claude Code command that builds the manifest and sends the ticked files."""
+    return " ".join([f"/prisma-dataset {dataset}", *(f'--tag "{t}"' for t in _tag_list(tags)), flag])
+
+
+def manifest_help(dataset: str | None = None, tags: list[str] | str | None = None, flag: str = "--prod") -> str:
     """What to do when the folder has no manifest yet."""
+    command = skill_command(dataset, tags, flag) if dataset else f'/prisma-dataset <slug> --tag "<tag>" {flag}'
     return (f"This folder has no {MANIFEST_NAME} yet. The manifest says what each file holds and where it goes "
             "on the platform; no data can be sent without it.\n"
-            "  Draft it with Claude Code:  prisma-dataset install-skill .   then run 'claude' in this folder "
-            "and type /prisma-dataset\n"
-            "  Or write it yourself:       prisma-dataset guide   (the format)")
+            "  Build it and send the data with Claude Code:  prisma-dataset install-skill .   (once), then run "
+            f"'claude' in this folder and type\n      {command}\n"
+            "  Or write it yourself:  prisma-dataset guide   (the format)")
 
 
 def send(root: str | Path, api: Any, manifest: str | Path | None = None, package: int | None = None,
@@ -694,6 +761,8 @@ def send(root: str | Path, api: Any, manifest: str | Path | None = None, package
         raise ValueError(f"tree #{selection['package']} is for dataset '{selection['dataset']}', but "
                          f"{path.name} says '{slug}'. Use that dataset's slug in the manifest, or send a tree "
                          f"for '{slug}' from its own page on the platform.")
+    if not selection_paths(selection)[0]:
+        raise ValueError(nothing_ticked(selection))
     tmp = tempfile.TemporaryDirectory() if out is None else None
     try:
         zip_path = Path(tmp.name) / f"{slug}.zip" if tmp else Path(out)
@@ -740,11 +809,11 @@ def guide() -> str:
 
 def install_skill(folder: str | Path = ".", force: bool = False) -> Path:
     """
-    Copy the Claude Code skill for writing a manifest into ``<folder>/.claude/skills/prisma-dataset/``.
+    Copy the Claude Code skill that builds the manifest and sends the data into ``<folder>/.claude/skills/prisma-dataset/``.
 
-    Run Claude Code in the dataset folder afterwards and ask it to prepare the
-    folder for PrISMa (or type ``/prisma-dataset``). The manifest guide is
-    copied next to the skill so it works offline.
+    Run Claude Code in the dataset folder afterwards and type the command the
+    dataset page shows above its folder tree, ``/prisma-dataset <slug> --tag
+    "<tag>" --prod``. The manifest guide is copied next to the skill.
     """
     dest = Path(folder) / ".claude" / "skills" / "prisma-dataset"
     if (dest / "SKILL.md").exists() and not force:
@@ -804,8 +873,15 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("tree", help="Step 1: send the folder's structure (paths and sizes; no data) to the platform")
     p.add_argument("root", help="The dataset folder")
     p.add_argument("--dataset", metavar="SLUG", help="The dataset slug (from the dataset page's command)")
-    p.add_argument("--tag", action="append", default=[], metavar="NAME", help="Tag the upload record (repeatable)")
+    p.add_argument("--tag", action="append", default=[], metavar="NAME",
+                   help="Tag the dataset's records with NAME (repeatable)")
     p.add_argument("--package", type=int, metavar="ID", help="Refresh this registered tree, keeping its ticks")
+    server_flags(p, required=True)
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("ticked", help="The files ticked in the platform's folder tree: what the manifest must cover")
+    p.add_argument("root", help="The dataset folder")
+    p.add_argument("--dataset", metavar="SLUG", help="The dataset slug (default: the manifest's)")
+    p.add_argument("--package", type=int, metavar="ID", help="This folder tree (default: the dataset's latest)")
     server_flags(p, required=True)
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("send", help="Step 2: pack the ticked files and upload them (dry run, then write on confirm)")
@@ -832,7 +908,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--save", help="Also save the catalogue to this JSON file (for offline validate)")
     p.add_argument("--json", action="store_true")
     sub.add_parser("guide", help="Print the manifest format guide")
-    p = sub.add_parser("install-skill", help="Add a Claude Code skill that drafts the manifest with you")
+    p = sub.add_parser("install-skill", help="Add a Claude Code skill that builds the manifest and sends the data")
     p.add_argument("folder", nargs="?", default=".", help="The dataset folder (default: here)")
     p.add_argument("--force", action="store_true", help="Replace an existing copy")
     args = parser.parse_args(argv)
@@ -846,7 +922,8 @@ def main(argv: list[str] | None = None) -> int:
         except FileExistsError as exc:
             print(exc, file=sys.stderr)
             return 1
-        print(f"installed: {dest}\nIn that folder, run Claude Code and type /prisma-dataset.")
+        print(f"installed: {dest}\nIn that folder, run 'claude' and type the command shown above the folder tree "
+              f"on the dataset page, e.g.\n  /prisma-dataset my-dataset --tag \"My tag\" --prod")
         return 0
     if args.command == "versions":
         api = _client(args.dev, args.prod)
@@ -887,11 +964,38 @@ def main(argv: list[str] | None = None) -> int:
                       f"Your ticks were carried over.\n")
             print(f"tree #{report['package']} for dataset '{report['dataset']}': {report['files']} files, "
                   f"{report['selected']} ticked.\n"
-                  f"Check and tick the files at {report.get('url', 'the platform')} (View folder tree), then send them:\n"
-                  f"  prisma-dataset send {args.root} {flag} --package {report['package']}")
-            if manifest_or_none(Path(args.root))[1] is None:
-                print("\n" + manifest_help())
+                  f"Tick the files to send at {report.get('url', 'the platform')} (View folder tree). Then, in this "
+                  f"folder, build the manifest and send them with Claude Code:\n"
+                  f"  prisma-dataset install-skill {args.root}     (once)\n"
+                  f"  claude     then type:  {skill_command(report['dataset'], report.get('tags') or args.tag, flag)}")
             return 0
+    elif args.command == "ticked":
+        try:
+            report = ticked_files(args.root, _client(args.dev, args.prod), args.dataset, args.package)
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(report, indent=2))
+            return 0
+        print(f"tree #{report['package']} for dataset '{report['dataset']}'"
+              + (f" ({report['title']})" if report.get("title") else "")
+              + (f", tag{'s' if len(report['tags']) > 1 else ''} {', '.join(report['tags'])}" if report["tags"] else "")
+              + f": {len(report['ticked'])} of {report['files']} files ticked")
+        if report["note"]:
+            print(report["note"])
+        for path in report["ticked"]:
+            print(f"  {path}" + ("    [by others]" if path in report["by_others"] else ""))
+        if report["missing"]:
+            print(f"ticked but no longer in the folder ({len(report['missing'])}):")
+            for path in report["missing"]:
+                print(f"  {path}")
+        if report["not_in_tree"]:
+            print(f"in the folder but newer than the tree, so not sent ({len(report['not_in_tree'])}); "
+                  f"resend the tree to tick them: prisma-dataset tree {args.root} {flag}")
+            for path in report["not_in_tree"][:50]:
+                print(f"  {path}")
+        return 0 if report["ticked"] else 1
     elif args.command == "send":
         shown = []
 

@@ -253,7 +253,9 @@ def test_targets_command_fetches_and_saves(tmp_path, capsys, monkeypatch):
 def test_guide_and_skill_ship_with_the_package(tmp_path):
     assert "prisma_manifest.yaml" in dp.guide()
     dest = dp.install_skill(tmp_path)
-    assert (dest / "SKILL.md").read_text().startswith("---\nname: prisma-dataset")
+    skill = (dest / "SKILL.md").read_text()
+    assert skill.startswith("---\nname: prisma-dataset")
+    assert "$ARGUMENTS" in skill and "argument-hint: '<dataset-slug> --tag" in skill
     assert (dest / "manifest_guide.md").exists()
     with pytest.raises(FileExistsError):
         dp.install_skill(tmp_path)
@@ -441,15 +443,16 @@ def test_send_refuses_a_tree_of_another_dataset(package):
 
 
 @resp_lib.activate
-def test_tree_command_prints_the_send_command_and_the_manifest_step(tmp_path, capsys, monkeypatch):
+def test_tree_command_prints_the_claude_command_that_builds_the_manifest_and_sends(tmp_path, capsys, monkeypatch):
     (tmp_path / "a.csv").write_text("x")
     monkeypatch.setattr(dp, "_client", lambda dev, prod: PrismaAPIv2(key="k"))
     resp_lib.add(resp_lib.POST, f"{_BASE_PROD}/datasets/trees/", status=201, json={
-        "package": 5, "dataset": "new-set", "files": 1, "selected": 0, "has_zip": False, "url": "https://x/dataset/new-set/"})
-    assert dp.main(["tree", str(tmp_path), "--prod", "--dataset", "new-set"]) == 0
+        "package": 5, "dataset": "new-set", "files": 1, "selected": 0, "has_zip": False, "tags": ["New Set"],
+        "url": "https://x/dataset/new-set/"})
+    assert dp.main(["tree", str(tmp_path), "--prod", "--dataset", "new-set", "--tag", "New Set"]) == 0
     out = capsys.readouterr().out
-    assert f"prisma-dataset send {tmp_path} --prod --package 5" in out
-    assert "install-skill" in out
+    assert f"prisma-dataset install-skill {tmp_path}" in out
+    assert '/prisma-dataset new-set --tag "New Set" --prod' in out
 
 
 @resp_lib.activate
@@ -478,12 +481,13 @@ def test_tree_command_explains_a_new_major_version(tmp_path, capsys, monkeypatch
     monkeypatch.setattr(dp, "_client", lambda dev, prod: PrismaAPIv2(key="k"))
     resp_lib.add(resp_lib.POST, f"{_BASE_PROD}/datasets/trees/", status=201, json={
         "package": 6, "dataset": "h2-test-v2", "files": 1, "selected": 1, "has_zip": False,
+        "tags": ["H2 Test v2"],
         "bumped": {"from": {"dataset": "h2-test", "version": "1.2"}, "to": {"dataset": "h2-test-v2", "version": "2.0"},
                    "tags": ["H2 Test v2"], "files_added": 1, "files_removed": 3}})
     assert dp.main(["tree", str(tmp_path), "--prod"]) == 0
     out = capsys.readouterr().out
     assert "new major version: dataset 'h2-test-v2' v2.0 (after 'h2-test' v1.2), tagged H2 Test v2" in out
-    assert "--package 6" in out and "install-skill" not in out
+    assert '/prisma-dataset h2-test-v2 --tag "H2 Test v2" --prod' in out
 
 
 @resp_lib.activate
@@ -498,3 +502,66 @@ def test_versions_command_lists_what_each_upload_changed(capsys, monkeypatch):
     assert dp.main(["versions", "h2-test", "--prod"]) == 0
     out = capsys.readouterr().out
     assert "newest version: h2-test-v2" in out and "v2.0" in out and "files +1 -3 ~0" in out
+
+
+@resp_lib.activate
+def test_ticked_lists_the_files_the_manifest_must_cover(tmp_path, capsys, monkeypatch):
+    for path in ("a.csv", "b.csv", "plots/p.png", "new.csv"):
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text("x")
+    monkeypatch.setattr(dp, "_client", lambda dev, prod: PrismaAPIv2(key="k"))
+    resp_lib.add(resp_lib.GET, f"{_BASE_PROD}/datasets/trees/", json={"count": 1, "results": [{"package": 7}]})
+    resp_lib.add(resp_lib.GET, f"{_BASE_PROD}/datasets/trees/7/", json={
+        "package": 7, "dataset": "h2-set", "title": "H2 Storage Dataset", "tags": ["H2 Storage"],
+        "lineage": ["h2-set"], "columns": ["path", "integrated", "exclude_from_zenodo", "status"],
+        "files": [["a.csv", True, False, "unmentioned"], ["b.csv", True, True, "unmentioned"],
+                  ["plots/p.png", False, False, "unmentioned"], ["gone.csv", True, False, "unmentioned"]]})
+    report = dp.ticked_files(tmp_path, PrismaAPIv2(key="k"), dataset="h2-set")
+    assert (report["ticked"], report["by_others"], report["missing"], report["not_in_tree"]) == (
+        ["a.csv", "b.csv"], ["b.csv"], ["gone.csv"], ["new.csv"])
+    assert (report["title"], report["tags"], report["files"]) == ("H2 Storage Dataset", ["H2 Storage"], 4)
+
+    assert dp.main(["ticked", str(tmp_path), "--prod", "--dataset", "h2-set"]) == 0
+    out = capsys.readouterr().out
+    assert "tree #7 for dataset 'h2-set' (H2 Storage Dataset), tag H2 Storage: 2 of 4 files ticked" in out
+    assert "  b.csv    [by others]" in out and "  new.csv" in out and "plots/p.png" not in out
+
+
+@resp_lib.activate
+def test_ticked_without_a_tree_says_how_to_send_one(tmp_path, monkeypatch):
+    resp_lib.add(resp_lib.GET, f"{_BASE_PROD}/datasets/trees/", json={"count": 0, "results": []})
+    with pytest.raises(ValueError, match="no folder tree for dataset 'h2-set'"):
+        dp.ticked_files(tmp_path, PrismaAPIv2(key="k"), dataset="h2-set")
+
+
+@resp_lib.activate
+def test_nothing_is_described_or_sent_when_no_file_is_ticked(package, capsys, monkeypatch):
+    root, manifest = package
+    resp_lib.add(resp_lib.GET, f"{_BASE_PROD}/datasets/trees/", json={"count": 1, "results": [{"package": 26}]})
+    resp_lib.add(resp_lib.GET, f"{_BASE_PROD}/datasets/trees/26/", json={
+        "package": 26, "dataset": "h2-test", "lineage": ["h2-test"],
+        "columns": ["path", "integrated", "exclude_from_zenodo", "status"],
+        "files": [["Data/features.csv", False, False, "unmentioned"]]})
+    monkeypatch.setattr(dp, "_client", lambda dev, prod: PrismaAPIv2(key="k"))
+    assert dp.main(["ticked", str(root), "--prod", "--dataset", "h2-test"]) == 1
+    assert "no files are ticked in tree #26" in capsys.readouterr().out
+    with pytest.raises(ValueError, match="no files are ticked in tree #26"):
+        dp.send(root, PrismaAPIv2(key="k"), manifest=manifest)
+    assert not [c for c in resp_lib.calls if "/ingest/" in c.request.url]          # nothing was uploaded
+
+
+def test_claude_virtualenv_and_ds_store_names_are_always_left_out(tmp_path):
+    import shutil
+    import subprocess
+    files = [".claude/skills/prisma-dataset/SKILL.md", "sub/.claude/settings.json", "notes.claude",
+             "env.venv/lib/a.py", "sub/.DS_Store", "old.DS_Store", "data/a.csv", "claude_notes.md", "data/x.claude.csv"]
+    kept = ["claude_notes.md", "data/a.csv", "data/x.claude.csv"]
+    plain, repo = tmp_path / "plain", tmp_path / "repo"
+    for root in (plain, repo):
+        _write_tree(root, files, {".gitignore": "!.claude\n*.log\n"})          # not ignored by .gitignore
+    assert dp.list_files(plain) == kept
+    assert dp.list_files(plain, gitignore=False) == kept
+    if shutil.which("git"):
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        assert dp.list_files(repo) == kept
+    assert [f["path"] for f in dp.folder_tree(plain)["files"]] == kept

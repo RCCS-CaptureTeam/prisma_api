@@ -115,22 +115,34 @@ prisma-dataset tree . --prod                                  # later: refresh t
 
 This sends only the folder structure: each file's path and size. No file contents, zip or manifest are sent. The dataset must already exist on the platform; create it on the web portal first if it doesn't. A tag already used by another dataset is refused, since its records would show in both.
 
-The listing leaves out `.venv`, `.git` and cache folders, and whatever the folder's `.gitignore` files match. No other ignore file counts.
+The listing always leaves out `.git` and cache folders and anything named `*.claude`, `*.venv` or `*.DS_Store` (folders or files), even if `.gitignore` doesn't list them, and whatever the folder's `.gitignore` files match. No other ignore file counts.
 
 The command prints a link to the dataset's page. There, **View folder tree** opens the folder, with two checkboxes per file:
 
-- **In dataset:** only ticked files are packed and sent. Files the manifest reads start ticked; you can untick any of them, or tick others.
+- **In dataset:** only ticked files are packed and sent. Every file starts unticked.
 - **By others:** the data is not yours to republish, so it stays out of the platform's Zenodo publications.
 
 Ticks save as you click.
 
-## 5. Check, pack, send
+## 5. Build the manifest and send, with Claude Code
+
+The folder tree on the platform shows a command for Claude Code above it. In your folder:
+
+```bash
+prisma-dataset install-skill .      # once
+claude                              # then paste the command, e.g.:
+/prisma-dataset co2-screening-2026 --tag "CO2 Screening 2026" --prod
+```
+
+Claude lists the ticked files (`prisma-dataset ticked . --prod --dataset <slug>`) and writes or updates `prisma_manifest.yaml` for them, using that slug and tag. It then checks the manifest with the platform's dry run until it is clean, summarises what would be written, and sends the data once you say yes.
+
+## 6. Check, pack, send by hand
 
 ```bash
 prisma-dataset send . --prod --package <id>
 ```
 
-`send` validates and packs the ticked files, asks the platform for a dry run, prints the report and asks before writing (`--apply` writes without asking). The command, with the tree's id, is shown above the folder tree on the platform. It does the steps below in one go:
+`send` validates and packs the ticked files, asks the platform for a dry run, prints the report and asks before writing (`--apply` writes without asking). It does the steps below in one go:
 
 ```bash
 prisma-dataset validate . --prod                   # local check of the ticked files against the platform's targets
