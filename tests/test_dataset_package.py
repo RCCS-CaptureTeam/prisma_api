@@ -565,3 +565,26 @@ def test_claude_virtualenv_and_ds_store_names_are_always_left_out(tmp_path):
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         assert dp.list_files(repo) == kept
     assert [f["path"] for f in dp.folder_tree(plain)["files"]] == kept
+
+
+def test_columns_named_by_catalogue_column_keys_are_not_reported_unmapped(tmp_path, capsys):
+    """An isotherm source reads its pressure, basis and quality columns through its own keys."""
+    catalogue = {
+        **CATALOGUE,
+        "targets": {**CATALOGUE["targets"], "isotherms": {
+            "kind": "run_rows", "description": "isotherm points", "fields": None,
+            "keys": COMMON_KEYS + ["id_column", "ignore_columns", "run", "pressure_columns", "basis_column",
+                                   "quality_column", "component", "temperature_K"],
+            "column_keys": {"pressure_columns": "keys", "basis_column": "value", "quality_column": "value"}}},
+    }
+    (tmp_path / "iso.csv").write_text("MOF,5_bar,170_bar,flag,source,extra\nA,1,2,,gcmc,x\n")
+    source = {"id": "iso", "path": "iso.csv", "target": "isotherms", "run": "r", "component": "H2",
+              "temperature_K": 223, "pressure_columns": {"5_bar": 5, "170_bar": 170},
+              "basis_column": "source", "quality_column": "flag"}
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(yaml.safe_dump({**MANIFEST, "runs": [{"key": "r", "name": "R"}], "sources": [source]}))
+    errors = dp.validate(tmp_path, manifest, catalogue)["errors"]
+    assert [e for e in errors if "not mapped" in e] == ["source 'iso': column 'extra' in 'iso.csv' is not mapped; "
+                                                        "add it to 'columns' or 'ignore_columns'"]
+    dp._print_targets(catalogue)
+    assert "columns: named by pressure_columns, basis_column, quality_column" in capsys.readouterr().out

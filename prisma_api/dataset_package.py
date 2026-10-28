@@ -414,7 +414,8 @@ def validate(root: str | Path, manifest: str | Path | None = None,
             fields = spec.get("fields")
             mapped = {str(c).strip() for c in (src.get("columns") or {})} \
                 | {str(c).strip() for c in src.get("ignore_columns") or []} \
-                | {str(c).strip() for c in (src.get("properties_columns") or {})} | {id_col}
+                | {str(c).strip() for c in (src.get("properties_columns") or {})} | {id_col} \
+                | _columns_named_by_keys(src, spec)
             for f in item["files"]:
                 fmt = src.get("format") or FORMATS.get(PurePosixPath(f["path"]).suffix.lower())
                 try:
@@ -831,13 +832,31 @@ def _client(dev: bool, prod: bool):
     return init(local_dev=dev)
 
 
+def _columns_named_by_keys(src: dict, spec: dict) -> set[str]:
+    """Columns a source reads through keys other than `columns` (the catalogue's ``column_keys``).
+
+    E.g. an isotherm source names its pressure columns in ``pressure_columns`` (keys), and
+    its ``basis_column`` and ``quality_column`` (values).
+    """
+    named: set[str] = set()
+    for key, how in (spec.get("column_keys") or {}).items():
+        value = src.get(key)
+        if how == "keys" and isinstance(value, dict):
+            named.update(str(c).strip() for c in value)
+        elif how == "value" and isinstance(value, str):
+            named.add(value.strip())
+    return named
+
+
 def _print_targets(catalogue: dict) -> None:
     print(f"manifest schema: {catalogue.get('manifest_schema')}")
     for name, spec in sorted(catalogue["targets"].items()):
         print(f"\n{name}  [{spec.get('kind')}]  {spec.get('description', '')}")
         fields = spec.get("fields")
         if fields is None:
-            if spec.get("kind") in ROW_KINDS:
+            if spec.get("column_keys"):
+                print(f"  columns: named by {', '.join(spec['column_keys'])} (see the manifest guide)")
+            elif spec.get("kind") in ROW_KINDS:
                 print("  fields: any names you choose (give their units in 'units')")
             continue
         for field, info in fields.items():

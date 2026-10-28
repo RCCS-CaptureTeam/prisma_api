@@ -56,6 +56,15 @@ Base every target name, field name and key on this output, never on memory.
 Targets whose fields are "any names you choose" take any columns: use them for
 data with no fixed table instead of skipping it.
 
+**A typed target beats a generic one.** Read each target's description and
+decide what the data *means* before choosing where it goes. Generic targets
+(`run_results`, `run_inputs`) store a JSON blob per material: nothing in them is
+a queryable record, and they do not appear as the data's own table on the
+dataset page. Use `run_inputs` only for values a model run *consumed*, and
+`run_results` only when no typed target fits. Measurements and simulation
+outputs that the catalogue has a table for (for example isotherm points)
+belong in that table.
+
 ## 3. Profile the ticked files (read-only)
 
 Work out the following. For many files, sample rather than reading them all.
@@ -65,6 +74,8 @@ Work out the following. For many files, sample rather than reading them all.
 - **Variants encoded in paths:** cases, conditions, model versions. Each distinct variant becomes a run.
 - **Rollups and copies:** which files summarise others (prefer the rollup where it is complete), and which are identical copies (compare hashes).
 - **Units:** take them from column headers, READMEs and notebooks. Record only conditions you can source.
+- **Wide files:** a file with one column per condition holding the same quantity (`223_K_5_bar`, `223_K_10_bar`, `uptake_30bar`, ...) is a *set of points*, not a set of unrelated columns. Work out the quantity (what is measured, its units), the condition each column stands for (pressure, temperature, time, ...) and the fixed conditions (gas, temperature). Several columns of one quantity at different conditions is the shape of an isotherm or any other curve.
+- **How each value was obtained:** look for a column of notes or a source (`source`, `method`, `origin`) and for flag columns. Values in one file often come from different calculations: simulated or measured, rescaled from another temperature (Clausius-Clapeyron), fitted (Langmuir), interpolated, or not computed at all. Read the distinct texts (`sort | uniq -c`) and note which values each applies to, since a text may cover only some columns. This is data, not decoration: keep it with the values (step 4).
 
 ## 4. Build or update the manifest
 
@@ -95,6 +106,8 @@ under `lineage` (an older version of the same dataset); that one may stay.
 For the other sections:
 
 - Map each family to the best target in the catalogue. Map columns to the target's fields; for "any names you choose" targets, pick short snake_case names and give their `units`.
+- A wide file of one quantity at several conditions goes to the catalogue's curve or point target (today `isotherms`: one stored row per material and pressure) with the condition of each column declared in the manifest, never to `run_inputs` or `run_results` as one column per condition. If the catalogue has no such target, say so in the hand-over instead of quietly storing the columns under chosen names.
+- Do not drop how a value was obtained. Where the target can record a basis for each value (`isotherms` has `basis_column` and `basis_rules`), read the distinct notes from step 3 and write one rule per calculation, listing the conditions it applies to; the default basis is what the rest were. Keep the authors' own text (it is stored beside the value) and map flag columns to the target's quality column.
 - Use `rows: supplement` for per-material data that should join onto each run's records. Keep `rows: create` on the files that define which materials a run covered.
 - Give every ticked file a source. Put ticked files that hold nothing to ingest (plots, notebooks, copies, partial or temporary files) under `target: skip` with a specific reason.
 - Comment judgement calls in the YAML, e.g. `# 2,525 of 8,236 rows; the full file is X`.
@@ -108,7 +121,8 @@ prisma-dataset send . <server> --json        # pack the ticked files and dry run
 
 Fix every error and repeat. Then read the dry-run counts critically:
 
-- Rows per run should match the records in that run's files.
+- Rows per run should match the records in that run's files. For a typed target, find its own table in the dry-run counts (e.g. `adsorption_isotherm: created N`). If the data you meant to store as records only shows as `AnalysisRunInput` / `AnalysisResult`, or the table is absent, the source is on the wrong target: go back to step 4.
+- Blank values make no record. The run's report gives how many were skipped (`isotherm_blank_points`); that should match the empty cells you saw when profiling.
 - Unexpected "materials created" usually mean id spellings need `strip_suffixes` or reference-system `aliases`.
 - Any deletions should be explained.
 

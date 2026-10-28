@@ -26,6 +26,8 @@ This lists the **targets**, the places data can go. Each target has a kind:
 | `parameters` | model inputs shared by runs (defaults, prices, indices) | a parameter set and a layout |
 | `skip` | nothing: files you deliberately leave out | a `reason` |
 
+Prefer a typed target over "any names you choose" when the platform has a table for your data. For example, a file with one column per pressure is stored by `isotherms` as one record per material and pressure (see below), not as a blob of columns.
+
 Some targets have fixed fields; `targets` prints them with their types and units. Others say **"any names you choose"**: for those you name your columns yourself and give their units. Use these for data the platform has no table for yet.
 
 To work offline, save the list and pass it to `validate`/`pack` later: `prisma-dataset targets --prod --save targets.json`.
@@ -91,6 +93,38 @@ Each source matches files with a `path` pattern and sends them to one `target`.
 | `rows: supplement` | Only adds fields to records another source created for the same run. Use it for per-material data you want joined onto each run's results. |
 | `by_others` | Overrides `dataset.by_others` for this source's files. |
 | `on_bad_value: null` | Store unreadable values as empty instead of failing. |
+
+### Isotherms (one column per pressure)
+
+A file like `MOF, 223_K_5_bar, 223_K_10_bar, 223_K_170_bar, data_quality_flag, source` is stored by the `isotherms` target: each value becomes one isotherm record (material, gas, temperature, pressure, loading in mol/kg). Records with no value (an empty cell) are not made.
+
+```yaml
+runs:
+  - {key: isotherms-223K, name: "H2 isotherms at 223 K", conditions: {temperature_K: 223}}
+
+sources:
+  - id: isotherms_223K
+    path: Data_files/H2_Isotherms_223K.csv
+    target: isotherms
+    run: isotherms-223K
+    id_column: MOF
+    component: H2                    # the gas
+    temperature_K: 223
+    loading_units: mol/kg            # the only unit stored; convert nothing, just say it
+    pressure_columns: {223_K_5_bar: 5, 223_K_10_bar: 10, 223_K_170_bar: 170}   # column -> bar
+    quality_column: data_quality_flag          # kept as each point's quality flag
+    basis_column: source                       # the authors' note on how the values were obtained
+    default_basis: gcmc                        # the basis of every point no rule matches
+    basis_rules:                               # first match wins; `pressures` limits a rule to some columns
+      - {contains: "Langmuir fit", pressures: [10], basis: langmuir_fit}
+      - {contains: "rescaled", pressures: [5, 10, 30], basis: clausius_clapeyron}
+```
+
+- Every column must be named by `pressure_columns`, `basis_column`, `quality_column`, `id_column` or `ignore_columns`.
+- The authors' note is stored with every point as written; `basis` is your short label for it. Use one label per calculation, so users can filter (`GET /api/v2/adsorption-isotherm/?analysis_run=<run>&value_basis=clausius_clapeyron`).
+- Isotherms need catalogue materials, not benchmarks (`reference_systems`).
+- A re-send replaces the run's points, so it is safe to repeat.
+- The dataset page lists the points as an **Isotherms** section: materials by pressure, with values from a different basis shaded.
 
 **Every file needs a home.** Each file in the folder should match a source; deliberate omissions go under `target: skip` with a reason. Every column of a file you read must be mapped or ignored. This means a new column, or a new file, is always noticed instead of silently dropped.
 
