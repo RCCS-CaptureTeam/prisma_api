@@ -130,7 +130,8 @@ sources:
 
 ### Runs, benchmarks and parameter sets
 
-- **`runs`**: `key` (letters, digits, `-`, `_`), `name`, optional `case`, `conditions` (any key: value pairs, e.g. temperature, cycles, pressure), `description`, and `parameter_set`.
+- **`runs`**: `key` (letters, digits, `-`, `_`), `name`, optional `case`, `conditions` (any key: value pairs, e.g. temperature, cycles, pressure), `description`, `parameter_set`, and `screening_analysis`.
+- **`screening_analysis`** (on a run): the name of the PrISMa v2 screening analysis the run's results belong to. Use it for outputs of a v2 flowsheet run (`run_flowsheet`, a run store such as `store.sqlite`): the run then fills that analysis's study page. The name must already exist on the platform. Name the run's `run_results` columns `<node_id>.<output>` after the flowsheet node that produced them (`tea.ncac_eur_per_tonne_co2_avoided`, `lca.climate_change`, `co2_contactor.purity`) and give every column its `units`; the page files each output under its node's role (economics → TEA, environmental → LCA, material → Materials, others → Process).
 - **`reference_systems`**: benchmarks that are not catalogue materials (a compressed-gas tank, a reference adsorbent). `kind` is one of the values listed by `targets --json` (`reference_system_kinds`). `aliases` lists every other spelling your files use.
 - **`parameter_sets`**: `key`, `name`, `description`. Parameter sources then give:
   - `parameter_set`

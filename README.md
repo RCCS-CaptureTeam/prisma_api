@@ -259,6 +259,7 @@ All methods below are available on `api.v2`.
 
 - `upsert_case_study_library(document, dry_run=False, max_request_bytes=2_400_000, raise_on_error=False, timeout=600)` — sends a `prisma_v2.case_study_library.bundle.v1` document, split into requests if needed; replaces the pipeline 11 ZIP upload
 - `ingest_dataset(zip_path, dry_run=True, timeout=1800)` — sends a third-party dataset package (files + `prisma_manifest.yaml`, built with `prisma-dataset pack`) to `POST /api/v2/datasets/ingest/`; returns the server report, including on rejection. Dry run unless `dry_run=False`. The format: `prisma-dataset guide`
+- `ingest_screening_outputs(zip_path, timeout=7200)` — sends one batch of v1 case-study screening results (built with `prisma_api.screening_outputs.pack`) to `POST /api/v2/screening-outputs/ingest/` (pipeline 13); each case study / conditions / type becomes a scenario of the batch and its OutputKpi rows are replaced. Writes; no dry run. From the command line: `prisma-outputs list <screening_results>` shows the batches, `prisma-outputs send <screening_results> --dev --batch NAME` (or `--all`) sends them
 - `get_dataset_targets()` — what a dataset manifest may write on the server: targets, kinds, allowed keys and fields
 - `list_analysis_runs(dataset=None)` — runs loaded from dataset packages, with conditions, parameter set and row counts
 - `get_analysis_run_rows(run_key, table='results')` — a run's free-form rows (`results`: metrics with no typed table; `inputs`: per-run inputs), each with its material or reference-system subject

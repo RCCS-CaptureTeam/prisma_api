@@ -3931,6 +3931,34 @@ class PrismaAPIv2:
         resp.raise_for_status()
         return resp.json()
 
+    def ingest_screening_outputs(self, zip_path: str, timeout: int = 7200) -> dict:
+        """
+        Send one screening batch of v1 case-study results (ingest pipeline 13).
+
+        ``POST /api/v2/screening-outputs/ingest/``. Build the zip with
+        ``prisma_api.screening_outputs.pack``: ``{batch}/Screening_{Source}/
+        {CaseStudy}/{ProcessConditions}/{Simulated|Analytical}/`` holding the
+        ``*_L2-KPIs.csv`` and ``*_L2_screening-Analysis.csv`` files. Each case
+        study / conditions / type becomes a scenario of that batch and its
+        OutputKpi rows are replaced. There is no dry run: this writes.
+
+        Args:
+            zip_path: The batch zip.
+            timeout: Seconds; the server ingests every row before it answers.
+
+        Returns:
+            The pipeline report: ``ok``, ``batches``, ``scenarios`` (case study
+            matched and how, rows written), ``warnings``, ``errors``, ``zip_upload``.
+        """
+        with open(zip_path, "rb") as fh:
+            resp = requests.post(
+                self._url("/screening-outputs/ingest/"),
+                files={"file": (Path(zip_path).name, fh, "application/zip")},
+                headers={"X-API-Key": self._key}, timeout=timeout,
+            )
+        resp.raise_for_status()
+        return resp.json()
+
     def register_dataset_tree(self, tree: dict, dataset: str, manifest: dict | None = None,
                               tags: list[str] | None = None, package: int | None = None,
                               timeout: int = 600) -> dict:

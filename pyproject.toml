@@ -22,6 +22,7 @@ dependencies = [
 
 [project.scripts]
 prisma-dataset = "prisma_api.dataset_package:main"
+prisma-outputs = "prisma_api.screening_outputs:main"
 
 [tool.setuptools]
 packages = ["prisma_api"]
