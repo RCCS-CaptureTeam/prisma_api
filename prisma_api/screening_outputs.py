@@ -21,6 +21,10 @@ Command line::
     prisma-outputs list ../PrISMa_Platform/results/screening_results
     prisma-outputs send ../PrISMa_Platform/results/screening_results --dev --batch prisma_paper_v1
     prisma-outputs send ../PrISMa_Platform/results/screening_results --dev --all
+    prisma-outputs status 123 --prod      # a batch sent earlier, by the upload number send printed
+
+The server ingests each batch in a separate process and ``send`` waits for it,
+printing progress; a batch that fails is reported and the next one is still sent.
 
 There is no dry run on the server: ``list`` shows what would be sent, and
 ``send`` asks before writing unless ``--yes``.
@@ -117,8 +121,12 @@ def send(batches: list[Batch], api: Any, keep: str | Path | None = None,
     """Pack and send each batch in turn; returns the server's report for each.
 
     ``keep`` is a folder to leave the zips in (default: temporary files).
-    A batch with no files is skipped.
+    A batch with no files is skipped. A batch the server refuses or fails is
+    reported (``ok: false``, ``state: failed``, the server's ``error``) and the
+    next batch is still sent.
     """
+    import requests
+
     v2 = getattr(api, "v2", api)
     reports = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -131,13 +139,19 @@ def send(batches: list[Batch], api: Any, keep: str | Path | None = None,
             progress(f"{b.name}: packing {len(b.files)} files …")
             zipped = pack(b, folder / f"{b.name}.zip")
             progress(f"{b.name}: sending {zipped.stat().st_size / 1e6:.1f} MB …")
-            report = v2.ingest_screening_outputs(str(zipped))
+            try:
+                report = v2.ingest_screening_outputs(str(zipped), progress=lambda m, n=b.name: progress(f"{n}: {m}"))
+            except (requests.RequestException, TimeoutError) as exc:
+                report = {"ok": False, "state": "failed", "error": str(exc)}
             reports.append({"batch": b.name, **report})
             progress(summary(report, b.name))
     return reports
 
 
 def summary(report: dict, name: str) -> str:
+    if report.get("state") == "failed":
+        upload = f" (upload #{report['zip_upload']})" if report.get("zip_upload") else ""
+        return f"{name}: FAILED{upload}: {report.get('error')}"
     scenarios = report.get("scenarios") or []
     lines = [f"{name}: {'ok' if report.get('ok') else 'PROBLEMS'} · {len(scenarios)} scenarios "
              f"({sum(1 for s in scenarios if s.get('created'))} new) · "
@@ -178,7 +192,27 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--keep", metavar="DIR", help="Keep the zips in DIR (default: temporary files)")
     p.add_argument("--yes", action="store_true", help="Do not ask before sending")
     p.add_argument("--json", action="store_true", help="Print the reports as JSON")
+    p = sub.add_parser("status", help="The state of a batch already sent (by its upload number)")
+    p.add_argument("upload", type=int, help="The upload number 'send' printed")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--dev", action="store_true", help="Local dev server")
+    g.add_argument("--prod", action="store_true", help="Production (prisma-platform.org)")
+    p.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.command == "status":
+        from . import init
+        api = init(local_dev=args.dev)
+        v2 = getattr(api, "v2", api)
+        report = v2.screening_outputs_ingest_status(args.upload)
+        if args.json:
+            print(json.dumps(report, indent=2, default=str))
+        elif report.get("state") in ("done", "failed"):
+            print(summary(report, f"upload #{args.upload}"))
+        else:
+            done = f" · {report['files_done']}/{report['files_total']} files" if report.get("files_total") else ""
+            print(f"upload #{args.upload}: {report.get('state')}{done}")
+        return 0 if report.get("ok") or report.get("state") in ("queued", "running") else 1
 
     try:
         batches = scan(args.root)

@@ -22,6 +22,7 @@ import json
 import math
 import re
 import subprocess
+import time
 import warnings
 from collections import Counter
 from datetime import date, datetime
@@ -3931,7 +3932,8 @@ class PrismaAPIv2:
         resp.raise_for_status()
         return resp.json()
 
-    def ingest_screening_outputs(self, zip_path: str, timeout: int = 7200) -> dict:
+    def ingest_screening_outputs(self, zip_path: str, timeout: int = 7200, background: bool = True,
+                                 poll_every: float = 15, progress=None) -> dict:
         """
         Send one screening batch of v1 case-study results (ingest pipeline 13).
 
@@ -3942,21 +3944,70 @@ class PrismaAPIv2:
         study / conditions / type becomes a scenario of that batch and its
         OutputKpi rows are replaced. There is no dry run: this writes.
 
+        By default the server keeps the zip and ingests it in a separate process
+        (``?background=true``), and this polls
+        :meth:`screening_outputs_ingest_status` until it is done: a large batch
+        takes longer than the production host lets one request run. A server
+        without background ingests answers with the report directly, which is
+        returned as is.
+
         Args:
             zip_path: The batch zip.
-            timeout: Seconds; the server ingests every row before it answers.
+            timeout: Seconds to wait for the ingest to finish (upload included).
+            background: ``False`` to have the server ingest inside the request.
+            poll_every: Seconds between status checks.
+            progress: Called with a short message as the server works through the files.
 
         Returns:
             The pipeline report: ``ok``, ``batches``, ``scenarios`` (case study
-            matched and how, rows written), ``warnings``, ``errors``, ``zip_upload``.
+            matched and how, rows written), ``warnings``, ``errors``, ``zip_upload``,
+            and ``state`` (``done``, or ``failed`` with ``error``).
+
+        Raises:
+            requests.HTTPError: The server refused or failed the upload; the
+                message carries the server's own error.
+            TimeoutError: Still running after ``timeout``; the message names the
+                upload to check later with :meth:`screening_outputs_ingest_status`.
         """
+        started = time.monotonic()
         with open(zip_path, "rb") as fh:
             resp = requests.post(
                 self._url("/screening-outputs/ingest/"),
+                params={"background": "true"} if background else None,
                 files={"file": (Path(zip_path).name, fh, "application/zip")},
                 headers={"X-API-Key": self._key}, timeout=timeout,
             )
-        resp.raise_for_status()
+        _raise_with_body(resp)
+        body = resp.json()
+        if resp.status_code != 202:
+            return body
+        upload_id = body["zip_upload"]
+        seen = None
+        while True:
+            if body.get("state") in ("done", "failed"):
+                return body
+            note = (f"{body.get('files_done')}/{body.get('files_total')} files"
+                    if body.get("files_total") else body.get("state"))
+            if progress is not None and note != seen:
+                progress(f"server ingesting upload #{upload_id}: {note}")
+                seen = note
+            if time.monotonic() - started > timeout:
+                raise TimeoutError(
+                    f"upload #{upload_id} still {body.get('state')} after {timeout}s; check it later with "
+                    f"screening_outputs_ingest_status({upload_id}) or 'prisma-outputs status {upload_id}'")
+            time.sleep(poll_every)
+            body = self.screening_outputs_ingest_status(upload_id)
+
+    def screening_outputs_ingest_status(self, zip_upload: int) -> dict:
+        """
+        ``GET /api/v2/screening-outputs/ingest/{zip_upload}/``: the state of a batch
+        sent in the background: ``state`` (queued, running, done, failed),
+        ``files_done`` / ``files_total``, ``error`` if it failed, and once done the
+        pipeline report that :meth:`ingest_screening_outputs` returns.
+        """
+        resp = requests.get(self._url(f"/screening-outputs/ingest/{int(zip_upload)}/"),
+                            headers=self._headers(), timeout=60)
+        _raise_with_body(resp)
         return resp.json()
 
     def register_dataset_tree(self, tree: dict, dataset: str, manifest: dict | None = None,
@@ -4381,6 +4432,21 @@ class PrismaAPIv2:
 def _compact(**kwargs) -> dict:
     """Return kwargs dict with None values removed."""
     return {k: v for k, v in kwargs.items() if v is not None}
+
+
+def _raise_with_body(resp: requests.Response) -> None:
+    """``raise_for_status``, with the server's own error (JSON ``error``/``detail``, else text) in the message."""
+    if resp.ok:
+        return
+    try:
+        body = resp.json()
+        detail = (body.get("error") or body.get("detail")) if isinstance(body, dict) else None
+        detail = detail or json.dumps(body)[:1000]
+    except ValueError:
+        text = " ".join(resp.text.split())
+        detail = text[:300] + ("…" if len(text) > 300 else "")
+    raise requests.HTTPError(f"{resp.status_code} {resp.reason} for {resp.url}"
+                             + (f": {detail}" if detail else ""), response=resp)
 
 
 def _check_match(match: str | None) -> str | None:

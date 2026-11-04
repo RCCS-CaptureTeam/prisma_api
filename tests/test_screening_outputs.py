@@ -90,3 +90,88 @@ def test_cli_list(results, capsys):
     assert so.main(["list", str(results), "--repeats"]) == 0
     out = capsys.readouterr().out
     assert "liquefaction_45" in out and "1 appear in more than one batch" in out
+
+
+INGEST = f"{_BASE_PROD}/screening-outputs/ingest/"
+DONE = {"ok": True, "state": "done", "scenarios": [{"rows": 3, "created": False}], "warnings": [], "errors": [],
+        "zip_upload": 9}
+
+
+@pytest.fixture
+def zipped(tmp_path):
+    path = tmp_path / "b.zip"
+    path.write_bytes(b"PK")
+    return path
+
+
+@resp_lib.activate
+def test_a_background_ingest_is_polled_until_done(zipped):
+    resp_lib.add(resp_lib.POST, INGEST, status=202, json={"zip_upload": 9, "state": "queued"})
+    resp_lib.add(resp_lib.GET, f"{INGEST}9/", json={"zip_upload": 9, "state": "running",
+                                                    "files_done": 4, "files_total": 10})
+    resp_lib.add(resp_lib.GET, f"{INGEST}9/", json=DONE)
+    messages = []
+    report = PrismaAPIv2(key="k").ingest_screening_outputs(str(zipped), poll_every=0, progress=messages.append)
+    assert report == DONE
+    assert "background=true" in resp_lib.calls[0].request.url
+    assert messages == ["server ingesting upload #9: queued", "server ingesting upload #9: 4/10 files"]
+
+
+@resp_lib.activate
+def test_a_server_without_background_ingests_answers_with_the_report(zipped):
+    resp_lib.add(resp_lib.POST, INGEST, json={**DONE, "state": None})
+    assert PrismaAPIv2(key="k").ingest_screening_outputs(str(zipped))["zip_upload"] == 9
+    assert len(resp_lib.calls) == 1
+
+
+@resp_lib.activate
+def test_a_failed_background_ingest_is_returned_with_its_error(zipped):
+    resp_lib.add(resp_lib.POST, INGEST, status=202, json={"zip_upload": 9, "state": "queued"})
+    resp_lib.add(resp_lib.GET, f"{INGEST}9/", json={"zip_upload": 9, "state": "failed", "ok": False,
+                                                    "error": "RuntimeError: boom"})
+    report = PrismaAPIv2(key="k").ingest_screening_outputs(str(zipped), poll_every=0)
+    assert report["state"] == "failed" and "boom" in so.summary(report, "b")
+
+
+@resp_lib.activate
+def test_an_ingest_still_running_after_the_timeout_names_the_upload(zipped):
+    resp_lib.add(resp_lib.POST, INGEST, status=202, json={"zip_upload": 9, "state": "running"})
+    with pytest.raises(TimeoutError, match="prisma-outputs status 9"):
+        PrismaAPIv2(key="k").ingest_screening_outputs(str(zipped), timeout=0, poll_every=0)
+
+
+@resp_lib.activate
+def test_an_http_error_carries_the_servers_message(zipped):
+    resp_lib.add(resp_lib.POST, INGEST, status=500, json={"state": "failed", "error": "RuntimeError: boom"})
+    with pytest.raises(Exception, match="500 .*RuntimeError: boom"):
+        PrismaAPIv2(key="k").ingest_screening_outputs(str(zipped))
+
+
+@resp_lib.activate
+def test_an_html_error_page_is_shortened_into_the_message(zipped):
+    resp_lib.add(resp_lib.POST, INGEST, status=500, body="<html><body><h1>Internal Server Error</h1>" + "x" * 2000,
+                 content_type="text/html")
+    with pytest.raises(Exception, match="Internal Server Error") as err:
+        PrismaAPIv2(key="k").ingest_screening_outputs(str(zipped))
+    assert len(str(err.value)) < 500
+
+
+@resp_lib.activate
+def test_send_reports_a_failed_batch_and_sends_the_next(results, tmp_path):
+    resp_lib.add(resp_lib.POST, INGEST, status=500, body="Internal Server Error")
+    resp_lib.add(resp_lib.POST, INGEST, json={**DONE, "zip_upload": 8})
+    messages = []
+    reports = so.send(so.scan(results), PrismaAPIv2(key="k"), progress=messages.append)
+    assert [(r["batch"], r["ok"]) for r in reports] == [("liquefaction_26", False), ("liquefaction_45", True)]
+    assert any(m.startswith("liquefaction_26: FAILED: 500") for m in messages)
+    assert any("upload #8" in m for m in messages)
+
+
+@resp_lib.activate
+def test_cli_status(monkeypatch, capsys):
+    import prisma_api
+    monkeypatch.setattr(prisma_api, "init", lambda local_dev=False: PrismaAPIv2(key="k"))
+    resp_lib.add(resp_lib.GET, f"{INGEST}9/", json={"zip_upload": 9, "state": "running",
+                                                    "files_done": 4, "files_total": 10})
+    assert so.main(["status", "9", "--prod"]) == 0
+    assert "upload #9: running · 4/10 files" in capsys.readouterr().out
