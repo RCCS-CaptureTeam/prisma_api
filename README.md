@@ -219,6 +219,7 @@ Configuration helpers on the main client:
 Module-level helpers exported from the package:
 
 - `prisma_api.init`
+- `prisma_api.__version__`
 - `prisma_api.PrismaAPIv2`
 - `prisma_api.update_dev_mode` — deprecated, as above
 - `prisma_api.update_dev_host_port`
@@ -233,11 +234,15 @@ All methods below are available on `api.v2`.
 
 - `health()`
 - `get_flowsheet(name="dac_min")`
+- `get_flowsheet_bundle(name="dac_min")`
+- `upsert_flowsheets(flowsheets, screening_analysis_name=None, on_exists="append", appendix="_v4")`
 
 ### Materials and bundles
 
 - `list_materials(name=None, limit=10000)`
-- `get_material(material_id=None, name=None, bundle=['isotherms','zeopp','water_kpis','cif'])` (`bundle=None` returns root-only material detail)
+- `get_material(material_id=None, *, name=None, bundle=['isotherms','zeopp','water_kpis','cif'], sim_or_exp=None, good_structure=None, limit=500, offset=0, include_cif_text=False, cif_timeout=60)` (`bundle=None` returns root-only material detail; `name` may be a list)
+- `list_cifs(tag=None)`
+- `get_cifs(mof, structured=True, pandas=True, save_dir=None)` — one name or a list; `save_dir` writes the `.cif` files
 - `get_materials_psdi(name=None, limit=500, offset=0)`
 - `get_material_psdi(material_id)`
 - `get_material_property_bundle(mof, sim_or_exp=None, good_structure=None, limit=500, offset=0, query=None)`
@@ -258,16 +263,25 @@ All methods below are available on `api.v2`.
 ### Case-study library (PrISMa_Platform sync)
 
 - `upsert_case_study_library(document, dry_run=False, max_request_bytes=2_400_000, raise_on_error=False, timeout=600)` — sends a `prisma_v2.case_study_library.bundle.v1` document, split into requests if needed; replaces the pipeline 11 ZIP upload
-- `ingest_dataset(zip_path, dry_run=True, timeout=1800)` — sends a third-party dataset package (files + `prisma_manifest.yaml`, built with `prisma-dataset pack`) to `POST /api/v2/datasets/ingest/`; returns the server report, including on rejection. Dry run unless `dry_run=False`. The format: `prisma-dataset guide`
-- `ingest_screening_outputs(zip_path, timeout=7200, background=True)` — sends one batch of v1 case-study screening results (built with `prisma_api.screening_outputs.pack`) to `POST /api/v2/screening-outputs/ingest/` (pipeline 13); each case study / conditions / type becomes a scenario of the batch and its OutputKpi rows are replaced. Writes; no dry run. From the command line: `prisma-outputs list <screening_results>` shows the batches, `prisma-outputs send <screening_results> --dev --batch NAME` (or `--all`) sends them. The server ingests each batch in the background and the client polls `screening_outputs_ingest_status(zip_upload)` until it is done, printing progress; a failed batch is reported with the server's error and the next is still sent. `prisma-outputs status <upload> --prod` checks a batch sent earlier
-- `get_dataset_targets()` — what a dataset manifest may write on the server: targets, kinds, allowed keys and fields
-- `list_analysis_runs(dataset=None)` — runs loaded from dataset packages, with conditions, parameter set and row counts
-- `get_analysis_run_rows(run_key, table='results')` — a run's free-form rows (`results`: metrics with no typed table; `inputs`: per-run inputs), each with its material or reference-system subject
 - `get_case_study_library_bundle(sections=None, timeout=300)`
 - `get_case_study_bundle(case_id, timeout=120)`
 - `latest_case_study_library_sync()` — `None` before the first sync
 - `list_case_study_library_sync_runs(status=None, limit=50, git_commit=None, offset=0)`
 - `list_stale_case_study_library_records()`
+
+### Datasets and screening outputs
+
+- `get_dataset_targets()` — what a dataset manifest may write on the server: targets, kinds, allowed keys and fields
+- `register_dataset_tree(tree, dataset, manifest=None, tags=None, package=None, timeout=600)` — sends a folder's structure (paths and sizes only) so files can be ticked on the dataset's page; `package` refreshes an existing tree, keeping its ticks. Used by `prisma-dataset tree`
+- `list_dataset_trees(dataset=None, limit=50)` / `get_dataset_tree(package)` — registered trees, and one tree's files with their ticks
+- `ingest_dataset(zip_path, dry_run=True, timeout=1800, tags=None, package=None)` — sends a dataset package (files + `prisma_manifest.yaml`, built with `prisma-dataset pack`) to `POST /api/v2/datasets/ingest/`; returns the server report, including on rejection. Dry run unless `dry_run=False`. The format: `prisma-dataset guide`
+- `list_dataset_versions(dataset, limit=50)` — a dataset's versions, newest first, each with what its upload changed
+- `list_analysis_runs(dataset=None, limit=500, offset=0)` — runs loaded from dataset packages, with conditions, parameter set and row counts
+- `get_analysis_run_rows(run_key, table='results', limit=500, offset=0)` — a run's free-form rows (`results`: metrics with no typed table; `inputs`: per-run inputs), each with its material or reference-system subject
+- `ingest_screening_outputs(zip_path, timeout=7200, background=True, poll_every=15, progress=None)` — sends one batch of v1 case-study screening results (built with `prisma_api.screening_outputs.pack`) to `POST /api/v2/screening-outputs/ingest/` (pipeline 13); each case study / conditions / type becomes a scenario of the batch and its OutputKpi rows are replaced. Writes; no dry run. The server ingests in the background and the client polls until it is done, printing progress
+- `screening_outputs_ingest_status(zip_upload)` — status of a screening-output batch sent earlier
+
+From the command line: `prisma-outputs list <screening_results>` shows the batches, `prisma-outputs send <screening_results> --dev --batch NAME` (or `--all`) sends them after asking (`--yes` skips the question; `--prod` targets production; a failed batch is reported with the server's error and the next is still sent), and `prisma-outputs status <upload> --prod` checks a batch sent earlier.
 
 ### Catalog and reference data
 
@@ -279,6 +293,8 @@ All methods below are available on `api.v2`.
 - `get_region(region_id)`
 - `get_sources(name=None, limit=500, offset=0)`
 - `get_source(source_id)`
+- `get_scopes(name=None, limit=500, offset=0)`
+- `get_scope(scope_id)`
 - `get_sinks(name=None, limit=500, offset=0)`
 - `get_sink(sink_id)`
 - `get_transport_scenarios(name=None, limit=500, offset=0)`
