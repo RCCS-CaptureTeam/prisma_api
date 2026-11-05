@@ -25,6 +25,8 @@ from prisma_api.prisma_api_v2 import (
     _BASE_PROD,
     _BUNDLE_SECTIONS,
     PrismaAPIv2,
+    PrismaRowErrorWarning,
+    PrismaUpsertError,
     _parse_cif_metadata,
 )
 
@@ -2103,6 +2105,44 @@ def test_upsert_region_costs(api):
     df = pd.DataFrame([{"Name": "GB_electricity_2030", "Value": 0.20, "Year": 2030}])
     result = api.upsert_region_costs(df)
     assert result["updated"] == 1
+
+
+# ── Map coordinates ───────────────────────────────────────────────────────────
+
+@resp_lib.activate
+def test_get_coordinates_pages_and_keeps_provenance(api):
+    row = {"id": 1, "name": "DAC Source", "slug": "DAC_source", "short_name": "DAC", "lat": 54.6,
+           "lon": -3.5, "coords_reference": {"Name": "OSM"}, "coords_note": "n", "notes": None}
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/sources/", json=_envelope([row], count=501),
+                 match=[matchers.query_param_matcher({"limit": "500", "offset": "0"})])
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/sources/", json=_envelope([{**row, "id": 2}], count=501),
+                 match=[matchers.query_param_matcher({"limit": "500", "offset": "500"})])
+    out = api.get_coordinates(["sources"])
+    assert [r["id"] for r in out["sources"]] == [1, 2]
+    assert set(out["sources"][0]) == {"id", "name", "slug", "lat", "lon", "coords_reference", "coords_note"}
+    with pytest.raises(ValueError):
+        api.get_coordinates(["cases"])
+
+
+@resp_lib.activate
+def test_upsert_coordinates_sends_only_missing_per_kind(api):
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/regions/",
+                 json={"created": 0, "updated": 1, "unchanged": 0, "skipped": [], "changes": []},
+                 match=[matchers.query_param_matcher({"only_missing": "true"}),
+                        matchers.json_params_matcher([{"code": "UK", "lat": 54.0, "lon": -2.5}])])
+    result = api.upsert_coordinates({"regions": [{"code": "UK", "lat": 54.0, "lon": -2.5}], "sinks": []})
+    assert list(result) == ["regions"]
+    assert result["regions"]["updated"] == 1
+
+
+@resp_lib.activate
+def test_upsert_coordinates_row_errors(api):
+    body = {"created": 0, "updated": 0, "errors": [{"item": {"slug": "x"}, "error": "No Source with {'slug': 'x'}."}]}
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/sources/", json=body, status=400)
+    with pytest.warns(PrismaRowErrorWarning):
+        assert api.upsert_coordinates({"sources": [{"slug": "x", "lat": 1, "lon": 2}]})["sources"] == body
+    with pytest.raises(PrismaUpsertError):
+        api.upsert_coordinates({"sources": [{"slug": "x", "lat": 1, "lon": 2}]}, raise_on_error=True)
 
 
 # ── Ambient Parameters ────────────────────────────────────────────────────────

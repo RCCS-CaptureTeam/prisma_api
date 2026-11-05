@@ -261,12 +261,52 @@ api.v2.get_region(1)
 
 ---
 
+#### `api.v2.get_coordinates(kinds=("sources", "sinks", "regions"))`
+
+Map coordinates of every source, sink and region (all pages), with their provenance.
+Rows have `id`, `name`, `slug` (sources/sinks) or `code` (regions), `lat`, `lon`,
+`coords_reference` and `coords_note`. Servers older than prisma_cloud 0.6.22 give no
+provenance and no region coordinates.
+
+```python
+api.v2.get_coordinates(["sources"])
+# {'sources': [{'id': 11, 'name': 'DAC Source Northernlights', 'slug': 'DAC_source_northernlights',
+#               'lat': 60.555712, 'lon': 4.886031,
+#               'coords_reference': {'id': 874, 'Name': 'https://maps.app.goo.gl/...', 'Url': ..., ...},
+#               'coords_note': 'Location of the CO2 source. From PrISMa_Platform ...'}]}
+```
+
+---
+
+#### `api.v2.upsert_coordinates(payload, only_missing=True, dry_run=False, raise_on_error=False)`
+
+`PUT /api/v2/{sources,sinks,regions}/` (prisma_cloud >= 0.6.22). Writes `lat`, `lon`,
+`coords_reference` and `coords_note` of stored rows; rows are matched (sources/sinks on
+`slug` or `name`, regions on `code`), never created. `coords_reference` is a Reference
+Name or `{Name, Url, Doi, Description, Year}`; a stored Reference with the same Name, Url
+or Doi is reused. With `only_missing` (the default) stored coordinates are never replaced:
+a row whose stored lat/lon differ is listed in `skipped`. Row errors warn
+(`PrismaRowErrorWarning`) or, with `raise_on_error`, raise `PrismaUpsertError`.
+
+`python manage.py compare_case_studies --payload FILE` on the server writes a payload of the
+coordinates it lacks, from the PrISMa_Platform library and production.
+
+```python
+payload = json.load(open("coords_payload.json"))
+api.v2.upsert_coordinates(payload, dry_run=True)
+api.v2.upsert_coordinates(payload)
+# {'sources': {'created': 0, 'updated': 4, 'unchanged': 0, 'skipped': [], 'changes': [...], ...}}
+```
+
+---
+
 #### `api.v2.get_sources(name=None, limit=500, offset=0)` / `api.v2.get_source(source_id)`
 
 ```python
 api.v2.get_sources()
 api.v2.get_source(1)
-# {'id': 1, 'name': 'Coal Plant', 'short_name': 'CP'}
+# {'id': 1, 'name': 'Coal Plant', 'short_name': 'CP', 'slug': 'coal_source', 'lat': None, 'lon': None,
+#  'coords_reference': None, 'coords_note': None, ...}
 ```
 
 ---

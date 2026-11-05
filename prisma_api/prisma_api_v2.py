@@ -72,6 +72,8 @@ _H2_DEPRECATED = {
         "use get_adsorption_isotherm_item"
     ),
 }
+# Tables whose rows carry map coordinates (lat/lon + coords_reference/coords_note).
+_COORD_KINDS = ("sources", "sinks", "regions")
 # AutoPrism CIFs are stored as ``cifs/<filename>``; CIF.file holds at most this many characters.
 _CIF_FILE_MAX_LEN = 100
 
@@ -2091,6 +2093,91 @@ class PrismaAPIv2:
     def get_sink(self, sink_id: int) -> dict:
         """GET /api/v2/sinks/{sink_id}/"""
         return self._get(f"/sinks/{sink_id}/")
+
+    def get_coordinates(self, kinds: tuple[str, ...] | list[str] = _COORD_KINDS) -> dict:
+        """
+        Map coordinates of every source, sink and region, with their provenance.
+
+        Reads ``GET /api/v2/{sources,sinks,regions}/`` (all pages). Each row
+        has ``name``, ``slug`` (sources/sinks) or ``code`` (regions), ``lat``,
+        ``lon``, ``coords_reference`` (``{Name, Url, Doi, Description, Year}``
+        or None) and ``coords_note``. Servers older than prisma_cloud 0.6.22
+        give no provenance and no region coordinates (those keys are None).
+
+        Args:
+            kinds: Any of ``"sources"``, ``"sinks"``, ``"regions"``.
+
+        Returns:
+            ``{"sources": [...], "sinks": [...], "regions": [...]}`` (the kinds asked for).
+        """
+        unknown = set(kinds) - set(_COORD_KINDS)
+        if unknown:
+            raise ValueError(f"unknown kind(s) {sorted(unknown)}; choose from {list(_COORD_KINDS)}")
+        out = {}
+        for kind in kinds:
+            rows, offset = [], 0
+            while True:
+                page = self._get(f"/{kind}/", {"limit": 500, "offset": offset})
+                rows += page["results"]
+                offset += 500
+                if offset >= page["count"]:
+                    break
+            keep = ("id", "name", "code" if kind == "regions" else "slug",
+                    "lat", "lon", "coords_reference", "coords_note")
+            out[kind] = [{k: r.get(k) for k in keep} for r in rows]
+        return out
+
+    def upsert_coordinates(self, payload: dict, only_missing: bool = True,
+                           dry_run: bool = False, raise_on_error: bool = False) -> dict:
+        """
+        Send map coordinates, with their reference and note, for stored rows.
+
+        ``PUT /api/v2/{sources,sinks,regions}/`` (prisma_cloud >= 0.6.22).
+        Rows are matched, never created: sources and sinks on ``slug`` (or
+        ``name``), regions on ``code``. ``python manage.py compare_case_studies
+        --payload FILE`` on the server writes such a payload from the
+        PrISMa_Platform library and another server.
+
+        Args:
+            payload: ``{"sources": [...], "sinks": [...], "regions": [...]}``;
+                each row is ``{"slug" | "name" | "code": ..., "lat": ..., "lon": ...,
+                "coords_reference": {"Name", "Url", "Doi", "Description", "Year"}
+                | "<Reference Name>" | None, "coords_note": ...}``. A key left out
+                is left alone; ``lat`` and ``lon`` go together. The server reuses
+                a stored Reference with the same Name, Url or Doi.
+            only_missing: Never replace stored coordinates (default). A row whose
+                stored lat/lon differ is skipped whole and listed in ``skipped``;
+                otherwise only empty fields are filled.
+            dry_run: Apply, report, then roll back.
+            raise_on_error: Raise ``PrismaUpsertError`` if any row is rejected;
+                otherwise a ``PrismaRowErrorWarning`` is emitted.
+
+        Returns:
+            ``{kind: {"updated", "unchanged", "skipped", "changes", "errors"?, ...}}``
+            for each kind sent.
+
+        Raises:
+            requests.HTTPError: 403 (bad API key), 405 (a server older than
+                0.6.22) and other failures that are not row errors.
+        """
+        unknown = set(payload) - set(_COORD_KINDS)
+        if unknown:
+            raise ValueError(f"unknown kind(s) {sorted(unknown)}; choose from {list(_COORD_KINDS)}")
+        params = _compact(only_missing="true" if only_missing else None,
+                          dry_run="true" if dry_run else None)
+        result = {}
+        for kind in _COORD_KINDS:
+            if payload.get(kind):
+                result[kind] = self._put(f"/{kind}/?{urlencode(params)}" if params else f"/{kind}/",
+                                         list(payload[kind]), upsert_body_on_400=True)
+        errors = {kind: body["errors"] for kind, body in result.items() if body.get("errors")}
+        if errors:
+            message = "; ".join(f"{kind}: {len(e)} row(s) rejected, e.g. {e[0].get('error')}"
+                                for kind, e in errors.items())
+            if raise_on_error:
+                raise PrismaUpsertError(message, result)
+            warnings.warn(message, PrismaRowErrorWarning, stacklevel=2)
+        return result
 
     def get_transport_scenarios(self, name: str | None = None,
                                 limit: int = 500, offset: int = 0) -> pd.DataFrame:
