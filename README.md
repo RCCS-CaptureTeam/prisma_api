@@ -239,16 +239,18 @@ All methods below are available on `api.v2`.
 
 ### Materials and bundles
 
-- `list_materials(name=None, limit=10000)`
+- `list_materials(name=None, limit=10000, structural_order=None)` — `structural_order` takes one value or a list, e.g. `'amorphous_polymer'` (materials with no unit cell, so no CIF)
 - `get_material(material_id=None, *, name=None, bundle=['isotherms','zeopp','water_kpis','cif'], sim_or_exp=None, good_structure=None, limit=500, offset=0, include_cif_text=False, cif_timeout=60)` (`bundle=None` returns root-only material detail; `name` may be a list)
 - `list_cifs(tag=None)`
 - `get_cifs(mof, structured=True, pandas=True, save_dir=None)` — one name or a list; `save_dir` writes the `.cif` files
-- `get_materials_psdi(name=None, limit=500, offset=0)`
+- `get_materials_psdi(name=None, limit=500, offset=0, structural_order=None)`
 - `get_material_psdi(material_id)`
 - `get_material_property_bundle(mof, sim_or_exp=None, good_structure=None, limit=500, offset=0, query=None)`
 - `get_material_bundle(mof, sim_or_exp=None, good_structure=None, limit=500, offset=0, query=None, include_cif=False, include_cif_text=False, cif_timeout=60)`
-- `get_material_bundles(names=None, ids=None, sections=None, exclude=None, include_cif_content=False, match='exact', output='json', save_path=None, use_post=False, timeout=300)` — server-side bundle endpoints; accepts one name or a list of names
+- `get_material_bundles(names=None, ids=None, sections=None, exclude=None, include_cif_content=False, match='exact', output='json', save_path=None, use_post=False, timeout=300)` — server-side bundle endpoints; accepts one name or a list of names. Includes a read-only `properties` section (see `get_material_properties`)
 - `upsert_material_bundles(bundles, cif_files=None, create_materials=True, strip_ids=False, inline_cifs=False, derive_cif_metadata=True, tag_names=None, method=None, timeout=300)` — write counterpart of `get_material_bundles`; takes the same document the read endpoint returns, with optional CIF upload
+- `get_material_properties(material=None, material_id=None, category=None, category_prefix=None, name=None, domain=None, match='exact', limit=2000, offset=0)` — per-material properties and model parameters (fitted isotherm models, pellet properties, prices, LCA links), keyed by material, category and name; `value` may be any JSON
+- `upsert_material_properties(payload, prune=False, raise_on_error=False)` — `prune=True` deletes a material's rows in each sent category that the payload doesn't list; row errors warn (`PrismaRowErrorWarning`) or, with `raise_on_error`, raise `PrismaUpsertError`
 - `preflight_material_check(name)`
 
 ### Case bundles and pack builders
@@ -285,6 +287,8 @@ From the command line: `prisma-outputs list <screening_results>` shows the batch
 
 ### Catalog and reference data
 
+- `get_coordinates(kinds=('sources', 'sinks', 'regions'))` — map coordinates of every source, sink and region (all pages), with `coords_reference` and `coords_note` provenance; older servers give no provenance and no region coordinates
+- `upsert_coordinates(payload, only_missing=True, dry_run=False, raise_on_error=False)` — writes `lat`, `lon`, `coords_reference` and `coords_note` on stored rows (sources/sinks matched on `slug` or `name`, regions on `code`), never creates rows; with `only_missing` stored coordinates are never replaced. Needs prisma_cloud >= 0.6.22
 - `get_molecules(name=None, limit=500, offset=0)`
 - `get_molecule(molecule_id)`
 - `get_elements(symbol=None, name=None, limit=500, offset=0)`
@@ -307,7 +311,7 @@ From the command line: `prisma-outputs list <screening_results>` shows the batch
 - `get_transport(transport_id)`
 - `get_subsystems(name=None, type=None, limit=500, offset=0)`
 - `get_subsystem(subsystem_id)`
-- `get_properties(name=None, domain=None, category=None, object_id=None, limit=500, offset=0)`
+- `get_properties(name=None, domain=None, category=None, object_id=None, limit=500, offset=0, content_type=None)` — object ids repeat across record types, so filter `object_id` together with `content_type` (`'mof'`, `'processconditions'`, `'sink'`, ...)
 - `get_property(property_id)`
 - `get_equipment(name=None, group=None, limit=500, offset=0)`
 - `get_equipment_item(equipment_id)`
@@ -316,7 +320,7 @@ From the command line: `prisma-outputs list <screening_results>` shows the batch
 - `get_equipment_designs(equipment_id=None, key=None, limit=500, offset=0)`
 - `get_equipment_design(design_id)`
 - `get_process_conditions(name=None, type=None, limit=500, offset=0)`
-- `get_process_condition(condition_id)`
+- `get_process_condition(condition_id)` — includes the condition's parameters as `properties`
 - `get_process_configurations(name=None, type=None, limit=500, offset=0)`
 - `get_process_configuration(config_id)`
 - `get_contactor_configurations(name=None, type=None, limit=500, offset=0)`
@@ -490,3 +494,4 @@ before upgrading for breaking changes and deprecations.
 - 0.4.4: the `adsorption-isotherm` endpoints and the 400/notice handling need prisma_cloud >= 0.6.16
 - 0.4.5: H2 isotherms go through `upsert_adsorption_isotherm` (prisma_cloud >= 0.6.16); the H2-only methods and the `isotherm_H2s` collection key are deprecated. New `upsert_autoprism_cifs` uses the existing bundle upsert endpoint. AutoPrism getters take `match="exact"`.
 - 0.4.6: case-study library sync methods (`upsert_case_study_library` and the export, sync-run and stale-record readers) for the prisma_cloud `case-study-library` endpoints, which replace ingest pipeline 11.
+- 0.4.8: `upsert_coordinates` and the coordinate provenance and region coordinates read by `get_coordinates` need prisma_cloud >= 0.6.22. New `get_material_properties` / `upsert_material_properties`, `structural_order` filters on `list_materials` and `get_materials_psdi`, and `content_type` on `get_properties`.
