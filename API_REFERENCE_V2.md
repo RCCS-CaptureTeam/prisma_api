@@ -100,7 +100,7 @@ api.v2.upsert_flowsheets(df, on_exists='overwrite')
 
 ### Catalog
 
-#### `api.v2.list_materials(name=None, limit=10_000)`
+#### `api.v2.list_materials(name=None, limit=10_000, structural_order=None)`
 
 Fetches all matching materials, paginating internally (page size 500) so
 result sets larger than the server default page size are returned
@@ -110,6 +110,7 @@ transparently. Prints a one-line summary (`"N materials loaded from <server>"`).
 api.v2.list_materials()
 api.v2.list_materials(name='ABEX')     # substring filter
 api.v2.list_materials(limit=0)          # no cap — fetch everything
+api.v2.list_materials(structural_order='amorphous_polymer')  # materials with no unit cell, so no CIF
 ```
 ```
    id    name                                           cif_url  material_id material_backend        gas_basis
@@ -200,7 +201,7 @@ api.v2.get_material(1, bundle=['isotherms'])                 # only isotherms bu
 
 ---
 
-#### `api.v2.get_materials_psdi(name=None, limit=500, offset=0)`
+#### `api.v2.get_materials_psdi(name=None, limit=500, offset=0, structural_order=None)`
 
 Returns a `pd.DataFrame` of PSDI (extended crystallographic) material records.
 
@@ -215,6 +216,7 @@ Columns returned: `id`, `name`, `cif_url`, `cif_filename`, `formula_descriptive`
 ```python
 df = api.v2.get_materials_psdi()
 df = api.v2.get_materials_psdi(name='ABEX')
+df = api.v2.get_materials_psdi(structural_order=['crystalline', 'amorphous_polymer'])
 ```
 
 ---

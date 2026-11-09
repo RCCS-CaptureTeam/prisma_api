@@ -4220,3 +4220,25 @@ def test_csl_reference_payload_split_reassembles(api):
     assert rebuilt == {k: v for k, v in doc.items()
                        if k not in ("_schema", "package", "complete")}
     assert bodies[-1]["package"] == doc["package"]
+
+
+@resp_lib.activate
+def test_list_materials_structural_order_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 match=[matchers.query_param_matcher(
+                     {"structural_order": "amorphous_polymer", "limit": "500", "offset": "0"})],
+                 json=_envelope([{"id": 7, "name": "Lewatit_1065_exp", "cif_url": None,
+                                  "structural_order": "amorphous_polymer", **_MATERIAL_EXTRA_FIELDS}]),
+                 status=200)
+    df = api.list_materials(structural_order="amorphous_polymer")
+    assert df.iloc[0]["structural_order"] == "amorphous_polymer"
+
+
+@resp_lib.activate
+def test_get_materials_psdi_structural_order_list_is_comma_joined(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials-psdi/",
+                 match=[matchers.query_param_matcher(
+                     {"structural_order": "crystalline,amorphous_polymer", "limit": "500", "offset": "0"})],
+                 json=_envelope([_PSDI_RECORD]), status=200)
+    df = api.get_materials_psdi(structural_order=["crystalline", "amorphous_polymer"])
+    assert len(df) == 1

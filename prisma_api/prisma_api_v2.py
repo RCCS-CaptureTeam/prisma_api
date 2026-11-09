@@ -481,7 +481,8 @@ class PrismaAPIv2:
     # ── Catalog ───────────────────────────────────────────────────────────────
 
     def list_materials(self, name: str | None = None,
-                       limit: int = 10_000) -> pd.DataFrame:
+                       limit: int = 10_000,
+                       structural_order: str | list[str] | None = None) -> pd.DataFrame:
         """
         GET /api/v2/materials/
 
@@ -493,12 +494,16 @@ class PrismaAPIv2:
             name:   Case-insensitive substring filter on material name.
             limit:  Maximum total records to return across all pages
                     (default 10 000).  Pass ``limit=0`` for no cap.
+            structural_order: ``'crystalline'``, ``'amorphous_polymer'``, or a
+                    list of both. Amorphous polymers have no CIF by nature.
 
         Returns:
             List of materials (format controlled by ``set_return_format``).
             Each record includes the following fields:
 
             * ``id`` / ``name`` / ``cif_url``
+            * ``structural_order`` — ``'crystalline'`` (a CIF applies) or
+              ``'amorphous_polymer'`` (no unit cell, so no CIF)
             * ``material_id`` — same as ``name``, used as the slug identifier
             * ``material_backend`` — always ``'tabular_binary_iast'``
             * ``gas_basis`` — ``['CO2','N2','H2O']`` if Water KPI data exist, else ``['CO2','N2']``
@@ -514,7 +519,8 @@ class PrismaAPIv2:
         offset = 0
         while True:
             fetch = page_size if (limit == 0) else min(page_size, limit - len(all_records))
-            params = _compact(name=name, limit=fetch, offset=offset)
+            params = _compact(name=name, limit=fetch, offset=offset,
+                              structural_order=_structural_order_param(structural_order))
             raw = self._get("/materials/", params)
             page: list = raw.get("results", raw) if isinstance(raw, dict) else (raw or [])
             all_records.extend(page)
@@ -849,7 +855,8 @@ class PrismaAPIv2:
         raise TypeError("name must be a string or list of strings")
 
     def get_materials_psdi(self, name: str | None = None,
-                           limit: int = 500, offset: int = 0) -> pd.DataFrame:
+                           limit: int = 500, offset: int = 0,
+                           structural_order: str | list[str] | None = None) -> pd.DataFrame:
         """
         GET /api/v2/materials-psdi/
 
@@ -860,11 +867,14 @@ class PrismaAPIv2:
             name:   Case-insensitive substring filter on material name.
             limit:  Max records to return (default 500).
             offset: Pagination offset.
+            structural_order: ``'crystalline'``, ``'amorphous_polymer'``, or a
+                    list of both.
 
         Returns:
-            DataFrame with one row per material.
+            DataFrame with one row per material, including ``structural_order``.
         """
-        params = _compact(name=name, limit=limit, offset=offset)
+        params = _compact(name=name, limit=limit, offset=offset,
+                          structural_order=_structural_order_param(structural_order))
         return self._resolve_cif_url_df(self._to_df(self._get("/materials-psdi/", params)))
 
     def get_material_psdi(self, material_id: int) -> dict:
@@ -4583,6 +4593,13 @@ class PrismaAPIv2:
 
 
 # ── Module-level helper ───────────────────────────────────────────────────────
+
+def _structural_order_param(value: str | list[str] | tuple[str, ...] | None) -> str | None:
+    """Join a list of structural_order values into the comma-separated query form."""
+    if value is None or isinstance(value, str):
+        return value
+    return ",".join(value)
+
 
 def _compact(**kwargs) -> dict:
     """Return kwargs dict with None values removed."""
