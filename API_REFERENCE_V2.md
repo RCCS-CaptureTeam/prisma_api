@@ -100,7 +100,7 @@ api.v2.upsert_flowsheets(df, on_exists='overwrite')
 
 ### Catalog
 
-#### `api.v2.list_materials(name=None, limit=10_000)`
+#### `api.v2.list_materials(name=None, limit=10_000, structural_order=None)`
 
 Fetches all matching materials, paginating internally (page size 500) so
 result sets larger than the server default page size are returned
@@ -110,6 +110,7 @@ transparently. Prints a one-line summary (`"N materials loaded from <server>"`).
 api.v2.list_materials()
 api.v2.list_materials(name='ABEX')     # substring filter
 api.v2.list_materials(limit=0)          # no cap — fetch everything
+api.v2.list_materials(structural_order='amorphous_polymer')  # materials with no unit cell, so no CIF
 ```
 ```
    id    name                                           cif_url  material_id material_backend        gas_basis
@@ -200,7 +201,7 @@ api.v2.get_material(1, bundle=['isotherms'])                 # only isotherms bu
 
 ---
 
-#### `api.v2.get_materials_psdi(name=None, limit=500, offset=0)`
+#### `api.v2.get_materials_psdi(name=None, limit=500, offset=0, structural_order=None)`
 
 Returns a `pd.DataFrame` of PSDI (extended crystallographic) material records.
 
@@ -215,6 +216,7 @@ Columns returned: `id`, `name`, `cif_url`, `cif_filename`, `formula_descriptive`
 ```python
 df = api.v2.get_materials_psdi()
 df = api.v2.get_materials_psdi(name='ABEX')
+df = api.v2.get_materials_psdi(structural_order=['crystalline', 'amorphous_polymer'])
 ```
 
 ---
@@ -392,14 +394,36 @@ api.v2.get_subsystem(1)
 
 ---
 
-#### `api.v2.get_properties(name=None, domain=None, category=None, object_id=None, limit=500, offset=0)` / `api.v2.get_property(property_id)`
+#### `api.v2.get_properties(name=None, domain=None, category=None, object_id=None, limit=500, offset=0, content_type=None)` / `api.v2.get_property(property_id)`
 
 Generic key/value property records linked to any model object via a Django
-`GenericForeignKey` (`object_id`).
+`GenericForeignKey` (`content_type` + `object_id`). Object ids are only unique
+per owner model, so filter on `content_type` (`'mof'`, `'processconditions'`,
+`'sink'`, ...) together with `object_id`.
 
 ```python
 api.v2.get_properties(domain='TEA', category='params_amb')
+api.v2.get_properties(content_type='processconditions', object_id=34)
 api.v2.get_property(1)
+```
+
+---
+
+#### `api.v2.get_material_properties(material=None, material_id=None, category=None, category_prefix=None, name=None, domain=None, match='exact', limit=2000, offset=0)` / `api.v2.upsert_material_properties(payload, prune=False, raise_on_error=False)`
+
+Per-material properties and model parameters: fitted isotherm models,
+pellet properties, prices, LCA links. Stored as `Property` rows on the
+material and keyed by `(material, category, name)`; `value` may be any JSON.
+They also appear, read-only, as the `properties` section of
+`get_material_bundles`.
+
+```python
+api.v2.get_material_properties(material='Zeolite_13X', category_prefix='analytical.')
+api.v2.upsert_material_properties([
+    {'material': 'Zeolite_13X', 'category': 'analytical.CO2', 'name': 'q_s_b',
+     'value': 3.257, 'units': 'mol/kg',
+     'reference': {'doi': '10.1007/s10450-020-00199-3', 'name': 'Wilkins et al. 2020'}},
+], prune=True)   # prune: rows of analytical.CO2 on Zeolite_13X not listed are deleted
 ```
 
 ---
@@ -437,6 +461,10 @@ api.v2.get_equipment_design(1)
 api.v2.get_process_conditions(type='tvsa')
 api.v2.get_process_condition(1)
 ```
+
+`get_process_condition` also returns the condition's parameters as
+`properties` (one `{name, value, units, description, reference_name, reference_doi}`
+per record of the source YAML).
 
 ---
 

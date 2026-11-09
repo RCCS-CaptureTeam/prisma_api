@@ -581,6 +581,59 @@ def test_get_property_detail(api):
     assert api.get_property(1)["name"] == "pressure"
 
 
+@resp_lib.activate
+def test_get_properties_content_type_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/properties/",
+                 match=[matchers.query_param_matcher(
+                     {"content_type": "processconditions", "object_id": "34", "limit": "500", "offset": "0"})],
+                 json=_envelope([]), status=200)
+    api.get_properties(content_type="processconditions", object_id=34)
+
+
+@resp_lib.activate
+def test_get_material_properties_filters(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/material-properties/",
+                 match=[matchers.query_param_matcher(
+                     {"material": "Zeolite_13X", "match": "exact", "category_prefix": "analytical.",
+                      "limit": "2000", "offset": "0"})],
+                 json=_envelope([{"id": 1, "material": "Zeolite_13X", "category": "analytical.CO2",
+                                  "name": "q_s_b", "value": 3.257}]), status=200)
+    df = api.get_material_properties(material="Zeolite_13X", category_prefix="analytical.")
+    assert_df_columns(df, "material", "category", "name", "value")
+
+
+@resp_lib.activate
+def test_upsert_material_properties_prune_and_nan(api):
+    import pandas as pd
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/material-properties/",
+                 match=[matchers.query_param_matcher({"prune": "true"}),
+                        matchers.json_params_matcher([{"material": "M", "category": "c", "name": "n", "value": None}])],
+                 json={"created": 1, "updated": 0, "deleted": 2}, status=200)
+    result = api.upsert_material_properties(
+        pd.DataFrame([{"material": "M", "category": "c", "name": "n", "value": float("nan")}]), prune=True)
+    assert result["deleted"] == 2
+
+
+@resp_lib.activate
+def test_upsert_material_properties_reports_row_errors(api):
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/material-properties/",
+                 json={"created": 0, "updated": 0, "errors": [{"error": "Material 'X' not found"}]}, status=400)
+    with pytest.warns(PrismaRowErrorWarning):
+        api.upsert_material_properties([{"material": "X", "category": "c", "name": "n", "value": 1}])
+    with pytest.raises(PrismaUpsertError):
+        api.upsert_material_properties([{"material": "X", "category": "c", "name": "n", "value": 1}],
+                                       raise_on_error=True)
+
+
+def test_bundle_properties_section_is_read_only():
+    from prisma_api.prisma_api_v2 import _BUNDLE_READONLY_SECTIONS, _prepare_bundle
+    assert "properties" in _BUNDLE_SECTIONS
+    assert _BUNDLE_READONLY_SECTIONS["properties"] == "upsert_material_properties"
+    with pytest.raises(ValueError, match="upsert_material_properties"):
+        _prepare_bundle({"material": {"name": "M"}, "properties": [{"name": "x"}]}, 0)
+    _prepare_bundle({"material": {"name": "M"}, "properties": []}, 0)   # empty passes
+
+
 # ── Equipment ─────────────────────────────────────────────────────────────
 
 @resp_lib.activate
@@ -4167,3 +4220,25 @@ def test_csl_reference_payload_split_reassembles(api):
     assert rebuilt == {k: v for k, v in doc.items()
                        if k not in ("_schema", "package", "complete")}
     assert bodies[-1]["package"] == doc["package"]
+
+
+@resp_lib.activate
+def test_list_materials_structural_order_filter(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials/",
+                 match=[matchers.query_param_matcher(
+                     {"structural_order": "amorphous_polymer", "limit": "500", "offset": "0"})],
+                 json=_envelope([{"id": 7, "name": "Lewatit_1065_exp", "cif_url": None,
+                                  "structural_order": "amorphous_polymer", **_MATERIAL_EXTRA_FIELDS}]),
+                 status=200)
+    df = api.list_materials(structural_order="amorphous_polymer")
+    assert df.iloc[0]["structural_order"] == "amorphous_polymer"
+
+
+@resp_lib.activate
+def test_get_materials_psdi_structural_order_list_is_comma_joined(api):
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/materials-psdi/",
+                 match=[matchers.query_param_matcher(
+                     {"structural_order": "crystalline,amorphous_polymer", "limit": "500", "offset": "0"})],
+                 json=_envelope([_PSDI_RECORD]), status=200)
+    df = api.get_materials_psdi(structural_order=["crystalline", "amorphous_polymer"])
+    assert len(df) == 1

@@ -108,7 +108,7 @@ _BUNDLE_SECTIONS = (
     "cifs", "isotherms", "water_kpis", "carbon_zeopp",
     "carbon_zeopp_experimental", "adsorption_singlepoint", "heat_capacity",
     "isotherm_h2", "adsorption_isotherm", "mofchecker", "zeopp_metrics",
-    "mof_h2", "h2_results",
+    "mof_h2", "h2_results", "properties",
 )
 # Server-side hard cap; over this the bundle endpoint returns 400 rather
 # than truncating.
@@ -126,6 +126,7 @@ _BUNDLE_READONLY_SECTIONS = {
     "isotherm_h2": "upsert_isotherm_h2",
     "adsorption_isotherm": "upsert_adsorption_isotherm",
     "mofchecker": "upsert_mofchecker",
+    "properties": "upsert_material_properties",
 }
 # Read-bundle keys with no write meaning — dropped silently by the endpoint.
 _BUNDLE_IGNORED_KEYS = ("_schema", "sections", "counts")
@@ -480,7 +481,8 @@ class PrismaAPIv2:
     # ── Catalog ───────────────────────────────────────────────────────────────
 
     def list_materials(self, name: str | None = None,
-                       limit: int = 10_000) -> pd.DataFrame:
+                       limit: int = 10_000,
+                       structural_order: str | list[str] | None = None) -> pd.DataFrame:
         """
         GET /api/v2/materials/
 
@@ -492,12 +494,16 @@ class PrismaAPIv2:
             name:   Case-insensitive substring filter on material name.
             limit:  Maximum total records to return across all pages
                     (default 10 000).  Pass ``limit=0`` for no cap.
+            structural_order: ``'crystalline'``, ``'amorphous_polymer'``, or a
+                    list of both. Amorphous polymers have no CIF by nature.
 
         Returns:
             List of materials (format controlled by ``set_return_format``).
             Each record includes the following fields:
 
             * ``id`` / ``name`` / ``cif_url``
+            * ``structural_order`` — ``'crystalline'`` (a CIF applies) or
+              ``'amorphous_polymer'`` (no unit cell, so no CIF)
             * ``material_id`` — same as ``name``, used as the slug identifier
             * ``material_backend`` — always ``'tabular_binary_iast'``
             * ``gas_basis`` — ``['CO2','N2','H2O']`` if Water KPI data exist, else ``['CO2','N2']``
@@ -513,7 +519,8 @@ class PrismaAPIv2:
         offset = 0
         while True:
             fetch = page_size if (limit == 0) else min(page_size, limit - len(all_records))
-            params = _compact(name=name, limit=fetch, offset=offset)
+            params = _compact(name=name, limit=fetch, offset=offset,
+                              structural_order=_structural_order_param(structural_order))
             raw = self._get("/materials/", params)
             page: list = raw.get("results", raw) if isinstance(raw, dict) else (raw or [])
             all_records.extend(page)
@@ -848,7 +855,8 @@ class PrismaAPIv2:
         raise TypeError("name must be a string or list of strings")
 
     def get_materials_psdi(self, name: str | None = None,
-                           limit: int = 500, offset: int = 0) -> pd.DataFrame:
+                           limit: int = 500, offset: int = 0,
+                           structural_order: str | list[str] | None = None) -> pd.DataFrame:
         """
         GET /api/v2/materials-psdi/
 
@@ -859,11 +867,14 @@ class PrismaAPIv2:
             name:   Case-insensitive substring filter on material name.
             limit:  Max records to return (default 500).
             offset: Pagination offset.
+            structural_order: ``'crystalline'``, ``'amorphous_polymer'``, or a
+                    list of both.
 
         Returns:
-            DataFrame with one row per material.
+            DataFrame with one row per material, including ``structural_order``.
         """
-        params = _compact(name=name, limit=limit, offset=offset)
+        params = _compact(name=name, limit=limit, offset=offset,
+                          structural_order=_structural_order_param(structural_order))
         return self._resolve_cif_url_df(self._to_df(self._get("/materials-psdi/", params)))
 
     def get_material_psdi(self, material_id: int) -> dict:
@@ -2248,23 +2259,90 @@ class PrismaAPIv2:
                        category: str | None = None,
                        object_id: int | None = None,
                        limit: int = 500,
-                       offset: int = 0) -> pd.DataFrame:
+                       offset: int = 0,
+                       content_type: str | None = None) -> pd.DataFrame:
         """
         GET /api/v2/properties/
 
         Args:
-            name:      Substring filter on property name.
-            domain:    Domain filter (e.g. 'TEA').
-            category:  Category filter (e.g. 'params_amb').
-            object_id: Exact object PK filter.
+            name:         Substring filter on property name.
+            domain:       Domain filter (e.g. 'TEA').
+            category:     Category filter (e.g. 'params_amb').
+            object_id:    Exact object PK filter.
+            content_type: Owner model name, e.g. 'mof', 'processconditions',
+                          'sink' (object ids are only unique per owner model).
         """
         params = _compact(name=name, domain=domain, category=category,
-                          object_id=object_id, limit=limit, offset=offset)
+                          object_id=object_id, content_type=content_type,
+                          limit=limit, offset=offset)
         return self._to_df(self._get("/properties/", params))
 
     def get_property(self, property_id: int) -> dict:
         """GET /api/v2/properties/{property_id}/"""
         return self._get(f"/properties/{property_id}/")
+
+    def get_material_properties(self,
+                                material: str | None = None,
+                                material_id: int | None = None,
+                                category: str | None = None,
+                                category_prefix: str | None = None,
+                                name: str | None = None,
+                                domain: str | None = None,
+                                match: str = "exact",
+                                limit: int = 2000,
+                                offset: int = 0) -> pd.DataFrame | list:
+        """
+        GET /api/v2/material-properties/
+
+        Per-material properties and model parameters (fitted isotherm models,
+        pellet properties, prices, LCA links, ...). Each row is keyed by
+        ``(material, category, name)`` and carries ``value`` (any JSON),
+        ``units``, ``description``, ``domain`` and the reference name/DOI.
+
+        Args:
+            material:        Material name (``match='exact'`` by default, or
+                             ``'contains'``).
+            material_id:     Material id.
+            category:        Exact category, e.g. ``'analytical.CO2'``.
+            category_prefix: Category prefix, e.g. ``'analytical.'``.
+            name:            Exact property name.
+            domain:          ``'Material'``, ``'TEA'`` or ``'System'``.
+        """
+        params = _compact(material=material, material_id=material_id, category=category,
+                          category_prefix=category_prefix, name=name, domain=domain,
+                          match=match if material else None, limit=limit, offset=offset)
+        return self._to_df(self._get("/material-properties/", params))
+
+    def upsert_material_properties(self, payload: pd.DataFrame | list[dict] | dict,
+                                   prune: bool = False,
+                                   raise_on_error: bool = False) -> dict:
+        """
+        PUT /api/v2/material-properties/
+
+        Each row: ``material`` (name) or ``material_id``, ``category``,
+        ``name``, ``value`` (any JSON), and optionally ``units``,
+        ``description``, ``domain`` (default ``'Material'``) and ``reference``
+        (``{"doi", "name", "url", "year", "description"}``, or the flat
+        ``reference_doi`` / ``reference_name`` that GET returns, so fetched
+        rows post back as-is). Rows match on ``(material, category, name)``;
+        the material must already exist.
+
+        Args:
+            prune: For each ``(material, category)`` in the payload, delete
+                   the rows whose name the payload does not list, so a
+                   category mirrors its source file. Other categories are
+                   never touched.
+            raise_on_error: Raise ``PrismaUpsertError`` instead of warning
+                   when the server rejects rows.
+
+        Returns:
+            ``{"created": n, "updated": n, ["deleted": n], ["errors": [...]]}``
+        """
+        records = self._payload_to_records(payload)
+        path = "/material-properties/" + ("?prune=true" if prune else "")
+        result = self._put(path, records, upsert_body_on_400=True)
+        _report_row_errors(result, "material_properties", raise_on_error, stacklevel=3)
+        return result
 
     def get_equipment(self, name: str | None = None, group: str | None = None,
                           limit: int = 500, offset: int = 0) -> pd.DataFrame:
@@ -4515,6 +4593,13 @@ class PrismaAPIv2:
 
 
 # ── Module-level helper ───────────────────────────────────────────────────────
+
+def _structural_order_param(value: str | list[str] | tuple[str, ...] | None) -> str | None:
+    """Join a list of structural_order values into the comma-separated query form."""
+    if value is None or isinstance(value, str):
+        return value
+    return ",".join(value)
+
 
 def _compact(**kwargs) -> dict:
     """Return kwargs dict with None values removed."""
