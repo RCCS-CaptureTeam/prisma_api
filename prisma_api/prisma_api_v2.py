@@ -108,7 +108,7 @@ _BUNDLE_SECTIONS = (
     "cifs", "isotherms", "water_kpis", "carbon_zeopp",
     "carbon_zeopp_experimental", "adsorption_singlepoint", "heat_capacity",
     "isotherm_h2", "adsorption_isotherm", "mofchecker", "zeopp_metrics",
-    "mof_h2", "h2_results",
+    "mof_h2", "h2_results", "properties",
 )
 # Server-side hard cap; over this the bundle endpoint returns 400 rather
 # than truncating.
@@ -126,6 +126,7 @@ _BUNDLE_READONLY_SECTIONS = {
     "isotherm_h2": "upsert_isotherm_h2",
     "adsorption_isotherm": "upsert_adsorption_isotherm",
     "mofchecker": "upsert_mofchecker",
+    "properties": "upsert_material_properties",
 }
 # Read-bundle keys with no write meaning — dropped silently by the endpoint.
 _BUNDLE_IGNORED_KEYS = ("_schema", "sections", "counts")
@@ -2248,23 +2249,90 @@ class PrismaAPIv2:
                        category: str | None = None,
                        object_id: int | None = None,
                        limit: int = 500,
-                       offset: int = 0) -> pd.DataFrame:
+                       offset: int = 0,
+                       content_type: str | None = None) -> pd.DataFrame:
         """
         GET /api/v2/properties/
 
         Args:
-            name:      Substring filter on property name.
-            domain:    Domain filter (e.g. 'TEA').
-            category:  Category filter (e.g. 'params_amb').
-            object_id: Exact object PK filter.
+            name:         Substring filter on property name.
+            domain:       Domain filter (e.g. 'TEA').
+            category:     Category filter (e.g. 'params_amb').
+            object_id:    Exact object PK filter.
+            content_type: Owner model name, e.g. 'mof', 'processconditions',
+                          'sink' (object ids are only unique per owner model).
         """
         params = _compact(name=name, domain=domain, category=category,
-                          object_id=object_id, limit=limit, offset=offset)
+                          object_id=object_id, content_type=content_type,
+                          limit=limit, offset=offset)
         return self._to_df(self._get("/properties/", params))
 
     def get_property(self, property_id: int) -> dict:
         """GET /api/v2/properties/{property_id}/"""
         return self._get(f"/properties/{property_id}/")
+
+    def get_material_properties(self,
+                                material: str | None = None,
+                                material_id: int | None = None,
+                                category: str | None = None,
+                                category_prefix: str | None = None,
+                                name: str | None = None,
+                                domain: str | None = None,
+                                match: str = "exact",
+                                limit: int = 2000,
+                                offset: int = 0) -> pd.DataFrame | list:
+        """
+        GET /api/v2/material-properties/
+
+        Per-material properties and model parameters (fitted isotherm models,
+        pellet properties, prices, LCA links, ...). Each row is keyed by
+        ``(material, category, name)`` and carries ``value`` (any JSON),
+        ``units``, ``description``, ``domain`` and the reference name/DOI.
+
+        Args:
+            material:        Material name (``match='exact'`` by default, or
+                             ``'contains'``).
+            material_id:     Material id.
+            category:        Exact category, e.g. ``'analytical.CO2'``.
+            category_prefix: Category prefix, e.g. ``'analytical.'``.
+            name:            Exact property name.
+            domain:          ``'Material'``, ``'TEA'`` or ``'System'``.
+        """
+        params = _compact(material=material, material_id=material_id, category=category,
+                          category_prefix=category_prefix, name=name, domain=domain,
+                          match=match if material else None, limit=limit, offset=offset)
+        return self._to_df(self._get("/material-properties/", params))
+
+    def upsert_material_properties(self, payload: pd.DataFrame | list[dict] | dict,
+                                   prune: bool = False,
+                                   raise_on_error: bool = False) -> dict:
+        """
+        PUT /api/v2/material-properties/
+
+        Each row: ``material`` (name) or ``material_id``, ``category``,
+        ``name``, ``value`` (any JSON), and optionally ``units``,
+        ``description``, ``domain`` (default ``'Material'``) and ``reference``
+        (``{"doi", "name", "url", "year", "description"}``, or the flat
+        ``reference_doi`` / ``reference_name`` that GET returns, so fetched
+        rows post back as-is). Rows match on ``(material, category, name)``;
+        the material must already exist.
+
+        Args:
+            prune: For each ``(material, category)`` in the payload, delete
+                   the rows whose name the payload does not list, so a
+                   category mirrors its source file. Other categories are
+                   never touched.
+            raise_on_error: Raise ``PrismaUpsertError`` instead of warning
+                   when the server rejects rows.
+
+        Returns:
+            ``{"created": n, "updated": n, ["deleted": n], ["errors": [...]]}``
+        """
+        records = self._payload_to_records(payload)
+        path = "/material-properties/" + ("?prune=true" if prune else "")
+        result = self._put(path, records, upsert_body_on_400=True)
+        _report_row_errors(result, "material_properties", raise_on_error, stacklevel=3)
+        return result
 
     def get_equipment(self, name: str | None = None, group: str | None = None,
                           limit: int = 500, offset: int = 0) -> pd.DataFrame:

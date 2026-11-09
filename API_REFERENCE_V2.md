@@ -392,14 +392,36 @@ api.v2.get_subsystem(1)
 
 ---
 
-#### `api.v2.get_properties(name=None, domain=None, category=None, object_id=None, limit=500, offset=0)` / `api.v2.get_property(property_id)`
+#### `api.v2.get_properties(name=None, domain=None, category=None, object_id=None, limit=500, offset=0, content_type=None)` / `api.v2.get_property(property_id)`
 
 Generic key/value property records linked to any model object via a Django
-`GenericForeignKey` (`object_id`).
+`GenericForeignKey` (`content_type` + `object_id`). Object ids are only unique
+per owner model, so filter on `content_type` (`'mof'`, `'processconditions'`,
+`'sink'`, ...) together with `object_id`.
 
 ```python
 api.v2.get_properties(domain='TEA', category='params_amb')
+api.v2.get_properties(content_type='processconditions', object_id=34)
 api.v2.get_property(1)
+```
+
+---
+
+#### `api.v2.get_material_properties(material=None, material_id=None, category=None, category_prefix=None, name=None, domain=None, match='exact', limit=2000, offset=0)` / `api.v2.upsert_material_properties(payload, prune=False, raise_on_error=False)`
+
+Per-material properties and model parameters: fitted isotherm models,
+pellet properties, prices, LCA links. Stored as `Property` rows on the
+material and keyed by `(material, category, name)`; `value` may be any JSON.
+They also appear, read-only, as the `properties` section of
+`get_material_bundles`.
+
+```python
+api.v2.get_material_properties(material='Zeolite_13X', category_prefix='analytical.')
+api.v2.upsert_material_properties([
+    {'material': 'Zeolite_13X', 'category': 'analytical.CO2', 'name': 'q_s_b',
+     'value': 3.257, 'units': 'mol/kg',
+     'reference': {'doi': '10.1007/s10450-020-00199-3', 'name': 'Wilkins et al. 2020'}},
+], prune=True)   # prune: rows of analytical.CO2 on Zeolite_13X not listed are deleted
 ```
 
 ---
@@ -437,6 +459,10 @@ api.v2.get_equipment_design(1)
 api.v2.get_process_conditions(type='tvsa')
 api.v2.get_process_condition(1)
 ```
+
+`get_process_condition` also returns the condition's parameters as
+`properties` (one `{name, value, units, description, reference_name, reference_doi}`
+per record of the source YAML).
 
 ---
 
