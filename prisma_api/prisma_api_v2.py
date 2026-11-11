@@ -102,6 +102,10 @@ class PrismaUnknownFieldsWarning(UserWarning):
 class PrismaNewStructureWarning(UserWarning):
     """The upsert created MOF records for structure names that matched nothing."""
 
+
+class PrismaMd5WithoutCifWarning(UserWarning):
+    """Stored AutoPrism rows name an input CIF (by md5) the platform does not have."""
+
 # Material bundle sections, in the order the API emits them. Every section is a
 # list except ``mof_h2``, which is a single object or None.
 _BUNDLE_SECTIONS = (
@@ -1725,7 +1729,7 @@ class PrismaAPIv2:
             _check_nested_ids(records, wrapper_key)
         meta = self._resolve_meta_provenance(meta_provenance, repo_dir)
         enriched = [
-            {**record, "meta_provenance": meta} if isinstance(record, dict) else record
+            {**record, "meta_provenance": _row_meta(meta, record)} if isinstance(record, dict) else record
             for record in records
         ]
         result = self._put(path, enriched, timeout=timeout, upsert_body_on_400=True)
@@ -2661,6 +2665,61 @@ class PrismaAPIv2:
         _report_row_errors(result, "computation_runs", raise_on_error, stacklevel=3)
         return result
 
+    def upload_computation_run_bundle(self, run_id: str, bundle_path: str | Path,
+                                      timeout: int | None = None) -> dict:
+        """
+        PUT /api/v2/computation-runs/{run_id}/bundle/
+
+        Store a run's provenance bundle (any file, e.g. a ``.tar.gz``) on the
+        platform. Its SHA-256 is computed here and sent with it; the server
+        measures the upload again and refuses it (HTTP 400) on a mismatch, or
+        when it differs from a bundle hash already on the run. It then sets the
+        run's ``provenance_bundle_sha256`` and ``provenance_bundle_uri``. The
+        run must exist (send its rows, or ``upsert_computation_runs``, first).
+
+        Returns:
+            ``{"id", "sha256", "bytes", "uri", "replaced"}``.
+
+        Raises:
+            requests.HTTPError: the server refused the bundle; the message
+                carries its reason (e.g. the hash it measured).
+        """
+        path = Path(bundle_path)
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        with open(path, "rb") as fh:
+            resp = requests.put(
+                self._url(f"/computation-runs/{run_id}/bundle/"),
+                params={"sha256": digest.hexdigest()},
+                files={"file": (path.name, fh, "application/octet-stream")},
+                headers={"X-API-Key": self._key}, timeout=timeout or self.upload_timeout,
+            )
+        _raise_with_body(resp)
+        return resp.json()
+
+    def download_computation_run_bundle(self, run_id: str, dest: str | Path,
+                                        verify: bool = True, timeout: int = 300) -> Path:
+        """
+        GET /api/v2/computation-runs/{run_id}/bundle/ into *dest* (a file, or a folder for the server's name).
+
+        With *verify*, checks the file against the run's
+        ``provenance_bundle_sha256`` and raises ``ValueError`` on a mismatch.
+        """
+        resp = self._request_bytes(f"/computation-runs/{run_id}/bundle/", {}, timeout=timeout)
+        dest = Path(dest)
+        if dest.is_dir():
+            match = re.search(r'filename="?([^";]+)"?', resp.headers.get("Content-Disposition", ""))
+            dest = dest / (match.group(1) if match else f"{run_id}_bundle")
+        dest.write_bytes(resp.content)
+        if verify:
+            expected = (self.get_computation_run(run_id) or {}).get("provenance_bundle_sha256")
+            actual = hashlib.sha256(resp.content).hexdigest()
+            if expected and actual != expected:
+                raise ValueError(f"{dest}: sha256 {actual} does not match the run's {expected}")
+        return dest
+
     def get_adsorption_singlepoint(
         self,
         structure: str | None = None,
@@ -3265,7 +3324,8 @@ class PrismaAPIv2:
             bundle = bundles.setdefault(structure, {"material": {"name": structure}, "cifs": []})
             if any(row["filename"] == filename for row in bundle["cifs"]):
                 continue  # the same file twice
-            bundle["cifs"].append({"filename": filename, "content": content,
+            # The server checks md5 against the content too, and records it on the CIF row.
+            bundle["cifs"].append({"filename": filename, "content": content, "md5": md5,
                                    "tags": list(tags or [])})
 
         ordered = list(bundles.values())
@@ -3402,6 +3462,7 @@ class PrismaAPIv2:
         failed = 0
         unknown_by_section: dict[str, dict] = {}
         new_structures: set[str] = set()
+        md5_without_cif: dict[tuple, dict] = {}
 
         for section_name, method_name in section_handlers:
             section_payload = payload.get(section_name)
@@ -3418,7 +3479,8 @@ class PrismaAPIv2:
                 # the per-table warnings.
                 with warnings.catch_warnings():
                     for category in (PrismaRowErrorWarning, PrismaUnknownFieldsWarning,
-                                     PrismaNewStructureWarning, DeprecationWarning):
+                                     PrismaNewStructureWarning, PrismaMd5WithoutCifWarning,
+                                     DeprecationWarning):
                         warnings.simplefilter("ignore", category)
                     if method_name == "upsert_autoprism_cifs":
                         result = method(section_payload, tags=cif_tags,
@@ -3456,6 +3518,11 @@ class PrismaAPIv2:
                 if created_structures:
                     sections[section_name]["new_structures"] = created_structures
                     new_structures.update(str(n) for n in created_structures)
+                missing = _md5_without_cif(result)
+                if missing:
+                    sections[section_name]["md5_without_cif"] = missing
+                    for item in missing:
+                        md5_without_cif[(str(item.get("structure")), str(item.get("md5")))] = item
             except Exception as exc:  # noqa: BLE001 - any failure is reported per section
                 failed += 1
                 sections[section_name] = {
@@ -3471,6 +3538,7 @@ class PrismaAPIv2:
                 "rejected": total_rejected,
                 "failed_sections": failed,
                 "new_structures": sorted(new_structures),
+                "md5_without_cif": [md5_without_cif[k] for k in sorted(md5_without_cif)],
             },
             "overall_status": "ok" if failed == 0 else "partial_failure",
         }
@@ -3483,6 +3551,12 @@ class PrismaAPIv2:
                 f"AutoPrism upsert created {len(new_structures)} new MOF record(s) for "
                 f"structure names that matched nothing: {sorted(new_structures)}",
                 PrismaNewStructureWarning, stacklevel=2)
+        if md5_without_cif:
+            missing = summary["totals"]["md5_without_cif"]
+            warnings.warn(
+                f"AutoPrism upsert: {len(missing)} (structure, md5) pair(s) have results but no "
+                f"stored CIF; send their files in the cifs section: {missing[:10]}",
+                PrismaMd5WithoutCifWarning, stacklevel=2)
         if failed:
             problems = "; ".join(
                 f"{name}: " + (
@@ -4052,7 +4126,7 @@ class PrismaAPIv2:
 
     def ingest_dataset(self, zip_path: str, dry_run: bool = True,
                        timeout: int = 1800, tags: list[str] | None = None,
-                       package: int | None = None) -> dict:
+                       package: int | None = None, allow_unverified: bool = False) -> dict:
         """
         Send a dataset package zip (files + ``prisma_manifest.yaml``).
 
@@ -4072,6 +4146,9 @@ class PrismaAPIv2:
                 Files not ticked there are left out, and an applied zip is kept
                 on that upload. ``prisma_api.dataset_package.upload`` reads it
                 from the zip.
+            allow_unverified: Apply a package whose manifest lists no ``files``
+                checksums (an old or hand-made zip). The server refuses to
+                apply one otherwise; ``pack`` always writes them.
 
         Returns:
             The ``prisma.dataset.ingest.report.v1`` report: ``ok``, ``counts``
@@ -4083,7 +4160,8 @@ class PrismaAPIv2:
             resp = requests.post(
                 self._url("/datasets/ingest/"),
                 params=_compact(dry_run="true" if dry_run else "false",
-                                tags=",".join(tags) if tags else None, package=package),
+                                tags=",".join(tags) if tags else None, package=package,
+                                allow_unverified="true" if allow_unverified else None),
                 files={"file": (Path(zip_path).name, fh, "application/zip")},
                 headers={"X-API-Key": self._key}, timeout=timeout,
             )
@@ -4691,8 +4769,88 @@ def _upsert_notices(result: Any) -> tuple[dict, list]:
             list(created) if isinstance(created, (list, tuple)) else [])
 
 
+def _md5_without_cif(result: Any) -> list[dict]:
+    """``md5_without_cif`` from an upsert response: [{structure, md5}] whose CIF the server lacks."""
+    found = result.get("md5_without_cif") if isinstance(result, dict) else None
+    return [r for r in found if isinstance(r, dict)] if isinstance(found, list) else []
+
+
+def _row_meta(meta: dict, record: dict) -> dict:
+    """The provenance stamped on one row: *meta*, plus the row's own job ``files``.
+
+    Each AutoPrism job reads and writes its own files, so a row may carry
+    ``meta_provenance: {"files": [...]}`` (see :func:`provenance_files`);
+    everything else in the row's ``meta_provenance`` is replaced by *meta*.
+    """
+    own = record.get("meta_provenance")
+    if isinstance(own, dict) and own.get("files") is not None:
+        files = own["files"]
+        _check_provenance_files(files)
+        return {**meta, "files": files}
+    return meta
+
+
+def _check_provenance_files(files: Any) -> None:
+    """Raise ValueError for a file list the server would refuse (see provenance_files)."""
+    if not isinstance(files, list):
+        raise ValueError("meta_provenance.files must be a list of {'path', 'sha256', 'bytes'} dicts")
+    seen = set()
+    for index, entry in enumerate(files):
+        path = entry.get("path") if isinstance(entry, dict) else None
+        sha = str(entry.get("sha256") or "") if isinstance(entry, dict) else ""
+        if not path:
+            raise ValueError(f"meta_provenance.files[{index}]: path is required")
+        if path in seen:
+            raise ValueError(f"meta_provenance.files[{index}]: path '{path}' is listed twice")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", sha):
+            raise ValueError(f"meta_provenance.files[{index}] ('{path}'): sha256 must be 64 hex characters")
+        seen.add(path)
+
+
+def provenance_files(paths, root: str | Path | None = None) -> list[dict]:
+    """
+    The ``files`` list for ``meta_provenance``: the files one job read and wrote.
+
+    Returns ``[{"path", "sha256", "bytes"}, ...]`` in the given order. Paths
+    are written relative to *root* (POSIX separators) when given, so the
+    list doesn't depend on where the job ran. The server identifies a
+    provenance record by repo, commit and this list (in any order), so rows
+    from jobs with the same files share one record.
+
+    Raises:
+        FileNotFoundError: a path does not exist.
+        ValueError: a path is outside *root*, or listed twice.
+    """
+    base = Path(root).resolve() if root is not None else None
+    out, seen = [], set()
+    for raw in paths:
+        path = Path(raw)
+        full = (base / path if base is not None and not path.is_absolute() else path).resolve()
+        if base is not None:
+            try:
+                name = full.relative_to(base).as_posix()
+            except ValueError:
+                raise ValueError(f"{raw}: outside {base}") from None
+        else:
+            name = Path(raw).as_posix()
+        if name in seen:
+            raise ValueError(f"{name}: listed twice")
+        seen.add(name)
+        digest = hashlib.sha256()
+        with open(full, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        out.append({"path": name, "sha256": digest.hexdigest(), "bytes": full.stat().st_size})
+    return out
+
+
 def _warn_upsert_notices(result: Any, path: str, stacklevel: int = 4) -> None:
-    """Warn about ignored payload fields and newly created MOF records."""
+    """Warn about ignored payload fields, newly created MOF records and rows without their CIF."""
+    missing = _md5_without_cif(result)
+    if missing:
+        warnings.warn(f"{path}: {len(missing)} stored row(s) name an input CIF the platform does not "
+                      f"have (upload it with upsert_autoprism_cifs): {missing[:10]}",
+                      PrismaMd5WithoutCifWarning, stacklevel=stacklevel)
     unknown, created = _upsert_notices(result)
     if unknown:
         warnings.warn(f"{path}: server ignored fields it does not store: {unknown}",

@@ -692,7 +692,8 @@ def source_tree(root: Path, files: list[str], resolved: list[dict], checksums: d
 
 
 def upload(zip_path: str | Path, dry_run: bool = True, api: Any = None, timeout: int = 1800,
-           local_dev: bool | None = None, tags: list[str] | str | None = None) -> dict:
+           local_dev: bool | None = None, tags: list[str] | str | None = None,
+           allow_unverified: bool = False) -> dict:
     """
     Send a packed zip; returns the server report (``ok: false`` with errors when rejected).
 
@@ -700,6 +701,8 @@ def upload(zip_path: str | Path, dry_run: bool = True, api: Any = None, timeout:
     ``localhost:<dev_host_port>`` with ``dev_api_key``) / ``local_dev=False``
     (production). With neither, it refuses rather than guess the target.
     ``tags`` adds tag names to those in the packed manifest.
+    ``allow_unverified`` applies a zip whose manifest has no ``files``
+    checksums (made by hand or by an old pack); the server refuses otherwise.
     """
     if api is None:
         if local_dev is None:
@@ -708,7 +711,7 @@ def upload(zip_path: str | Path, dry_run: bool = True, api: Any = None, timeout:
         api = init(local_dev=local_dev)
     v2 = getattr(api, "v2", api)
     return v2.ingest_dataset(str(zip_path), dry_run=dry_run, timeout=timeout, tags=_tag_list(tags),
-                             package=packed_tree(zip_path))
+                             package=packed_tree(zip_path), allow_unverified=allow_unverified)
 
 
 def packed_tree(zip_path: str | Path) -> int | None:

@@ -1,6 +1,6 @@
 ---
 name: release-notes
-description: Write or extend plain-language release notes for the prisma_api Python client, for a minor release series (`/release-notes v0.4.x`) or for one patch tag (`/release-notes v0.4.7`), including a tag that is about to be released (commits since the latest tag plus uncommitted changes). Only genuine GitHub releases (and tags newer than the latest release) get notes; historical tags without a release are skipped and folded into the next release. Keeps one Markdown doc per minor release (docs/release_notes/v0.4.x.md) with an H1 per patch tag, the release edit link under each H1, H3 themed sections grouped by the client's endpoint sets (v2 case studies, flowsheets, AutoPrism, materials & CIFs, adsorption data, TEA/LCA, PSDI, v1 client, setup, …) of up to 5 bullets each, and a GitHub compare link per patch. Only patches missing from the docs are written, including any released since the notes were last updated. Use when asked for release notes, a release summary or a changelog for a version series or an upcoming release.
+description: Write or extend plain-language release notes for the prisma_api Python client, for a minor release series (`/release-notes v0.4.x`) or for one patch tag (`/release-notes v0.4.7`), including a tag that is about to be released (commits since the latest tag plus uncommitted changes). Only genuine GitHub releases (and tags newer than the latest release) get notes; historical tags without a release are skipped and folded into the next release. Keeps one Markdown doc per minor release (docs/release_notes/v0.4.x.md) with an H1 per patch tag, the release edit link under each H1, H3 themed sections grouped by the client's endpoint sets (v2 case studies, flowsheets, AutoPrism, materials & CIFs, adsorption data, TEA/LCA, PSDI, v1 client, setup, …) of up to 5 bullets each, and a GitHub compare link per patch. Also keeps the README's version-specific notes in step (per-release prisma_cloud server-compatibility notes, `needs prisma_cloud >= …` on method entries, release-notes links). Only patches missing from the docs are written, including any released since the notes were last updated. Use when asked for release notes, a release summary or a changelog for a version series or an upcoming release.
 argument-hint: v0.4.x | v0.4.7
 ---
 
@@ -204,7 +204,50 @@ versions are the H1s):
 <!-- Release notes for prisma_api v0.4.x: one section per patch, newest first. Maintained by the release-notes skill. -->
 ```
 
-## 4. Insert and validate
+## 4. Update the README's version notes
+
+Every release also updates the version-specific notes in
+[README.md](../../../README.md), for the same releases you just wrote. Do this
+without being asked.
+
+- **Find the server version.** Most new client features need a minimum
+  prisma_cloud server version. The server repo is usually checked out next to
+  this one (`../prisma_cloud`). For each new endpoint, parameter or response
+  field, find the first commit that added it there and the first tag that
+  contains it:
+
+  ```bash
+  cd ../prisma_cloud
+  c=$(git log --reverse --format=%H -G '<endpoint path, view or field name>' -- '*.py' | head -1)
+  git log -1 --format='%h %ad %s' --date=short $c; git tag --contains $c --sort=v:refname | head -1
+  ```
+
+  Search for something specific to the feature (`screening-outputs/ingest/`,
+  `allow_unverified`, `query_params.get('content_type')`), not a common word
+  that matches older code. Check what the client does on an older server (a
+  404, or a fallback such as ingesting within the request). If
+  `../prisma_cloud` is missing, or the result is unclear, ask the user rather
+  than guess.
+- **Server-compatibility note.** Under `## Notes`, add one bullet per release,
+  oldest first, in the form `- 0.4.8: <features> need prisma_cloud >= 0.6.23.`
+  Name the methods, CLI commands and parameters, group them by the server
+  version they need, and say what changes on older servers. Also mention any
+  change users must act on (e.g. the server now refusing old inputs). If a
+  release needs no new server, still add the bullet (`- 0.4.10: no new server
+  requirements.`).
+- **Method entries.** On each new or changed method in the v2 wrapper list,
+  add `needs prisma_cloud >= X` to its description. Add any new parameters to
+  its signature, and add new methods, exports or CLI commands that the README
+  doesn't list yet.
+- **Release notes too.** Bullets for features that need a newer server say so
+  in the release notes as well ("needs prisma_cloud 0.6.24 or later").
+- **Series link.** For a new minor series, add its doc to the "Release notes,
+  one file per minor series" line under `## Additional documentation`,
+  newest first.
+
+Don't rewrite notes for older releases unless they are wrong or missing.
+
+## 5. Insert and validate
 
 Add each new section to its series doc. Position doesn't matter, because the
 check step sorts them. Then run the check that `plan` printed for each doc
@@ -222,13 +265,16 @@ This reorders the H1 sections newest-first and adds the release edit link
 under any H1 that lacks one. It reports a `PROBLEM:` for any of the
 following: an edit link for the wrong tag, a wrong or missing changelog URL,
 more than 5 bullets in a theme, a heading that isn't a real tag, or a heading
-for a historical tag with no release. For a historical tag, remove its section
-and fold its changes into the next release. Fix every problem and re-run until
+for a historical tag with no release. It also checks the README. Every
+release in the doc newer than the oldest `- X.Y.Z:` note under `## Notes` needs
+its own note, and the README must link to the series doc. For a historical tag,
+remove its section and fold its changes into the next release. Fix every problem and re-run until
 it is clean.
 
-## 5. Report
+## 6. Report
 
-Tell the user which patches were added and the doc paths. Say which sections
+Tell the user which patches were added and the doc paths, and which README
+notes were added or updated, with the prisma_cloud versions you found. Say which sections
 were missed releases, and, for an upcoming release, that its notes include
 uncommitted changes and should be re-checked if more changes land before
 tagging. The notes can be pasted into the GitHub release body via the edit

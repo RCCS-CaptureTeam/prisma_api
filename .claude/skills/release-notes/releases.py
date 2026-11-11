@@ -9,6 +9,10 @@
                               # edit links under each H1, and validate the doc
   releases.py check v0.4.7   # the same for v0.4.7's doc, accepting the upcoming tag
 
+`check` also checks README.md: every release in the doc newer than the oldest
+server-compatibility note ('- 0.4.4: ...' under '## Notes') needs a note of its own,
+and the README must link to the series doc.
+
 Only genuine releases count: tags with a published GitHub release, plus every tag newer
 than the latest release (assumed to become releases). Older tags without a release are
 historical and skipped; their commits fold into the next release's compare range.
@@ -29,6 +33,7 @@ from urllib.request import Request, urlopen
 
 REPO = Path(__file__).resolve().parents[3]
 NOTES_DIR = REPO / "docs" / "release_notes"
+README = REPO / "README.md"
 COMPARE = "https://github.com/RCCS-CaptureTeam/prisma_api/compare/{prev}...{tag}"
 EDIT = "https://github.com/RCCS-CaptureTeam/prisma_api/releases/edit/{tag}"
 RELEASES_API = "https://api.github.com/repos/RCCS-CaptureTeam/prisma_api/releases?per_page=100&page={page}"
@@ -54,6 +59,8 @@ AREAS = [
 DEF_RE = re.compile(r"^([+-])    def ([a-z]\w*)\(", re.M)
 TAG_RE = re.compile(r"^v(\d+(?:\.\d+)+)$")
 H1_RE = re.compile(r"^# (v\d+(?:\.\d+)+)\s*$", re.M)
+# A server-compatibility note in the README: "- 0.4.8: ... need prisma_cloud >= 0.6.23"
+NOTE_RE = re.compile(r"^- (\d+(?:\.\d+)+): ", re.M)
 
 
 def git(*args):
@@ -129,6 +136,26 @@ def documented_tags():
     for path in NOTES_DIR.glob("v*.x.md"):
         found |= set(H1_RE.findall(path.read_text()))
     return found
+
+
+def readme_problems(major, minor, doc_tags):
+    """README.md gaps for this series: missing per-release server-compatibility notes
+    (for releases newer than the oldest note) and a missing link to the series doc."""
+    if not README.exists():
+        return []
+    text = README.read_text()
+    noted = {f"v{v}" for v in NOTE_RE.findall(text)}
+    problems = []
+    if noted:
+        oldest = min(noted, key=vkey)
+        for t in sorted(doc_tags, key=vkey):
+            if vkey(t) > vkey(oldest) and t not in noted:
+                problems.append(f"README.md: no server-compatibility note '- {t[1:]}: ...' "
+                                "under '## Notes'")
+    link = f"docs/release_notes/v{major}.{minor}.x.md"
+    if link not in text:
+        problems.append(f"README.md: no link to {link} (Additional documentation)")
+    return problems
 
 
 def upcoming_tag(tag, tags):
@@ -254,6 +281,9 @@ def plan(major, minor, tag):
     if upcoming:
         docs[series_doc(upcoming)] = upcoming
     if docs:
+        print("then update README.md: a '- X.Y.Z: ...' server-compatibility note under "
+              "'## Notes' for each new release, and the 'needs prisma_cloud >= ...' notes "
+              "on its method entries (see SKILL.md step 4)")
         print("then run:", "; ".join(
             f"releases.py check {t if t == upcoming else d.stem}" for d, t in sorted(docs.items())))
 
@@ -304,6 +334,8 @@ def check(major, minor, tag):
             bullets = len(re.findall(r"^- ", theme.split("\n## ")[0], re.M))
             if bullets > 5:
                 problems.append(f"{t}: theme '{theme.splitlines()[0]}' has {bullets} bullets (max 5)")
+
+    problems += readme_problems(major, minor, [H1_RE.match(s).group(1) for s in sections])
 
     out = (preamble + "\n\n" if preamble else "") + "\n\n".join(sections) + "\n"
     path.write_text(out)

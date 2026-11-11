@@ -643,6 +643,23 @@ api.v2.upsert_zeopp_metrics(rows, meta_provenance={
 })
 ```
 
+**Job files.** A row may carry `meta_provenance: {"files": [...]}`, the files
+the job that produced it read and wrote; that `files` list is kept on the row
+(everything else in the row's `meta_provenance` is replaced as above). Build it
+with `prisma_api.provenance_files(paths, root=job_dir)`, which returns
+`[{"path", "sha256", "bytes"}]` with paths relative to `root`. A malformed list
+raises `ValueError` before sending. The server (prisma_cloud >= 0.6.24) links
+each row to a provenance record identified by repo, commit and the file list,
+so rows from jobs with the same files share one record; their GETs return it
+as `meta_provenance`, with `files` and `files_sha256`.
+
+```python
+from prisma_api import provenance_files
+files = provenance_files(['results/mofchecker.csv', 'cifs/LAGNAK.cif'], root=job_dir)
+rows = [{**row, 'meta_provenance': {'files': files}} for row in rows]
+api.v2.upsert_mofchecker(rows)
+```
+
 #### Lookup keys
 
 The server keeps **one row per configuration**: an upsert updates the stored
@@ -719,6 +736,10 @@ apply):
   schema drift. `meta_provenance` is never listed.
 - `prisma_api.PrismaNewStructureWarning` — `new_structures` lists MOF names
   this request created because the `structure` name matched no existing MOF.
+- `prisma_api.PrismaMd5WithoutCifWarning` — `md5_without_cif`
+  (`[{"structure", "md5"}]`) lists stored rows whose input CIF (named by its
+  md5) the platform does not have. Upload the files with
+  `upsert_autoprism_cifs`; the key is absent once every row has its CIF.
 
 Example payloads (generated from a real AutoPrism export):
 `reference_data/autoprism/01/mock_payload_*.json`.
@@ -732,6 +753,8 @@ the MOF named by `structure`. Each item is
 `{"structure": name, "content": cif_text, "md5": md5_of_the_bytes}`;
 `content` must be the file's exact text (bytes decoded as UTF-8, no newline
 translation), and a given `md5` that doesn't match it raises `ValueError`.
+Each CIF row is sent with its `md5`, which the server checks again and records
+on the `CIF` row (with its `sha256`).
 
 Files are stored as **`{structure}__autoprism_{md5[:12]}.cif`**, never under
 the bare structure name. The server stores CIFs as `cifs/<basename>`, and a
@@ -792,6 +815,27 @@ api.v2.upsert_computation_runs({
     'step': 'adsorption',
     'status': 'done',
 })
+```
+
+---
+
+#### `api.v2.upload_computation_run_bundle(run_id, bundle_path, timeout=None)` / `api.v2.download_computation_run_bundle(run_id, dest, verify=True, timeout=300)`
+
+Stores a run's provenance bundle (any file, e.g. a `.tar.gz`) on the platform
+(`PUT /api/v2/computation-runs/<id>/bundle/`, prisma_cloud >= 0.6.24). The
+SHA-256 is computed here and sent with the file; the server measures the upload
+again and refuses it on a mismatch, or when it differs from a bundle hash
+already on the run (raises `requests.HTTPError` with the server's reason). It
+then sets the run's `provenance_bundle_sha256` and `provenance_bundle_uri`.
+The run must already exist. Returns `{"id", "sha256", "bytes", "uri", "replaced"}`.
+
+`download_computation_run_bundle` saves the bundle to `dest` (a file, or a
+folder to use the server's file name) and, with `verify=True`, raises
+`ValueError` if it doesn't match the run's `provenance_bundle_sha256`.
+
+```python
+api.v2.upload_computation_run_bundle(run_id, 'bundles/job_42.tar.gz')
+api.v2.download_computation_run_bundle(run_id, 'downloads/')
 ```
 
 ---
@@ -958,11 +1002,17 @@ Server notices are collected rather than warned per table: each section's
 summary carries its `unknown_fields` / `new_structures`,
 `totals["new_structures"]` is the sorted union of names, and one combined
 `PrismaUnknownFieldsWarning` / `PrismaNewStructureWarning` is emitted per kind.
+Likewise `totals["md5_without_cif"]` lists each `(structure, md5)` pair with
+results but no stored CIF once (one `PrismaMd5WithoutCifWarning`); since the
+`cifs` section is sent first, a pair listed there had no file in the payload.
+Like the other notices it does not count as a failure: callers that must not
+publish results without their input CIF should check it.
 
 ```python
 result = api.v2.upsert_autoprism_collection(payload, raise_on_error=True)
 result['totals']
-# {'created': ..., 'updated': ..., 'rejected': 0, 'failed_sections': 0, 'new_structures': []}
+# {'created': ..., 'updated': ..., 'rejected': 0, 'failed_sections': 0, 'new_structures': [],
+#  'md5_without_cif': []}
 ```
 
 ---

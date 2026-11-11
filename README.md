@@ -224,7 +224,8 @@ Module-level helpers exported from the package:
 - `prisma_api.update_dev_mode` — deprecated, as above
 - `prisma_api.update_dev_host_port`
 - `prisma_api.locate_config`
-- `prisma_api.PrismaUpsertError`, `prisma_api.PrismaRowErrorWarning`, `prisma_api.PrismaUnknownFieldsWarning`, `prisma_api.PrismaNewStructureWarning`
+- `prisma_api.PrismaUpsertError`, `prisma_api.PrismaRowErrorWarning`, `prisma_api.PrismaUnknownFieldsWarning`, `prisma_api.PrismaNewStructureWarning`, `prisma_api.PrismaMd5WithoutCifWarning`
+- `prisma_api.provenance_files(paths, root=None)` — the `meta_provenance.files` list (`path`, `sha256`, `bytes`) of the files one job read and wrote; the server keeps it from prisma_cloud >= 0.6.24
 
 ## v2 wrapper list
 
@@ -239,17 +240,17 @@ All methods below are available on `api.v2`.
 
 ### Materials and bundles
 
-- `list_materials(name=None, limit=10000, structural_order=None)` — `structural_order` takes one value or a list, e.g. `'amorphous_polymer'` (materials with no unit cell, so no CIF)
+- `list_materials(name=None, limit=10000, structural_order=None)` — `structural_order` takes one value or a list, e.g. `'amorphous_polymer'` (materials with no unit cell, so no CIF); needs prisma_cloud >= 0.6.23
 - `get_material(material_id=None, *, name=None, bundle=['isotherms','zeopp','water_kpis','cif'], sim_or_exp=None, good_structure=None, limit=500, offset=0, include_cif_text=False, cif_timeout=60)` (`bundle=None` returns root-only material detail; `name` may be a list)
 - `list_cifs(tag=None)`
 - `get_cifs(mof, structured=True, pandas=True, save_dir=None)` — one name or a list; `save_dir` writes the `.cif` files
-- `get_materials_psdi(name=None, limit=500, offset=0, structural_order=None)`
+- `get_materials_psdi(name=None, limit=500, offset=0, structural_order=None)` — `structural_order` needs prisma_cloud >= 0.6.23
 - `get_material_psdi(material_id)`
 - `get_material_property_bundle(mof, sim_or_exp=None, good_structure=None, limit=500, offset=0, query=None)`
 - `get_material_bundle(mof, sim_or_exp=None, good_structure=None, limit=500, offset=0, query=None, include_cif=False, include_cif_text=False, cif_timeout=60)`
 - `get_material_bundles(names=None, ids=None, sections=None, exclude=None, include_cif_content=False, match='exact', output='json', save_path=None, use_post=False, timeout=300)` — server-side bundle endpoints; accepts one name or a list of names. Includes a read-only `properties` section (see `get_material_properties`)
 - `upsert_material_bundles(bundles, cif_files=None, create_materials=True, strip_ids=False, inline_cifs=False, derive_cif_metadata=True, tag_names=None, method=None, timeout=300)` — write counterpart of `get_material_bundles`; takes the same document the read endpoint returns, with optional CIF upload
-- `get_material_properties(material=None, material_id=None, category=None, category_prefix=None, name=None, domain=None, match='exact', limit=2000, offset=0)` — per-material properties and model parameters (fitted isotherm models, pellet properties, prices, LCA links), keyed by material, category and name; `value` may be any JSON
+- `get_material_properties(material=None, material_id=None, category=None, category_prefix=None, name=None, domain=None, match='exact', limit=2000, offset=0)` — per-material properties and model parameters (fitted isotherm models, pellet properties, prices, LCA links), keyed by material, category and name; `value` may be any JSON. Needs prisma_cloud >= 0.6.23
 - `upsert_material_properties(payload, prune=False, raise_on_error=False)` — `prune=True` deletes a material's rows in each sent category that the payload doesn't list; row errors warn (`PrismaRowErrorWarning`) or, with `raise_on_error`, raise `PrismaUpsertError`
 - `preflight_material_check(name)`
 
@@ -276,7 +277,7 @@ All methods below are available on `api.v2`.
 - `get_dataset_targets()` — what a dataset manifest may write on the server: targets, kinds, allowed keys and fields
 - `register_dataset_tree(tree, dataset, manifest=None, tags=None, package=None, timeout=600)` — sends a folder's structure (paths and sizes only) so files can be ticked on the dataset's page; `package` refreshes an existing tree, keeping its ticks. Used by `prisma-dataset tree`
 - `list_dataset_trees(dataset=None, limit=50)` / `get_dataset_tree(package)` — registered trees, and one tree's files with their ticks
-- `ingest_dataset(zip_path, dry_run=True, timeout=1800, tags=None, package=None)` — sends a dataset package (files + `prisma_manifest.yaml`, built with `prisma-dataset pack`) to `POST /api/v2/datasets/ingest/`; returns the server report, including on rejection. Dry run unless `dry_run=False`. The format: `prisma-dataset guide`
+- `ingest_dataset(zip_path, dry_run=True, timeout=1800, tags=None, package=None, allow_unverified=False)` — sends a dataset package (files + `prisma_manifest.yaml`, built with `prisma-dataset pack`) to `POST /api/v2/datasets/ingest/`; returns the server report, including on rejection. Dry run unless `dry_run=False`. The format: `prisma-dataset guide`. From prisma_cloud 0.6.24 a zip whose manifest has no `files` checksums (hand-made, or packed by prisma_api < 0.4.9) is refused unless `allow_unverified=True`
 - `list_dataset_versions(dataset, limit=50)` — a dataset's versions, newest first, each with what its upload changed
 - `list_analysis_runs(dataset=None, limit=500, offset=0)` — runs loaded from dataset packages, with conditions, parameter set and row counts
 - `get_analysis_run_rows(run_key, table='results', limit=500, offset=0)` — a run's free-form rows (`results`: metrics with no typed table; `inputs`: per-run inputs), each with its material or reference-system subject
@@ -311,7 +312,7 @@ From the command line: `prisma-outputs list <screening_results>` shows the batch
 - `get_transport(transport_id)`
 - `get_subsystems(name=None, type=None, limit=500, offset=0)`
 - `get_subsystem(subsystem_id)`
-- `get_properties(name=None, domain=None, category=None, object_id=None, limit=500, offset=0, content_type=None)` — object ids repeat across record types, so filter `object_id` together with `content_type` (`'mof'`, `'processconditions'`, `'sink'`, ...)
+- `get_properties(name=None, domain=None, category=None, object_id=None, limit=500, offset=0, content_type=None)` — object ids repeat across record types, so filter `object_id` together with `content_type` (`'mof'`, `'processconditions'`, `'sink'`, ...); `content_type` needs prisma_cloud >= 0.6.23
 - `get_property(property_id)`
 - `get_equipment(name=None, group=None, limit=500, offset=0)`
 - `get_equipment_item(equipment_id)`
@@ -354,6 +355,7 @@ From the command line: `prisma-outputs list <screening_results>` shows the batch
 - `get_mofchecker(...)` / `get_mofchecker_item(row_id)` / `upsert_mofchecker(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
 - `get_zeopp_metrics(...)` / `get_zeopp_metrics_item(row_id)` / `upsert_zeopp_metrics(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True)`
 - `upsert_autoprism_cifs(cifs, tags=None, create_materials=True, batch_size=50, raise_on_error=False, timeout=300)` — AutoPrism's own CIFs, stored as `{structure}__autoprism_{md5[:12]}.cif`
+- `upload_computation_run_bundle(run_id, bundle_path)` / `download_computation_run_bundle(run_id, dest)` — a run's provenance bundle, stored on the platform and checked by SHA-256; needs prisma_cloud >= 0.6.24
 - `get_autoprism_collection(...)` / `upsert_autoprism_collection(payload, meta_provenance=None, repo_dir=None, timeout=None, raise_on_error=False, check_ids=True, cif_tags=None)`
 
 The getters take `match="exact"` for an exact (case-insensitive) name match
@@ -494,4 +496,6 @@ before upgrading for breaking changes and deprecations.
 - 0.4.4: the `adsorption-isotherm` endpoints and the 400/notice handling need prisma_cloud >= 0.6.16
 - 0.4.5: H2 isotherms go through `upsert_adsorption_isotherm` (prisma_cloud >= 0.6.16); the H2-only methods and the `isotherm_H2s` collection key are deprecated. New `upsert_autoprism_cifs` uses the existing bundle upsert endpoint. AutoPrism getters take `match="exact"`.
 - 0.4.6: case-study library sync methods (`upsert_case_study_library` and the export, sync-run and stale-record readers) for the prisma_cloud `case-study-library` endpoints, which replace ingest pipeline 11.
-- 0.4.8: `upsert_coordinates` and the coordinate provenance and region coordinates read by `get_coordinates` need prisma_cloud >= 0.6.22. New `get_material_properties` / `upsert_material_properties`, `structural_order` filters on `list_materials` and `get_materials_psdi`, and `content_type` on `get_properties`.
+- 0.4.7: the dataset endpoints (`ingest_dataset`, `get_dataset_targets`, the dataset-tree methods, `list_dataset_versions`, the analysis-run readers) and so the `prisma-dataset` command need prisma_cloud >= 0.6.19. `ingest_screening_outputs` and `prisma-outputs` need >= 0.6.20; background ingestion with progress and `screening_outputs_ingest_status` need >= 0.6.21 (on 0.6.20 the batch is ingested within the request instead).
+- 0.4.8: `upsert_coordinates` and the coordinate provenance and region coordinates read by `get_coordinates` need prisma_cloud >= 0.6.22. `get_material_properties` / `upsert_material_properties` (and the `properties` bundle section), the `structural_order` filters on `list_materials` and `get_materials_psdi`, and `content_type` on `get_properties` need >= 0.6.23.
+- 0.4.9: job file lists in `meta_provenance` (`provenance_files`), `upload_computation_run_bundle` / `download_computation_run_bundle`, the md5 check on uploaded CIFs and the `md5_without_cif` report (`PrismaMd5WithoutCifWarning`) need prisma_cloud >= 0.6.24. From 0.6.24 the server also refuses dataset zips without `files` checksums; re-pack with this version or pass `allow_unverified=True`.

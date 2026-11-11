@@ -9,6 +9,7 @@ live network access is required.  Run with:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -3484,7 +3485,7 @@ def test_collection_marks_207_sections_failed(no_git_meta):
 
     assert result["overall_status"] == "partial_failure"
     assert result["totals"] == {"created": 3, "updated": 0, "rejected": 3, "failed_sections": 2,
-                                "new_structures": []}
+                                "new_structures": [], "md5_without_cif": []}
     assert result["sections"]["adsorption_singlepoints"]["status"] == "error"
     assert result["sections"]["adsorption_singlepoints"]["rejected"] == 1
     assert result["sections"]["heat_capacities"]["status"] == "partial"
@@ -3873,6 +3874,7 @@ def test_upsert_autoprism_cifs_names_files_by_md5(api):
     assert row["filename"] != "LAGNAK.cif"
     assert row["content"] == _CIF_TEXT
     assert row["tags"] == ["autoprism"]
+    assert row["md5"] == md5           # the server checks it and records it on the CIF row
 
 
 def test_upsert_autoprism_cifs_rejects_md5_mismatch(api):
@@ -4242,3 +4244,82 @@ def test_get_materials_psdi_structural_order_list_is_comma_joined(api):
                  json=_envelope([_PSDI_RECORD]), status=200)
     df = api.get_materials_psdi(structural_order=["crystalline", "amorphous_polymer"])
     assert len(df) == 1
+
+
+# ── File provenance: md5_without_cif, job files, run bundles ─────────────────
+
+@resp_lib.activate
+def test_table_upsert_warns_on_md5_without_cif(no_git_meta):
+    from prisma_api import PrismaMd5WithoutCifWarning
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/mofchecker/",
+                 json={"created": 1, "updated": 0, "md5_without_cif": [{"structure": "LAGNAK", "md5": "a1"}]})
+    with pytest.warns(PrismaMd5WithoutCifWarning, match="LAGNAK"):
+        no_git_meta.upsert_mofchecker({"structure": "LAGNAK", "md5": "a1"})
+
+
+@resp_lib.activate
+def test_collection_totals_list_md5_without_cif(no_git_meta):
+    from prisma_api import PrismaMd5WithoutCifWarning
+    missing = [{"structure": "LAGNAK", "md5": "a1"}]
+    for path in ("mofchecker", "zeopp-metrics"):
+        resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/{path}/",
+                     json={"created": 1, "updated": 0, "md5_without_cif": missing})
+    with pytest.warns(PrismaMd5WithoutCifWarning, match="1 \\(structure, md5\\) pair"):
+        result = no_git_meta.upsert_autoprism_collection(
+            {"mofchecker": [{"md5": "a1"}], "zeopp_metrics": [{"md5": "a1"}]})
+    assert result["totals"]["md5_without_cif"] == missing        # one entry per pair across sections
+    assert result["sections"]["mofchecker"]["md5_without_cif"] == missing
+    assert result["overall_status"] == "ok"                      # a notice, not a failure
+
+
+@resp_lib.activate
+def test_row_job_files_are_kept_over_the_stamped_provenance(no_git_meta):
+    resp_lib.add(resp_lib.PUT, f"{PROD_BASE}/mofchecker/", json={"created": 2, "updated": 0})
+    files = [{"path": "results/mofchecker.csv", "sha256": "a" * 64, "bytes": 3}]
+    no_git_meta.upsert_mofchecker(
+        [{"md5": "a1", "meta_provenance": {"files": files, "source_commit_hash": "stale"}}, {"md5": "a2"}],
+        meta_provenance={"source_repo": "AutoPrism", "source_commit_hash": "abc"})
+    rows = json.loads(resp_lib.calls[0].request.body)
+    assert rows[0]["meta_provenance"] == {"source_repo": "AutoPrism", "source_commit_hash": "abc", "files": files}
+    assert rows[1]["meta_provenance"] == {"source_repo": "AutoPrism", "source_commit_hash": "abc"}
+
+
+def test_bad_job_files_are_refused_before_sending(no_git_meta):
+    with pytest.raises(ValueError, match="sha256 must be 64 hex"):
+        no_git_meta.upsert_mofchecker([{"md5": "a1", "meta_provenance": {"files": [{"path": "x", "sha256": "no"}]}}],
+                                      meta_provenance={"source_repo": "AutoPrism"})
+
+
+def test_provenance_files_hashes_paths_relative_to_root(tmp_path):
+    from prisma_api import provenance_files
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results" / "a.csv").write_bytes(b"x,y\n")
+    files = provenance_files(["results/a.csv"], root=tmp_path)
+    assert files == [{"path": "results/a.csv", "sha256": hashlib.sha256(b"x,y\n").hexdigest(), "bytes": 4}]
+    with pytest.raises(ValueError, match="outside"):
+        provenance_files([str(tmp_path.parent / "elsewhere.csv")], root=tmp_path)
+
+
+@resp_lib.activate
+def test_run_bundle_is_sent_with_its_sha256_and_checked_on_download(api, tmp_path):
+    run_id = "11111111-2222-3333-4444-555555555555"
+    bundle = tmp_path / "job.tar.gz"
+    bundle.write_bytes(b"bundle-bytes")
+    sha = hashlib.sha256(b"bundle-bytes").hexdigest()
+    url = f"{PROD_BASE}/computation-runs/{run_id}/bundle/"
+    resp_lib.add(resp_lib.PUT, url, json={"id": run_id, "sha256": sha, "bytes": 12,
+                                          "uri": f"/api/v2/computation-runs/{run_id}/bundle/", "replaced": False})
+    assert api.upload_computation_run_bundle(run_id, bundle)["sha256"] == sha
+    assert f"sha256={sha}" in resp_lib.calls[0].request.url
+
+    resp_lib.add(resp_lib.GET, url, body=b"bundle-bytes",
+                 headers={"Content-Disposition": 'attachment; filename="job.tar.gz"'})
+    resp_lib.add(resp_lib.GET, f"{PROD_BASE}/computation-runs/{run_id}/",
+                 json={"id": run_id, "provenance_bundle_sha256": sha})
+    out = tmp_path / "out"
+    out.mkdir()
+    assert api.download_computation_run_bundle(run_id, out).read_bytes() == b"bundle-bytes"
+
+    resp_lib.add(resp_lib.GET, url, body=b"tampered")
+    with pytest.raises(ValueError, match="does not match"):
+        api.download_computation_run_bundle(run_id, out / "again.tar.gz")

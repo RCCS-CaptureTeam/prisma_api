@@ -11,14 +11,17 @@ from prisma_api.config import locate_config, update_dev_host_port, update_dev_mo
 from prisma_api.prisma_api import prisma_api as init  # main client
 from prisma_api.prisma_api_v2 import (  # v2 client (also api.v2) and upsert failure signals
     PrismaAPIv2,
+    PrismaMd5WithoutCifWarning,
     PrismaNewStructureWarning,
     PrismaRowErrorWarning,
     PrismaUnknownFieldsWarning,
     PrismaUpsertError,
+    provenance_files,
 )
 
 __all__ = [
     "PrismaAPIv2",
+    "PrismaMd5WithoutCifWarning",
     "PrismaNewStructureWarning",
     "PrismaRowErrorWarning",
     "PrismaUnknownFieldsWarning",
@@ -26,6 +29,7 @@ __all__ = [
     "__version__",
     "init",
     "locate_config",
+    "provenance_files",
     "update_dev_host_port",
     "update_dev_mode",
 ]
