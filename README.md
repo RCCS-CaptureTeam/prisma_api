@@ -321,7 +321,7 @@ From the command line: `prisma-outputs list <screening_results>` shows the batch
 - `get_equipment_designs(equipment_id=None, key=None, limit=500, offset=0)`
 - `get_equipment_design(design_id)`
 - `get_process_conditions(name=None, type=None, limit=500, offset=0)`
-- `get_process_condition(condition_id)` — includes the condition's parameters as `properties`
+- `get_process_condition(condition_id)` — includes the condition's parameters as `properties` (prisma_cloud >= 0.6.23)
 - `get_process_configurations(name=None, type=None, limit=500, offset=0)`
 - `get_process_configuration(config_id)`
 - `get_contactor_configurations(name=None, type=None, limit=500, offset=0)`
@@ -497,5 +497,5 @@ before upgrading for breaking changes and deprecations.
 - 0.4.5: H2 isotherms go through `upsert_adsorption_isotherm` (prisma_cloud >= 0.6.16); the H2-only methods and the `isotherm_H2s` collection key are deprecated. New `upsert_autoprism_cifs` uses the existing bundle upsert endpoint. AutoPrism getters take `match="exact"`.
 - 0.4.6: case-study library sync methods (`upsert_case_study_library` and the export, sync-run and stale-record readers) for the prisma_cloud `case-study-library` endpoints, which replace ingest pipeline 11.
 - 0.4.7: the dataset endpoints (`ingest_dataset`, `get_dataset_targets`, the dataset-tree methods, `list_dataset_versions`, the analysis-run readers) and so the `prisma-dataset` command need prisma_cloud >= 0.6.19. `ingest_screening_outputs` and `prisma-outputs` need >= 0.6.20; background ingestion with progress and `screening_outputs_ingest_status` need >= 0.6.21 (on 0.6.20 the batch is ingested within the request instead).
-- 0.4.8: `upsert_coordinates` and the coordinate provenance and region coordinates read by `get_coordinates` need prisma_cloud >= 0.6.22. `get_material_properties` / `upsert_material_properties` (and the `properties` bundle section), the `structural_order` filters on `list_materials` and `get_materials_psdi`, and `content_type` on `get_properties` need >= 0.6.23.
+- 0.4.8: `upsert_coordinates` and the coordinate provenance and region coordinates read by `get_coordinates` need prisma_cloud >= 0.6.22. `get_material_properties` / `upsert_material_properties` (and the `properties` bundle section), the `structural_order` filters on `list_materials` and `get_materials_psdi`, `content_type` on `get_properties` and the `properties` of `get_process_condition` need >= 0.6.23.
 - 0.4.9: job file lists in `meta_provenance` (`provenance_files`), `upload_computation_run_bundle` / `download_computation_run_bundle`, the md5 check on uploaded CIFs and the `md5_without_cif` report (`PrismaMd5WithoutCifWarning`) need prisma_cloud >= 0.6.24. From 0.6.24 the server also refuses dataset zips without `files` checksums; re-pack with this version or pass `allow_unverified=True`.
