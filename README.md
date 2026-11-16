@@ -272,6 +272,27 @@ All methods below are available on `api.v2`.
 - `list_case_study_library_sync_runs(status=None, limit=50, git_commit=None, offset=0)`
 - `list_stale_case_study_library_records()`
 
+### Case study builder (`prisma-case`, team only)
+
+Publish a local case (a process-graph v6 JSON such as PrISMa-Platform-v2's `cases/<name>/<name>.json`, plus
+optional `<name>.study.yaml` settings) to the platform's case study builder and keep the two in step.
+Your key must belong to an active staff user in the platform's case-study-builder team.
+Needs prisma_cloud >= 0.6.26.
+
+```bash
+prisma-case status cases/dac_min/dac_min.json --dev     # unlinked / in_sync / local_ahead / online_ahead / diverged
+prisma-case publish cases/dac_min/dac_min.json --dev --dry-run
+prisma-case publish cases/dac_min/dac_min.json --prod   # asks first; offers fork/pull when needed
+prisma-case pull cases/dac_min/dac_min.json --dev
+prisma-case install-skill .                             # Claude Code skill /prisma-case
+```
+
+The link lives in `<name>.cloud.json` next to the case (no secrets). Methods on `api.v2`:
+`study_build_catalogue`, `list_study_builds`, `get_study_build`, `create_study_build`,
+`update_study_build`, `publish_study_build`, `fork_study_build`, `get_study_build_graph`,
+`study_build_timeline`, `set_study_build_status` (all need prisma_cloud >= 0.6.26; older servers answer 404); a 409 raises `PrismaConflictError`. Details:
+`prisma_api/case_sync.py`.
+
 ### Datasets and screening outputs
 
 - `get_dataset_targets()` — what a dataset manifest may write on the server: targets, kinds, allowed keys and fields
@@ -499,3 +520,4 @@ before upgrading for breaking changes and deprecations.
 - 0.4.7: the dataset endpoints (`ingest_dataset`, `get_dataset_targets`, the dataset-tree methods, `list_dataset_versions`, the analysis-run readers) and so the `prisma-dataset` command need prisma_cloud >= 0.6.19. `ingest_screening_outputs` and `prisma-outputs` need >= 0.6.20; background ingestion with progress and `screening_outputs_ingest_status` need >= 0.6.21 (on 0.6.20 the batch is ingested within the request instead).
 - 0.4.8: `upsert_coordinates` and the coordinate provenance and region coordinates read by `get_coordinates` need prisma_cloud >= 0.6.22. `get_material_properties` / `upsert_material_properties` (and the `properties` bundle section), the `structural_order` filters on `list_materials` and `get_materials_psdi`, `content_type` on `get_properties` and the `properties` of `get_process_condition` need >= 0.6.23.
 - 0.4.9: job file lists in `meta_provenance` (`provenance_files`), `upload_computation_run_bundle` / `download_computation_run_bundle`, the md5 check on uploaded CIFs and the `md5_without_cif` report (`PrismaMd5WithoutCifWarning`) need prisma_cloud >= 0.6.24. From 0.6.24 the server also refuses dataset zips without `files` checksums; re-pack with this version or pass `allow_unverified=True`.
+- 0.4.10: the case study builder methods (`study_build_catalogue`, `list_study_builds`, `get_study_build`, `create_study_build`, `update_study_build`, `publish_study_build`, `fork_study_build`, `get_study_build_graph`, `study_build_timeline`, `set_study_build_status`) and so the `prisma-case` command need prisma_cloud >= 0.6.26; older servers answer 404. They also need a key belonging to an active staff user in the server's case-study-builder team.

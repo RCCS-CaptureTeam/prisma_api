@@ -91,6 +91,21 @@ class PrismaUpsertError(RuntimeError):
         self.result = result
 
 
+class PrismaConflictError(RuntimeError):
+    """
+    The server refused a study-build change with 409: the build changed since
+    the ``base_hash`` sent (``conflict == "online_changed"``), or it is no
+    longer a draft (``"not_draft"``). ``build`` holds the server's current
+    summary of the build (status, ``design_hash``, client link).
+    """
+
+    def __init__(self, message: str, body: Any = None):
+        super().__init__(message)
+        self.body = body if isinstance(body, dict) else {}
+        self.conflict = self.body.get("conflict")
+        self.build = self.body.get("build") or {}
+
+
 class PrismaRowErrorWarning(UserWarning):
     """The server rejected some rows (HTTP 207) or all of them (HTTP 400)."""
 
@@ -4121,6 +4136,94 @@ class PrismaAPIv2:
         are kept (scenarios and outputs may depend on them) for review.
         """
         return self._get("/case-study-library/stale/").get("results", [])
+
+    # ── Case study builder (/studies/builder-next/, team only) ────────────────
+    # The canvas builder driven from a client: a local case (process-graph v6
+    # document + study settings) becomes a builder draft with the same
+    # metadata as one drawn on the page. Only active staff in the server's
+    # builder team group may call these. Changes send ``base_hash`` (the
+    # design_hash last seen); a build changed since raises PrismaConflictError.
+    # The sync workflow on top of these is prisma_api.case_sync / prisma-case.
+
+    def _study_build(self, method: str, path: str, body: Any = None,
+                     params: dict | None = None, timeout: int = 120) -> dict:
+        resp = requests.request(method, self._url(f"/study-builds/{path}"), params=params,
+                                json=_json_safe(body) if body is not None else None,
+                                headers=self._headers(), timeout=timeout)
+        if resp.status_code == 409:
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {}
+            raise PrismaConflictError(f"409 Conflict: {data.get('detail') or resp.text[:300]}", data)
+        _raise_with_body(resp)
+        return resp.json()
+
+    @staticmethod
+    def _design_body(graph=None, study=None, state=None, client=None) -> dict:
+        if (graph is None) == (state is None):
+            raise ValueError("pass exactly one of graph (process-graph document) or state (canvas state)")
+        return _compact(graph=graph, study=study, state=state, client=client)
+
+    def study_build_catalogue(self) -> dict:
+        """Node catalogue, page choices (locations, groups, templates…), graph format and study keys."""
+        return self._study_build("GET", "catalogue/")
+
+    def list_study_builds(self, status: str | None = None, case_id: str | None = None,
+                          mine: bool = False, limit: int = 100, offset: int = 0) -> dict:
+        """Builds without their canvas: ``{count, offset, limit, records}``."""
+        return self._study_build("GET", "", params=_compact(
+            status=status, case_id=case_id, mine="true" if mine else None, limit=limit, offset=offset))
+
+    def get_study_build(self, build_id: int) -> dict:
+        """One build: status, ``design_hash``, client link, ``fixes``/``warns`` and the canvas ``state``."""
+        return self._study_build("GET", f"{int(build_id)}/")
+
+    def create_study_build(self, graph: dict | None = None, study: dict | None = None,
+                           state: dict | None = None, client: dict | None = None,
+                           dry_run: bool = False) -> dict:
+        """
+        Create a draft from a process-graph document (+ study settings) or a canvas state.
+
+        ``study`` keys: name, desc, locs, time, scen, tea, lca, kpis, samp, group and
+        systems ([{name, graph}] alternatives). ``client``: tool, case_id, source_hash,
+        repo, git_commit. ``dry_run`` returns the state and checks without saving.
+        """
+        return self._study_build("POST", "", self._design_body(graph, study, state, client),
+                                 params={"dry_run": "true"} if dry_run else None)
+
+    def update_study_build(self, build_id: int, base_hash: str | None, graph: dict | None = None,
+                           study: dict | None = None, state: dict | None = None,
+                           client: dict | None = None, force: bool = False) -> dict:
+        """Replace a draft's design. Raises PrismaConflictError when it changed since ``base_hash``."""
+        body = {**self._design_body(graph, study, state, client), **_compact(base_hash=base_hash)}
+        return self._study_build("PUT", f"{int(build_id)}/", body, params={"force": "true"} if force else None)
+
+    def publish_study_build(self, build_id: int, base_hash: str) -> dict:
+        """Publish a draft as a v2 study (as the page's Publish). ``analysis.url`` is the study page."""
+        return self._study_build("POST", f"{int(build_id)}/publish/", {"base_hash": base_hash}, timeout=300)
+
+    def fork_study_build(self, build_id: int, name: str | None = None, graph: dict | None = None,
+                         study: dict | None = None, state: dict | None = None,
+                         client: dict | None = None) -> dict:
+        """A new draft linked to ``build_id``: a copy of it, or the design given. Named ``name`` or '<name> rN'."""
+        body = _compact(name=name, client=client)
+        if graph is not None or state is not None:
+            body.update(self._design_body(graph, study, state, client))
+        return self._study_build("POST", f"{int(build_id)}/fork/", body)
+
+    def get_study_build_graph(self, build_id: int) -> dict:
+        """The build as ``{graph, study, placeholders, design_hash}``: a process-graph document to pull locally."""
+        return self._study_build("GET", f"{int(build_id)}/graph/")
+
+    def study_build_timeline(self, build_id: int, snapshots: bool = False) -> dict:
+        """The build's change log, oldest first."""
+        return self._study_build("GET", f"{int(build_id)}/timeline/",
+                                 params={"snapshots": "true"} if snapshots else None)
+
+    def set_study_build_status(self, build_id: int, action: str) -> dict:
+        """``action``: 'abandon' a draft or 'reopen' an abandoned build."""
+        return self._study_build("POST", f"{int(build_id)}/status/", {"action": action})
 
     # ── Third-party dataset packages (server ingest pipeline 15) ──────────────
 
