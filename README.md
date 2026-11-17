@@ -287,6 +287,10 @@ prisma-case pull cases/dac_min/dac_min.json --dev
 prisma-case install-skill .                             # Claude Code skill /prisma-case
 ```
 
+Each push records where the case came from on the build (its Provenance page): the calling tool and, from the
+case's git checkout, the repository name, commit and release tag (`git describe --tags`). Servers before
+prisma_cloud 0.6.27 drop the release tag and the tool version.
+
 The link lives in `<name>.cloud.json` next to the case (no secrets). Methods on `api.v2`:
 `study_build_catalogue`, `list_study_builds`, `get_study_build`, `create_study_build`,
 `update_study_build`, `publish_study_build`, `fork_study_build`, `get_study_build_graph`,

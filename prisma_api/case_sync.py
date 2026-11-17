@@ -149,20 +149,41 @@ def _write_json(path: Path, doc: dict) -> None:
     path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
-def _git_commit(folder: Path) -> str | None:
+def _git(folder: Path, *args: str) -> str | None:
     try:
-        out = subprocess.run(["git", "-C", str(folder), "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=10)
+        out = subprocess.run(["git", "-C", str(folder), *args], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
     return out.stdout.strip() or None if out.returncode == 0 else None
 
 
-def _client_info(case: Path, graph: dict, lhash: str, tool: str) -> dict:
+def _git_commit(folder: Path) -> str | None:
+    return _git(folder, "rev-parse", "--short", "HEAD")
+
+
+def _git_tag(folder: Path) -> str | None:
+    """The release the case's checkout is at: 'v2.0.1' on a tagged commit, 'v2.0.1-3-g70eaa92' three commits on."""
+    return _git(folder, "describe", "--tags")
+
+
+def _git_repo(folder: Path) -> str | None:
+    """The repository's name from its origin remote ('PrISMa-Platform-v2'), never the URL (it can hold a token)."""
+    url = _git(folder, "remote", "get-url", "origin")
+    if not url:
+        return None
+    name = url.rstrip("/").replace(":", "/").rsplit("/", 1)[-1]
+    return name[:-4] if name.endswith(".git") else name or None
+
+
+def _client_info(case: Path, graph: dict, lhash: str, tool: str, tool_version: str | None = None) -> dict:
+    """The build's provenance link: who sent the case and from which checkout (servers keep the keys they know)."""
     info = {"tool": tool, "case_id": graph.get("template_id") or case.stem, "source_hash": lhash}
-    commit = _git_commit(case.parent)
-    if commit:
-        info["git_commit"] = commit
+    if tool_version:
+        info["tool_version"] = str(tool_version)
+    for key, value in (("repo", _git_repo(case.parent)), ("git_commit", _git_commit(case.parent)),
+                       ("git_tag", _git_tag(case.parent))):
+        if value:
+            info[key] = value
     return info
 
 
@@ -260,7 +281,7 @@ def _entry(build: dict, lhash: str, history: list | None = None) -> dict:
 
 
 def push(api, case: str | Path, study: str | Path | None = None, publish: bool = False,
-         overwrite: bool = False, tool: str = "prisma_api") -> dict:
+         overwrite: bool = False, tool: str = "prisma_api", tool_version: str | None = None) -> dict:
     """Create the draft (unlinked/missing) or update it (local ahead / in sync), then publish if asked.
 
     Raises SyncError when the status needs another action (pull or fork); ``overwrite`` replaces a draft that
@@ -269,7 +290,7 @@ def push(api, case: str | Path, study: str | Path | None = None, publish: bool =
     case = Path(case)
     st = check(api, case, study)
     graph, settings = load_case(case, study)
-    client = _client_info(case, graph, st.local_hash, tool)
+    client = _client_info(case, graph, st.local_hash, tool, tool_version)
     history = (st.link or {}).get("history")
     if st.state in ("unlinked", "missing"):
         if st.state == "missing":
@@ -335,7 +356,7 @@ def pull(api, case: str | Path, study: str | Path | None = None, allow_placehold
 
 
 def fork(api, case: str | Path, study: str | Path | None = None, name: str | None = None,
-         publish: bool = False, tool: str = "prisma_api") -> dict:
+         publish: bool = False, tool: str = "prisma_api", tool_version: str | None = None) -> dict:
     """A new draft from the local case, forked from the linked build (kept as it is); the link moves to it."""
     v2 = getattr(api, "v2", api)
     case = Path(case)
@@ -344,7 +365,7 @@ def fork(api, case: str | Path, study: str | Path | None = None, name: str | Non
         raise SyncError(f"{st.message}: nothing to fork from (push instead)")
     graph, settings = load_case(case, study)
     build = v2.fork_study_build(st.build["id"], name=name, graph=graph, study=settings,
-                                client=_client_info(case, graph, st.local_hash, tool))
+                                client=_client_info(case, graph, st.local_hash, tool, tool_version))
     history = (st.link.get("history") or []) + [st.build["id"]]
     if publish:
         if build.get("fixes"):
@@ -420,8 +441,9 @@ def _print_entry(verb: str, entry: dict, args) -> None:
             print(f"  {key.replace('_', ' ')}: {entry[key]}")
 
 
-def main(argv: list[str] | None = None, tool: str = "prisma_api") -> int:
-    """The prisma-case command. ``tool`` names the caller in the build's provenance (e.g. "prisma-v2")."""
+def main(argv: list[str] | None = None, tool: str = "prisma_api", tool_version: str | None = None) -> int:
+    """The prisma-case command. ``tool`` names the caller in the build's provenance (e.g. "prisma-v2") and
+    ``tool_version`` its installed version; the case's repo, commit and release tag are read from its git checkout."""
     parser = argparse.ArgumentParser(prog="prisma-case", description=__doc__.strip().split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -544,11 +566,11 @@ def main(argv: list[str] | None = None, tool: str = "prisma_api") -> int:
             if st.state in ("online_ahead", "diverged") or st.state == "local_ahead" and "fork" in st.actions:
                 choice = _ask(st, [a for a in st.actions if a in ("fork", "pull", "overwrite")], args)
                 if choice == "fork":
-                    _print_entry("forked", fork(api, args.case, args.study, args.name, publish, tool=tool), args)
+                    _print_entry("forked", fork(api, args.case, args.study, args.name, publish, tool=tool, tool_version=tool_version), args)
                 elif choice == "pull":
                     _print_entry("pulled", pull(api, args.case, args.study, force=st.state == "diverged"), args)
                 elif choice == "overwrite":
-                    _print_entry("pushed", push(api, args.case, args.study, publish, overwrite=True, tool=tool), args)
+                    _print_entry("pushed", push(api, args.case, args.study, publish, overwrite=True, tool=tool, tool_version=tool_version), args)
                 else:
                     print(f"{st.state}: {st.message}. Nothing done; choose with --on-conflict "
                           f"{'|'.join(st.actions)}", file=sys.stderr)
@@ -561,7 +583,7 @@ def main(argv: list[str] | None = None, tool: str = "prisma_api") -> int:
             if not _confirm(f"{what}{' and publish it' if publish else ''} on {st.target}?", args):
                 print("Nothing sent (pass --yes to skip this question).", file=sys.stderr)
                 return 2
-            _print_entry("published" if publish else "pushed", push(api, args.case, args.study, publish, tool=tool), args)
+            _print_entry("published" if publish else "pushed", push(api, args.case, args.study, publish, tool=tool, tool_version=tool_version), args)
             return 0
 
         if args.command == "pull":
@@ -578,7 +600,7 @@ def main(argv: list[str] | None = None, tool: str = "prisma_api") -> int:
             if not _confirm(f"send {args.case} as a new draft forked from build {(st.build or {}).get('id')}?", args):
                 print("Nothing sent.", file=sys.stderr)
                 return 2
-            _print_entry("forked", fork(api, args.case, args.study, args.name, args.publish, tool=tool), args)
+            _print_entry("forked", fork(api, args.case, args.study, args.name, args.publish, tool=tool, tool_version=tool_version), args)
             return 0
     except (SyncError, PrismaConflictError) as exc:
         print(exc, file=sys.stderr)

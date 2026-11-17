@@ -112,6 +112,28 @@ def test_unlinked_then_push_creates_a_draft_and_links_it(case, server):
     assert cs.check(server, case).state == "in_sync"
 
 
+def test_client_link_carries_the_checkout_release(case, server):
+    """The build's provenance names the case's repo (not its URL), commit and release tag, and the caller's version."""
+    import subprocess
+    root = case.parents[2]
+    git = ["git", "-C", str(root), "-c", "user.email=t@example.com", "-c", "user.name=t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "remote", "add", "origin", "https://tok@github.com/org/PrISMa-Platform-v2.git"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "case"], check=True)
+    subprocess.run([*git, "tag", "v2.0.1"], check=True)
+    cs.push(server, case, tool="prisma-v2", tool_version="2.0.1")
+    client = server.builds[1]["client"]
+    assert (client["tool"], client["tool_version"]) == ("prisma-v2", "2.0.1")
+    assert (client["repo"], client["git_tag"]) == ("PrISMa-Platform-v2", "v2.0.1")
+    assert client["git_commit"] and "tok" not in json.dumps(client)
+
+
+def test_client_link_outside_a_checkout_has_no_git_keys(case, server):
+    cs.push(server, case)
+    assert not {"repo", "git_commit", "git_tag", "tool_version"} & set(server.builds[1]["client"])
+
+
 def test_local_and_online_changes_are_told_apart(case, server):
     cs.push(server, case)
     edit_local(case, desc="local")
