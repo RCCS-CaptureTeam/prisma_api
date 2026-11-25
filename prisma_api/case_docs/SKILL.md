@@ -63,7 +63,7 @@ the builder reads them, the nodes, `fixes` (block publishing) and `warns`, and w
 | local_ahead, published | `fork` (a published build never changes): new draft '<name> rN', link moves to it |
 | online_ahead | `pull` (writes the case JSON and study file; show the user `git diff` afterwards) |
 | diverged | **ask the user**: `fork` (keep both), `pull` (discard local edits), or `overwrite` (draft only) |
-| in_sync | nothing; `publish` if the draft should go live |
+| in_sync | nothing; `push` again after a new commit or release refreshes the draft's provenance (repo, commit, tag, version); `publish` if the draft should go live |
 
 Writes ask for confirmation in a terminal. From this session pass the user's decision explicitly:
 `--yes` once they agreed, and `--on-conflict fork|pull|overwrite` for the conflict cases. Exit code 2

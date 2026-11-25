@@ -36,7 +36,7 @@ class FakeServer:
 
     def _out(self, b):
         return {"id": b["id"], "status": b["status"], "design_hash": self._hash(b), "fixes": [], "warns": [],
-                "client": b["client"], "urls": {"edit": f"http://x/studies/builder-next/{b['id']}/"},
+                "client": b["client"], "state": {"graph": b["graph"], "study": b["study"], "aud": b.get("aud")}, "urls": {"edit": f"http://x/studies/builder-next/{b['id']}/"},
                 "analysis": {"id": 9, "name": "s", "url": "http://x/studies/9/"} if b["status"] == "published" else None}
 
     def get_study_build(self, pk):
@@ -47,6 +47,9 @@ class FakeServer:
         return self._out(self.builds[pk])
 
     def create_study_build(self, graph=None, study=None, client=None, state=None, dry_run=False):
+        if dry_run:
+            b = {"graph": graph, "study": study or {}}
+            return {"dry_run": True, "design_hash": self._hash(b), "fixes": [], "warns": [], "state": b}
         b = {"id": self.next_id, "status": "draft", "graph": copy.deepcopy(graph), "study": copy.deepcopy(study or {}),
              "client": client, "forked_from": None}
         self.next_id += 1
@@ -78,6 +81,14 @@ class FakeServer:
 
     def edit_online(self, pk, **study):
         self.builds[pk]["study"].update(study)
+
+    def resave_on_page(self, pk):
+        """What the browser does when the page saves a build again: a view setting changes and 40000.0 -> 40000."""
+        ints = lambda v: (int(v) if isinstance(v, float) and v.is_integer() else
+                          {k: ints(x) for k, x in v.items()} if isinstance(v, dict) else
+                          [ints(x) for x in v] if isinstance(v, list) else v)
+        b = self.builds[pk]
+        b.update(graph=ints(b["graph"]), study=ints(b["study"]), aud="guide")
 
 
 @pytest.fixture
@@ -148,6 +159,39 @@ def test_local_and_online_changes_are_told_apart(case, server):
     assert st.state == "diverged" and st.actions == ["fork", "pull", "overwrite"]
     with pytest.raises(cs.SyncError):
         cs.push(server, case)                       # never overwrites unseen
+
+
+def test_a_build_only_resaved_by_the_page_is_in_step(case, server):
+    """Opening a draft on the page re-saves it (whole floats as ints): same values, so not 'online ahead'."""
+    doc = graph()
+    doc["graph"]["nodes"][0]["config"]["hours_per_year"] = 8500.0
+    case.write_text(json.dumps(doc, indent=2) + "\n")
+    entry = cs.push(server, case)
+    server.resave_on_page(1)
+    assert server.get_study_build(1)["design_hash"] != entry["design_hash"]
+    assert cs.check(server, case).state == "in_sync"
+    entry = cs.push(server, case)                     # nothing sent; the link takes the build's current hash
+    assert entry["design_hash"] == server.get_study_build(1)["design_hash"] and len(server.builds) == 1
+    server.edit_online(1, desc="a real change")
+    assert cs.check(server, case).state == "online_ahead"
+
+
+def test_push_in_step_refreshes_provenance_from_a_newer_checkout(case, server, monkeypatch):
+    monkeypatch.setattr(cs, "_git_commit", lambda folder: "aaa1111")
+    cs.push(server, case, tool="prisma-v2")
+    assert server.builds[1]["client"]["git_commit"] == "aaa1111"
+    calls = []
+    real = server.update_study_build
+    server.update_study_build = lambda *a, **k: calls.append(1) or real(*a, **k)
+    cs.push(server, case, tool="prisma-v2")
+    assert calls == []                                # same checkout: nothing to send
+    monkeypatch.setattr(cs, "_git_commit", lambda folder: "bbb2222")
+    monkeypatch.setattr(cs, "_git_tag", lambda folder: "v2.0.2")
+    assert cs.provenance_changes(server.get_study_build(1), {"git_commit": "bbb2222", "git_tag": "v2.0.2"}) == \
+        {"git_commit": ("aaa1111", "bbb2222")}        # a key the build lacks counts only for git_commit
+    cs.push(server, case, tool="prisma-v2")
+    assert calls == [1] and server.builds[1]["client"]["git_commit"] == "bbb2222"
+    assert server.builds[1]["client"]["git_tag"] == "v2.0.2" and cs.check(server, case).state == "in_sync"
 
 
 def test_publish_then_local_change_needs_a_fork(case, server):
@@ -236,6 +280,24 @@ def test_cli_without_a_terminal_needs_a_decision(case, server, monkeypatch, caps
     assert "on-conflict" in capsys.readouterr().err
     assert cs.main(["publish", str(case), "--dev", "--on-conflict", "fork", "--yes"]) == 0
     assert server.builds[2]["forked_from"] == 1
+
+
+def test_cli_repush_after_viewing_and_a_new_commit(case, server, monkeypatch, capsys):
+    """The demo loop: push, open the draft on the page, commit, push again -> the draft's provenance is refreshed."""
+    class Api:
+        v2 = server
+    monkeypatch.setattr("prisma_api.init", lambda local_dev=False: Api)
+    server.set_return_format = lambda fmt: None
+    monkeypatch.setattr(cs, "_git_commit", lambda folder: "aaa1111")
+    assert cs.main(["push", str(case), "--dev", "--yes"], tool="prisma-v2") == 0
+    server.resave_on_page(1)
+    assert cs.main(["push", str(case), "--dev", "--yes"], tool="prisma-v2") == 0
+    assert "nothing to send" in capsys.readouterr().out
+    assert cs.read_link(case, "dev:8021")["design_hash"] == server.get_study_build(1)["design_hash"]
+    monkeypatch.setattr(cs, "_git_commit", lambda folder: "bbb2222")
+    assert cs.main(["push", str(case), "--dev", "--yes"], tool="prisma-v2", tool_version="2.0.1") == 0
+    assert "pushed" in capsys.readouterr().out
+    assert (server.builds[1]["client"]["git_commit"], len(server.builds)) == ("bbb2222", 1)
 
 
 def test_install_skill(tmp_path):

@@ -12,7 +12,8 @@ The link between the two is kept in ``<name>.cloud.json`` next to the case, one 
 the two last agreed. From those, ``check`` tells:
 
     unlinked      no build yet                        -> push / publish creates one
-    in_sync       nothing changed on either side
+    in_sync       nothing changed on either side (a build only re-saved by the page, with the same
+                  values, counts as unchanged; push then refreshes the link and the build's provenance)
     local_ahead   the local case changed              -> push (draft) or fork (published)
     online_ahead  the build changed on the platform   -> pull
     diverged      both changed                        -> fork the local case, pull, or overwrite (draft)
@@ -58,6 +59,8 @@ LINK_SUFFIX = ".cloud.json"
 DOCS = Path(__file__).parent / "case_docs"
 
 STATES = ("unlinked", "in_sync", "local_ahead", "online_ahead", "diverged", "missing")
+VOLATILE = ("aud", "mode", "gStep", "gScript", "seq")   # the page's view settings: not part of a design (as on the server)
+PROVENANCE = ("tool", "tool_version", "repo", "git_commit", "git_tag")
 
 
 class SyncError(RuntimeError):
@@ -208,6 +211,35 @@ def merge_graph(local: dict, remote: dict) -> dict:
     return merged
 
 
+def _same_design(v2, build: dict, graph: dict, settings: dict) -> bool:
+    """True when ``build`` holds the design the local case makes, though its design hash moved on.
+
+    Opening a build on the page can save it again (e.g. switching guide/expert view), and the browser writes
+    40000.0 back as 40000, which changes the hash without changing a value. The server's dry run of the local
+    case gives the design it would store; Python's ``==`` treats 40000.0 and 40000 as the same number."""
+    online = build.get("state")
+    if not isinstance(online, dict):
+        return False
+    try:
+        fresh = v2.create_study_build(graph=graph, study=settings, dry_run=True).get("state")
+    except requests.HTTPError:
+        return False
+    if not isinstance(fresh, dict):
+        return False
+    design = lambda st: {k: v for k, v in st.items() if k not in VOLATILE}
+    return design(online) == design(fresh)
+
+
+def provenance_changes(build: dict | None, client: dict) -> dict:
+    """``{key: (on the build, now)}`` for provenance the build records differently from the local checkout.
+
+    A key the build lacks counts only for ``git_commit``, so a server that does not store the newer keys is
+    not updated on every push."""
+    online = (build or {}).get("client") or {}
+    return {k: (online.get(k), client[k]) for k in PROVENANCE
+            if k in client and (k in online or k == "git_commit") and online.get(k) != client[k]}
+
+
 # ── Status ────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -259,7 +291,7 @@ def check(api, case: str | Path, study: str | Path | None = None) -> Status:
     elif local_changed:
         st.state, st.actions = "local_ahead", ["push", "publish"] if draft else ["fork"]
         st.message = f"the local case is ahead of {where}" + ("" if draft else "; a published build cannot change")
-    elif online_changed:
+    elif online_changed and not _same_design(v2, st.build, graph, settings):
         st.state, st.actions = "online_ahead", ["pull"]
         st.message = f"{where} is ahead of the local case (changed on the platform)"
     else:
@@ -299,8 +331,11 @@ def push(api, case: str | Path, study: str | Path | None = None, publish: bool =
     elif st.state in ("local_ahead", "in_sync") and st.build["status"] == "draft" or st.state == "diverged" and overwrite:
         if st.build["status"] != "draft":
             raise SyncError(f"build {st.build['id']} is {st.build['status']}: fork instead")
-        if st.state == "in_sync":
-            build = st.build
+        if st.state == "in_sync" and not provenance_changes(st.build, client):
+            build = st.build                    # nothing to send; the link takes the build's current hash
+        elif st.state == "in_sync":             # same design, newer checkout: the build's provenance is refreshed
+            build = v2.update_study_build(st.build["id"], st.build["design_hash"], graph=graph, study=settings,
+                                          client=client)
         else:
             base = st.build["design_hash"] if overwrite else st.link["design_hash"]
             build = v2.update_study_build(st.build["id"], base, graph=graph, study=settings, client=client)
@@ -577,9 +612,18 @@ def main(argv: list[str] | None = None, tool: str = "prisma_api", tool_version: 
                     return 2
                 return 0
             if st.state == "in_sync" and not (publish and st.build and st.build["status"] == "draft"):
-                print(f"in step with build {st.build['id']} ({st.build['status']}): nothing to send")
-                return 0
-            what = "create a draft" if st.state in ("unlinked", "missing") else f"update draft {st.build['id']}"
+                graph, _ = load_case(args.case, args.study)
+                changes = {} if st.build["status"] != "draft" else provenance_changes(
+                    st.build, _client_info(Path(args.case), graph, st.local_hash, tool, tool_version))
+                if not changes:
+                    if st.link.get("design_hash") != st.build["design_hash"]:
+                        push(api, args.case, args.study, tool=tool, tool_version=tool_version)  # link only
+                    print(f"in step with build {st.build['id']} ({st.build['status']}): nothing to send")
+                    return 0
+                what = f"refresh draft {st.build['id']}'s provenance (" + ", ".join(
+                    f"{k} {a or '-'} -> {b}" for k, (a, b) in changes.items()) + ")"
+            else:
+                what = "create a draft" if st.state in ("unlinked", "missing") else f"update draft {st.build['id']}"
             if not _confirm(f"{what}{' and publish it' if publish else ''} on {st.target}?", args):
                 print("Nothing sent (pass --yes to skip this question).", file=sys.stderr)
                 return 2
