@@ -163,7 +163,7 @@ def test_client_provenance(folder):
     assert client["name"] == "prisma_api" and client["version"] == __version__
     assert client["install"] in ("checkout", "editable", "vcs", "local", "index", "source")
     if client["install"] in ("checkout", "editable"):                 # tests run from the prisma_api repository
-        assert len(client["commit"]) == 40 and client["tag"]
+        assert len(client["commit"]) == 40                          # the tag needs tags fetched (CI checks out shallow, without them)
     assert "@" not in client.get("repo_url", "")
     doc = on.build_payload(folder, tool="prisma-v2", tool_version="2.0.1")
     assert doc["provenance"]["client"] == client                     # the caller and the library both recorded
