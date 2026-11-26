@@ -4225,6 +4225,73 @@ class PrismaAPIv2:
         """``action``: 'abandon' a draft or 'reopen' an abandoned build."""
         return self._study_build("POST", f"{int(build_id)}/status/", {"action": action})
 
+    # ── Curated ontology (/ontologies/, team only to send) ────────────────────
+    # A curated ontology folder (PrISMa-Platform-v2's src/ontology today, its
+    # own repository later) is sent whole with its provenance (repository,
+    # commit, tag, dates, authors) and hashes; see prisma_api.ontology. A send
+    # whose content differs from the server's current release becomes the
+    # next release. Sending needs a staff key in the server's ontology
+    # curators group; a send older (by commit date) than the current release
+    # raises PrismaConflictError unless ``force``.
+
+    def _ontology(self, method: str, path: str, body: Any = None,
+                  params: dict | None = None, timeout: int = 120) -> dict:
+        resp = requests.request(method, self._url(f"/ontologies/{path}"), params=params,
+                                json=body, headers=self._headers(), timeout=timeout)
+        if resp.status_code == 409:
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {}
+            raise PrismaConflictError(f"409 Conflict: {data.get('detail') or resp.text[:300]}", data)
+        _raise_with_body(resp)
+        return resp.json()
+
+    def push_ontology(self, path: str | Path, slug: str | None = None, dry_run: bool = False,
+                      force: bool = False, include_data: bool = True, name: str | None = None,
+                      description: str | None = None, profiles: dict | None = None,
+                      tool: str = "prisma_api", tool_version: str | None = None,
+                      timeout: int = 300) -> dict:
+        """
+        Send the ontology folder at ``path`` (holding ``tree/``, or the ``tree/`` folder itself).
+
+        ``POST /api/v2/ontologies/ingest/``. The document is built by
+        ``prisma_api.ontology.build_payload`` with git provenance and file and
+        content hashes. Returns ``{changed, created, release, previous, content_hash,
+        counts, diff, urls, …}``: ``changed`` is False when the server already
+        holds this content (no release is made). ``dry_run`` writes nothing.
+
+        Args:
+            path: The ontology folder, e.g. ``"src/ontology"`` in PrISMa-Platform-v2.
+            slug: Ontology slug (default: ``ontology.yaml`` at the root, else ``'prisma'``).
+            force: Send even when the checkout's commit is older than the current release's.
+            include_data: Also send ``tree/_data/*.json`` (the page data).
+            profiles: ``{name: (folder, label)}`` subsets to send; default ``simpletree/`` as 'simple'.
+            tool: The caller recorded in the provenance, e.g. ``'prisma-v2'``.
+        """
+        from .ontology import build_payload
+        doc = build_payload(path, slug=slug, name=name, description=description, include_data=include_data,
+                            profiles=profiles, tool=tool, tool_version=tool_version)
+        return self.send_ontology(doc, dry_run=dry_run, force=force, timeout=timeout)
+
+    def send_ontology(self, doc: dict, dry_run: bool = False, force: bool = False, timeout: int = 300) -> dict:
+        """Send a ``prisma_v2.ontology.v1`` document already built (``prisma_api.ontology.build_payload``)."""
+        params = _compact(dry_run="true" if dry_run else None, force="true" if force else None)
+        return self._ontology("POST", "ingest/", doc, params=params or None, timeout=timeout)
+
+    def list_ontologies(self) -> dict:
+        """``{count, records}``: the ontologies you may see, each with its current release (no content)."""
+        return self._ontology("GET", "")
+
+    def get_ontology(self, slug: str, release: int | None = None, data: bool = False) -> dict:
+        """One release (default: current) as a document: ``release`` provenance, ``hashes``, nav, blocks, profiles."""
+        return self._ontology("GET", f"{slug}/", params=_compact(
+            release=int(release) if release is not None else None, data="true" if data else None))
+
+    def list_ontology_releases(self, slug: str, limit: int = 100, offset: int = 0) -> dict:
+        """``{count, offset, limit, records}``: releases newest first, with provenance and changes."""
+        return self._ontology("GET", f"{slug}/releases/", params={"limit": limit, "offset": offset})
+
     # ── Third-party dataset packages (server ingest pipeline 15) ──────────────
 
     def ingest_dataset(self, zip_path: str, dry_run: bool = True,

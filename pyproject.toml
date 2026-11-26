@@ -24,6 +24,7 @@ dependencies = [
 prisma-dataset = "prisma_api.dataset_package:main"
 prisma-outputs = "prisma_api.screening_outputs:main"
 prisma-case = "prisma_api.case_sync:main"
+prisma-ontology = "prisma_api.ontology:main"
 
 [tool.setuptools]
 packages = ["prisma_api"]

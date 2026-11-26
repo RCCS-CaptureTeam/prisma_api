@@ -297,6 +297,36 @@ The link lives in `<name>.cloud.json` next to the case (no secrets). Methods on 
 `study_build_timeline`, `set_study_build_status` (all need prisma_cloud >= 0.6.26; older servers answer 404); a 409 raises `PrismaConflictError`. Details:
 `prisma_api/case_sync.py`.
 
+### Curated ontology (`prisma-ontology`, team only to send)
+
+Send a curated ontology folder (today PrISMa-Platform-v2's `src/ontology`: `tree/` and `simpletree/` YAML)
+to the platform, where it is shown as an expandable tree at `/ontologies/<slug>/`. A send whose content
+differs from the platform's current release becomes the next release; the same content makes none.
+Sending needs a key of an active staff user in the platform's ontology curators group. Needs prisma_cloud >= 0.6.28.
+
+```bash
+prisma-ontology build src/ontology --out ontology.json   # no network: the document, counts and hashes
+prisma-ontology status src/ontology --dev                # in_sync / local_changed / unpublished
+prisma-ontology push src/ontology --dev --dry-run        # what would change
+prisma-ontology push src/ontology --prod                 # asks before writing
+prisma-ontology list --prod
+```
+
+```python
+api.v2.push_ontology("../PrISMa-Platform-v2/src/ontology", dry_run=True, tool="prisma-v2")
+```
+
+Each release records its provenance: from the folder's git checkout the repository name and address
+(credentials removed), folder, branch, commit, release tag and exact tag, commit date and author, the last
+commit that changed the folder and whether it has uncommitted changes, plus links to them; the calling tool
+and its version (`tool=`, `tool_version=`, e.g. `prisma-v2`); the installed prisma_api (`provenance.client`:
+version, how it was installed, and for an editable install, a checkout or `pip install git+…@<tag>` the git
+tag (`git describe --tags`), commit and local changes); the sender's git user name and the time sent; and sha256 hashes of every file, of the file
+manifest and of the content. An optional `ontology.yaml` at the root sets the slug, name, description,
+version and base IRI (default slug `prisma`). A send from a commit older than the current release's raises
+`PrismaConflictError` unless `force=True`. Methods on `api.v2`: `push_ontology`, `send_ontology`,
+`list_ontologies`, `get_ontology`, `list_ontology_releases`. Details: `prisma_api/ontology.py`.
+
 ### Datasets and screening outputs
 
 - `get_dataset_targets()` — what a dataset manifest may write on the server: targets, kinds, allowed keys and fields
